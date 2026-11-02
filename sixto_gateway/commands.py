@@ -7,29 +7,15 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from sixto_gateway.config import Config
+from sixto_gateway.decision import Decision
+from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
-if TYPE_CHECKING:  # the store imports this module for Decision
-    from sixto_gateway.store import Store
-
 log = logging.getLogger(__name__)
 REFUSAL = "That command isn't available to you."
-GATEWAY_MODULE = "gateway"  # owner of the gateway's own outbound rows (command refusals)
-
-
-@dataclass(frozen=True)
-class Decision:
-    """Where an update goes, and what is saved or queued in the same transaction."""
-
-    module: str | None  # owning module, or None: stored, not delivered
-    kind: str = "update"  # "update" or "command"
-    audit: tuple[str, str | None, str] | None = None  # (event, module, detail)
-    reply: str | None = None  # text sent back to the sender's DM through the send queue
 
 
 def allowed_commands(config: Config) -> dict[int, list[str]]:
@@ -50,11 +36,11 @@ def decide_command(config: Config, update: IncomingUpdate) -> Decision:
     if update.edited:  # an edit is never a new command: no delivery, no second reply
         return Decision(None)
     sender = update.from_id
-    command = config.commands.get(update.command)
     detail = f"command={update.command} from={sender}"  # never the args
     allowed = allowed_commands(config).get(sender, []) if sender is not None else []
-    if command is not None and update.command in allowed:
-        return Decision(command.module, "command", ("command_routed", command.module, detail))
+    if update.command in allowed:  # only names from config.commands can be in the list
+        module = config.commands[update.command].module
+        return Decision(module, "command", ("command_routed", module, detail))
     return Decision(None, audit=("command_refused", None, detail), reply=REFUSAL)
 
 

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sixto_gateway.commands import GATEWAY_MODULE, Decision
+from sixto_gateway.decision import GATEWAY_MODULE, Decision
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
 

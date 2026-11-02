@@ -7,8 +7,9 @@ import logging
 import time
 from collections.abc import Callable
 
-from sixto_gateway.commands import Decision, decide_command
+from sixto_gateway.commands import decide_command
 from sixto_gateway.config import Config
+from sixto_gateway.decision import Decision
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
