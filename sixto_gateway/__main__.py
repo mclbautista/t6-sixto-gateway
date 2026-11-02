@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import sys
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Coroutine
 
 import uvicorn
 from aiogram import Bot
@@ -80,12 +80,30 @@ async def serve(
         if task.done() and not task.cancelled() and task.exception() is not None:
             log.error("task %s crashed: %r", name, task.exception())
             exit_code = exit_code or 1
+    if stuck:
+        log.critical("tasks %s did not stop when cancelled", sorted(stuck))
+        exit_code = exit_code or 1
     store.close()
-    if stuck:  # asyncio.run would wait for them forever: leave without it
-        log.critical("tasks %s did not stop when cancelled: exiting hard", sorted(stuck))
-        logging.shutdown()
-        os._exit(exit_code or 1)
     return exit_code
+
+
+def run_serving(main_task: Coroutine[object, object, int]) -> int:
+    """Run ``serve`` and return its exit code; a non-zero code leaves at once.
+
+    ``asyncio.run`` would wait for leftover tasks and for executor threads (aiohttp resolves
+    names in one), and a stuck one would keep a deadman exit from ever happening. A non-zero
+    exit is always a restart, so nothing is lost by skipping that cleanup: the store is already
+    closed.
+    """
+    loop = asyncio.new_event_loop()
+    code = loop.run_until_complete(main_task)
+    if code != 0:
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    loop.close()
+    return code
 
 
 async def _register_menus_bounded(store: Store, client: TelegramClient, config: Config) -> None:
@@ -94,9 +112,12 @@ async def _register_menus_bounded(store: Store, client: TelegramClient, config: 
     A cancelled run is safe, because a person is recorded before their menu is set (see
     ``register_menus``), so the next boot finishes the job.
     """
-    try:
-        await asyncio.wait_for(register_menus(store, client, config), MENU_SETUP_SECONDS)
-    except TimeoutError:
+    task = asyncio.create_task(register_menus(store, client, config))
+    done, _ = await asyncio.wait({task}, timeout=MENU_SETUP_SECONDS)
+    if task in done:
+        task.result()  # register_menus handles Telegram errors itself; anything else is a bug
+    else:
+        task.cancel()  # not awaited: a call that ignores cancelling must not hold up boot
         log.warning("menu setup timed out after %s s: carrying on without it", MENU_SETUP_SECONDS)
         store.audit("menu_failed", detail=f"setup timed out after {MENU_SETUP_SECONDS} s")
 
@@ -156,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(redactor_for(config))
     if args.command == "set-offset":
         return set_offset(config, args.n)
-    return asyncio.run(serve(config))
+    return run_serving(serve(config))
 
 
 if __name__ == "__main__":

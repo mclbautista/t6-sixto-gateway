@@ -175,15 +175,19 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
 
 
 def _known_secrets(data: Any, env: Mapping[str, str]) -> list[str]:
-    """The bot token and every env value a ``modules.*.secret_env`` names, read leniently from
-    the raw YAML so it works even when the config is invalid."""
+    """Values to scrub from a config error, read leniently from the raw YAML so this works even
+    when the config is invalid: the bot token, every env value a ``modules.*.secret_env`` names,
+    and any ``secret_env`` that is itself some env var's value (a secret pasted as the name).
+    Each also in its ``repr`` form, because messages quote names with ``!r``."""
     names = [BOT_TOKEN_ENV]
     modules = data.get("modules") if isinstance(data, dict) else None
     if isinstance(modules, dict):
         for module in modules.values():
             if isinstance(module, dict) and isinstance(module.get("secret_env"), str):
                 names.append(module["secret_env"])
-    return [env[n] for n in names if env.get(n)]
+    env_values = set(env.values())
+    values = [env[n] for n in names if env.get(n)] + [n for n in names if n in env_values]
+    return values + [repr(v)[1:-1] for v in values]
 
 
 def load_config(path: str | Path, env: Mapping[str, str]) -> Config:

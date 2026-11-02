@@ -217,7 +217,10 @@ async def test_a_hung_menu_call_does_not_hold_up_boot(tmp_path, clock, monkeypat
     assert code == entry.EXIT_DEADMAN  # boot went on to start the poller and the deadman
     assert telegram.menu_attempts == 1 and telegram.calls
     store = Store(config.database_path, clock=clock)
-    assert ("menu_failed", None, "setup timed out after 0.1 s") in store.audit_events()
+    try:
+        assert ("menu_failed", None, "setup timed out after 0.1 s") in store.audit_events()
+    finally:
+        store.close()
 
 
 # --- retention ------------------------------------------------------------------------------

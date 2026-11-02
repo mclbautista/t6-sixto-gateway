@@ -54,11 +54,11 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
   error}` for the calling module's own refs (`404` otherwise).
 - Sends and reactions are paced under Telegram's limits (1/s per private chat, 20/min per group,
-  25/s overall); attempt times are stored, so a restart does not reset the windows. Network errors and 5xx are retried after 30 s, 2 min,
-  5 min and 10 min, then the row is `failed`; a 429 waits at least `retry_after`; a request that
-  can never succeed (chat not found, bad HTML, bot blocked) fails at once. Reactions follow the
-  same rules. Each attempt and
-  outcome goes to the audit log.
+  25/s overall); attempt times are stored, so a restart does not reset the windows. Network
+  errors and 5xx are retried after 30 s, 2 min, 5 min and 10 min, then the row is `failed`; a 429
+  waits at least `retry_after`; a request that can never succeed (chat not found, bad HTML, bot
+  blocked) fails at once. Reactions follow the same rules. Each attempt and outcome goes to the
+  audit log.
 
 ## Commands and the allow-list
 
@@ -72,7 +72,8 @@ commands:
   with only their commands. People who had a menu at an earlier boot and are no longer on any
   list lose it, so `commands: {}` leaves no per-person menu. If Telegram refuses one person
   (for example they never opened a chat with the bot) the boot continues, `menu_failed` goes to
-  the audit log and the next boot retries. Menu setup gets 2 minutes in total; if Telegram hangs
+  the audit log and the next boot retries; a removed person whose chat Telegram refuses for good
+  is forgotten rather than retried every boot. Menu setup gets 2 minutes in total; if Telegram hangs
   it is abandoned (`menu_failed`, "setup timed out") and polling starts anyway. A person is
   recorded before their menu is set, so a crash part way through never leaves a menu that a
   later boot does not know to remove.
@@ -204,7 +205,7 @@ has consumed, and Telegram does not send again what the gateway already acknowle
 watchdog must drain the gateway first. Never delete either database.
 
 1. **Stop gateway polling, keep its API.** Set `telegram.polling: false` in `config.yaml` and
-   `GATEWAY_TAG=<tag> docker compose restart gateway`. Check that `curl -fsS http://$MINI:8780/healthz`
+   `docker compose restart gateway` (edit the file in place: it is a single-file mount). Check that `curl -fsS http://$MINI:8780/healthz`
    shows `"polling": false`. From now on nobody polls, and Telegram holds new updates for up to
    24 hours.
 2. **Drain the watchdog.** Leave it running in gateway mode until the gateway has nothing left
@@ -227,8 +228,14 @@ watchdog must drain the gateway first. Never delete either database.
    `docker compose run --rm watchdog python -m jo_watchdog.app reset-offset --to T`
    (it prints the old offset). Its next poll will be `T + 1`: the first update the gateway never
    fetched.
-5. **Stop the gateway and keep a copy:** `docker compose stop gateway`, then copy its `./data` to a
-   dated backup.
+5. **Note the unsent replies, stop the gateway and keep a copy.** With polling off the gateway also
+   sends nothing, so reactions and ops posts the watchdog queued during the drain are still
+   waiting. List them first:
+   ```sh
+   docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('SELECT id, module, kind, target, body, datetime(created_at, \'unixepoch\') FROM outbound WHERE state = \'queued\' ORDER BY id')]"
+   ```
+   They are not sent after the rollback: set those reactions by hand and read the ops posts.
+   Then `docker compose stop gateway` and copy its `./data` to a dated backup.
 6. **Start the watchdog in direct mode.** Set `telegram_mode: direct` and clear `gateway_url`, put
    `TELEGRAM_BOT_TOKEN` back in its `.env`, and start the previous watchdog image
    (`JO_WATCHDOG_TAG=<previous>`).

@@ -217,3 +217,26 @@ def test_main_prints_a_scrubbed_config_error(tmp_path, capsys, monkeypatch):
     assert main(["--config", str(write(tmp_path, data))]) == 2
     err = capsys.readouterr().err
     assert "config error" in err and SECRET not in err
+
+
+@pytest.mark.parametrize(
+    "secret", ["back\\slash-secret-value-0123456789abc", "tab\tsecret-0123456789abcdefghij"]
+)
+def test_a_secret_with_escaped_characters_is_still_scrubbed(tmp_path, secret):
+    env = {**ENV, "WATCHDOG_SECRET": secret}
+    with pytest.raises(ConfigError) as err:
+        load(tmp_path, lambda d: _set_route_module(d, secret), env)
+    assert secret not in str(err.value)
+    assert repr(secret)[1:-1] not in str(err.value)
+
+
+def test_a_secret_pasted_as_the_env_var_name_is_not_echoed(tmp_path):
+    pasted = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    env = {**ENV, "OTHER_SECRET": pasted}
+
+    def mutate(d):
+        d["modules"]["psr"] = {"secret_env": pasted}
+
+    with pytest.raises(ConfigError) as err:
+        load(tmp_path, mutate, env)
+    assert pasted not in str(err.value)

@@ -371,7 +371,10 @@ class RaisingBot:
 def aiogram_rig(tmp_path, exc):
     from sixto_gateway.telegram.client import AiogramTelegramClient
 
-    return Rig(tmp_path, client=AiogramTelegramClient(RaisingBot(exc)))
+    bot = RaisingBot(exc)
+    rig = Rig(tmp_path, client=AiogramTelegramClient(bot))
+    rig.bot = bot
+    return rig
 
 
 @pytest.mark.parametrize("kind", ["message", "react"])
@@ -386,10 +389,10 @@ async def test_an_aiogram_429_waits_at_least_retry_after_through_the_real_client
     assert rig.state(ref)["state"] == "queued"
     rig.clock.advance(119)  # the 30 s schedule step is not enough: Telegram said 120
     await rig.drain_now()
-    assert rig.client._bot.calls == 1
+    assert rig.bot.calls == 1
     rig.clock.advance(1.01)
     await rig.drain_now()
-    assert rig.client._bot.calls == 2
+    assert rig.bot.calls == 2
 
 
 @pytest.mark.parametrize("kind", ["message", "react"])
@@ -408,6 +411,6 @@ async def test_a_permanent_aiogram_error_fails_at_once_and_is_audited(tmp_path, 
     ref = rig.queue(GROUP, kind=kind)
     await rig.drain_now()
     row = rig.state(ref)
-    assert row["state"] == "failed" and rig.client._bot.calls == 1
+    assert row["state"] == "failed" and rig.bot.calls == 1
     assert "PermanentSendError" in row["error"]
     assert any(e == "send_failed" for e, _, _ in rig.store.audit_events())
