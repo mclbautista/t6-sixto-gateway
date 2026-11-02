@@ -362,9 +362,7 @@ class Store:
     def record_send_attempt(self, chat_id: int, at: float, keep_seconds: float) -> None:
         """Note a request to Telegram before it is made; forget ones older than the windows."""
         with self._transaction():
-            self._db.execute(
-                "INSERT INTO send_attempts (at, chat_id) VALUES (?, ?)", (at, chat_id)
-            )
+            self._db.execute("INSERT INTO send_attempts (at, chat_id) VALUES (?, ?)", (at, chat_id))
             self._db.execute("DELETE FROM send_attempts WHERE at < ?", (at - keep_seconds,))
 
     def send_attempts_since(self, since: float) -> list[tuple[float, int]]:

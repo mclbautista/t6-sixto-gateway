@@ -205,9 +205,7 @@ async def test_a_tripped_deadman_cancels_a_hung_poll_and_exits_non_zero(
     assert telegram.calls  # the poll really was in flight and hung
 
 
-async def test_a_hung_menu_call_does_not_hold_up_boot(
-    tmp_path, clock, monkeypatch, quick_shutdown
-):
+async def test_a_hung_menu_call_does_not_hold_up_boot(tmp_path, clock, monkeypatch, quick_shutdown):
     import sixto_gateway.__main__ as entry
 
     monkeypatch.setattr(entry, "MENU_SETUP_SECONDS", 0.1)
