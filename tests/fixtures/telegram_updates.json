@@ -1,0 +1,368 @@
+{
+  "_note": "Bot API JSON shapes from the documented MessageOrigin schema, not yet recorded from a live bot. #27 confirms them against real forwards.",
+  "updates": {
+    "text": {
+      "update_id": 9001,
+      "message": {
+        "message_id": 501,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser"
+      }
+    },
+    "caption": {
+      "update_id": 9002,
+      "message": {
+        "message_id": 502,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "caption": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "photo": [
+          {
+            "file_id": "F",
+            "file_unique_id": "U",
+            "width": 90,
+            "height": 90
+          }
+        ]
+      }
+    },
+    "forward_user": {
+      "update_id": 9003,
+      "message": {
+        "message_id": 503,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "user",
+          "date": 1789527200,
+          "sender_user": {
+            "id": 222,
+            "is_bot": false,
+            "first_name": "Ben",
+            "last_name": "Cruz",
+            "username": "bencruz"
+          }
+        }
+      }
+    },
+    "forward_user_no_username": {
+      "update_id": 9004,
+      "message": {
+        "message_id": 504,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "user",
+          "date": 1789696400,
+          "sender_user": {
+            "id": 333,
+            "is_bot": false,
+            "first_name": "Che"
+          }
+        }
+      }
+    },
+    "forward_hidden_user": {
+      "update_id": 9005,
+      "message": {
+        "message_id": 505,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "hidden_user",
+          "date": 1789696400,
+          "sender_user_name": "Dina Santos"
+        }
+      }
+    },
+    "forward_hidden_user_no_name": {
+      "update_id": 9006,
+      "message": {
+        "message_id": 506,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "hidden_user",
+          "date": 1789696400,
+          "sender_user_name": ""
+        }
+      }
+    },
+    "forward_chat": {
+      "update_id": 9007,
+      "message": {
+        "message_id": 507,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "chat",
+          "date": 1789696400,
+          "sender_chat": {
+            "id": -1009876543210,
+            "title": "Client Group",
+            "type": "supergroup"
+          },
+          "author_signature": "Admin Eli"
+        }
+      }
+    },
+    "forward_chat_no_signature": {
+      "update_id": 9008,
+      "message": {
+        "message_id": 508,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "chat",
+          "date": 1789696400,
+          "sender_chat": {
+            "id": -1009876543210,
+            "title": "Client Group",
+            "type": "supergroup"
+          }
+        }
+      }
+    },
+    "forward_channel_public": {
+      "update_id": 9009,
+      "message": {
+        "message_id": 509,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "channel",
+          "date": 1789696400,
+          "message_id": 42,
+          "chat": {
+            "id": -1005555555555,
+            "title": "Brand Updates",
+            "username": "brandupdates",
+            "type": "channel"
+          },
+          "author_signature": "Fe"
+        }
+      }
+    },
+    "forward_channel_private": {
+      "update_id": 9010,
+      "message": {
+        "message_id": 510,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "channel",
+          "date": 1789696400,
+          "message_id": 43,
+          "chat": {
+            "id": -1005555555555,
+            "title": "Brand Internal",
+            "type": "channel"
+          }
+        }
+      }
+    },
+    "forward_channel_missing_ids": {
+      "update_id": 9011,
+      "message": {
+        "message_id": 511,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser",
+        "forward_origin": {
+          "type": "channel",
+          "date": 1789696400,
+          "chat": {
+            "type": "channel"
+          }
+        }
+      }
+    },
+    "edit": {
+      "update_id": 9012,
+      "edited_message": {
+        "message_id": 501,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 111,
+          "is_bot": false,
+          "first_name": "Ana",
+          "last_name": "Reyes",
+          "username": "anareyes"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Post Prod",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "MFG - TOC - JO #074\nTask: cut 30s teaser (rev)",
+        "edit_date": 1789700600
+      }
+    }
+  }
+}
