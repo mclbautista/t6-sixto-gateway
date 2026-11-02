@@ -20,6 +20,14 @@ class TelegramClient(Protocol):
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None: ...
 
+    async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
+        """Set the ``/`` menu of one private chat (``chat_id``), or the default (None)."""
+        ...
+
+    async def delete_my_commands(self, chat_id: int) -> None:
+        """Remove one private chat's own menu, so it falls back to the default."""
+        ...
+
 
 class AiogramTelegramClient:
     def __init__(self, bot):  # type: ignore[no-untyped-def]
@@ -54,3 +62,18 @@ class AiogramTelegramClient:
         await self._bot.set_message_reaction(
             chat_id=chat_id, message_id=message_id, reaction=[ReactionTypeEmoji(emoji=emoji)]
         )
+
+    async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
+        from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+
+        scope = (
+            BotCommandScopeDefault() if chat_id is None else BotCommandScopeChat(chat_id=chat_id)
+        )
+        await self._bot.set_my_commands(
+            commands=[BotCommand(command=n, description=d) for n, d in commands], scope=scope
+        )
+
+    async def delete_my_commands(self, chat_id: int) -> None:
+        from aiogram.types import BotCommandScopeChat
+
+        await self._bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=chat_id))

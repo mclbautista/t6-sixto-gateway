@@ -56,4 +56,9 @@ MIGRATIONS: list[str] = [
         detail TEXT
     );
     """,
+    # 2: private chats that currently have their own "/" menu (spec section 8), so a person
+    # who leaves every allow list has their menu removed at the next boot
+    """
+    CREATE TABLE menu_users (user_id INTEGER PRIMARY KEY);
+    """,
 ]

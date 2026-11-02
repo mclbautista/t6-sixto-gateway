@@ -50,6 +50,35 @@ def moved(raw: dict, *, update_id: int, chat: int | None = None, topic: int | No
     return out
 
 
+def dm_message(update_id: int, user_id: int, text: str, *, edited: bool = False) -> dict:
+    """A private-chat message from ``user_id``; a leading ``/word`` carries a bot_command entity."""
+    message: dict = {
+        "message_id": update_id,
+        "from": {"id": user_id, "is_bot": False, "first_name": "P", "username": f"u{user_id}"},
+        "chat": {"id": user_id, "first_name": "P", "type": "private"},
+        "date": 1789700000,
+        "text": text,
+    }
+    if text.startswith("/"):
+        length = len(text.split()[0])
+        message["entities"] = [{"type": "bot_command", "offset": 0, "length": length}]
+    if edited:
+        message["edit_date"] = 1789700100
+        return {"update_id": update_id, "edited_message": message}
+    return {"update_id": update_id, "message": message}
+
+
+def group_command(update_id: int, user_id: int, text: str, chat: int, topic: int | None) -> dict:
+    """The same command typed in a group (and topic)."""
+    raw = dm_message(update_id, user_id, text)
+    message = raw["message"]
+    message["chat"] = {"id": chat, "title": "Group", "type": "supergroup", "is_forum": True}
+    if topic is not None:
+        message["message_thread_id"] = topic
+        message["is_topic_message"] = True
+    return raw
+
+
 class FakeClock:
     def __init__(self, now: float = 1_789_700_000.0):
         self.now = now
@@ -70,6 +99,9 @@ class FakeTelegram:
         self.sent: list[dict] = []  # outbound calls in order: messages and reactions
         self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
         self._next_message_id = 9000
+        self.menus: dict[int | None, list[tuple[str, str]]] = {}  # scope chat id (None = default)
+        self.menu_calls: list[tuple[str, int | None, list[tuple[str, str]]]] = []
+        self.menu_failures: set[int] = set()  # user ids Telegram refuses ("chat not found")
 
     async def send_message(
         self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
@@ -93,6 +125,19 @@ class FakeTelegram:
         self.sent.append(
             {"kind": "react", "chat_id": chat_id, "message_id": message_id, "emoji": emoji}
         )
+
+    async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
+        """``chat_id`` None is the default scope."""
+        if chat_id in self.menu_failures:
+            raise RuntimeError("Bad Request: chat not found")
+        self.menu_calls.append(("set", chat_id, list(commands)))
+        self.menus[chat_id] = list(commands)
+
+    async def delete_my_commands(self, chat_id: int) -> None:
+        if chat_id in self.menu_failures:
+            raise RuntimeError("Bad Request: chat not found")
+        self.menu_calls.append(("delete", chat_id, []))
+        self.menus.pop(chat_id, None)
 
     def _maybe_fail(self) -> None:
         if self.fail_with is not None:

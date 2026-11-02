@@ -15,9 +15,8 @@ import uvicorn
 from aiogram import Bot
 
 from sixto_gateway.api import create_app
-from sixto_gateway.config import Config, ConfigError, load_config
-from sixto_gateway.liveness import Liveness
-from sixto_gateway.logsafe import Redactor, configure_logging
+from sixto_gateway.commands import register_menus
+from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
@@ -43,18 +42,14 @@ async def serve(config: Config) -> int:
     )
     stop = asyncio.Event()
     bot = Bot(token=config.secrets.bot_token)
-    workers = start_workers(
-        config,
-        store,
-        AiogramTelegramClient(bot),
-        notifier,
-        queue_wake,
-        liveness,
-        stop,
-        redactor_for(config).scrub,
-    )
-    tasks = {"server": asyncio.create_task(server.serve()), **workers}
-    exit_code = 0
+    client = AiogramTelegramClient(bot)
+    if config.telegram.polling:
+        await register_menus(store, client, config)
+        tasks.append(asyncio.create_task(Sender(store, client, queue_wake).run(stop)))
+        poller = Poller(store, client, config, notifier, queue_wake=queue_wake)
+        tasks.append(asyncio.create_task(poller.run(stop)))
+    else:
+        log.warning("telegram.polling is false: serving the API only (no polling, no sending)")
     try:
         # If any task ends, the process ends; the container restart policy takes over.
         await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)

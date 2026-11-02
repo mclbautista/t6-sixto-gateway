@@ -136,6 +136,8 @@ def _check_references(config: Config) -> list[str]:
     for name, command in config.commands.items():
         if not re.fullmatch(r"[a-z0-9_]{1,32}", name):
             problems.append(f"command {name!r} is not a valid Telegram command name")
+        if len(command.description) > 256:
+            problems.append(f"command {name!r} description is longer than 256 characters")
         if command.module not in config.modules:
             problems.append(f"command {name!r} names unknown module {command.module!r}")
         for entry in command.allow:

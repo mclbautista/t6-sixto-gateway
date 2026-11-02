@@ -5,9 +5,8 @@ It saves each Telegram update, routes it to a module by `(chat, topic)`, and mod
 items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; phase 1 spec:
 issue #1.
 
-Status: intake (config, polling, routing, `GET /updates`), basic sending (`/notify`, `/react`,
-`GET /notify/{ref}`) and operations (`/healthz`, deadman, retention, `set-offset`, deploy,
-rollback and the cutover runbook, below). Pacing and retries and commands come from other tickets.
+Status: this README covers the intake path (config, polling, routing, `GET /updates`) and basic
+sending (`/notify`, `/react`, `GET /notify/{ref}`), and commands with the allow-list. Pacing and retries, health and the cutover runbook are added by later slices.
 
 ## Run the tests
 
@@ -56,28 +55,28 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
   handling come in the next slice. Each attempt and outcome goes to the audit log.
 
-## Health, deadman, retention, logs
+## Commands and the allow-list
 
-- `GET /healthz` (no auth): `200` when a `getUpdates` call completed in the last 5 minutes and the
-  database accepts a write, `503` otherwise. Body: `status`, `polling`, `database_writable`,
-  `last_poll_at` (UTC), `queued` (sends waiting) and `failed_last_24h`. The Docker health check
-  calls it; `docker compose ps` shows `healthy` or `unhealthy`. With `telegram.polling: false`
-  there is no poll to wait for, so only the database counts and the body says `"polling": false`.
-- **Deadman:** if no `getUpdates` call completes for 10 minutes (counted from boot if none ever
-  does), the process exits with code 1 and `restart: unless-stopped` starts it again. It is off
-  when polling is off. Exit code 2 is a bad config, which a restart will not fix.
-- **Retention:** once a day (and at every boot) the gateway deletes `updates`, `deliveries` and
-  finished (`sent` or `failed`) `outbound` rows older than `retention_days` (default 30), and
-  `audit` rows older than 180 days. Queued sends and the polling cursor are never deleted. Age is
-  counted from when the row was created. Each run writes a `retention` audit row with the counts.
-- **Audit log:** the `audit` table records config loads, auth failures, each send attempt and
-  outcome, `set_offset`, `retention` and `deadman`. Read it with
-  `docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('select datetime(at,\'unixepoch\'),event,module,detail from audit order by id desc limit 30')]"`.
-- **Logs** (`docker compose logs -f gateway`): one line per update received (id, chat, topic,
-  routed module), per send outcome and per auth failure. Message text is never logged. Every log
-  line, including tracebacks, goes through a redactor that replaces the bot token, every module
-  secret, anything shaped like a bot token and any `Bearer ...` value with `[redacted]`. The same
-  scrub is applied to send errors before they are stored in `outbound` or `audit`.
+```yaml
+commands:
+  jo: { module: jo, allow: [psr, 274983989], description: "Job orders" }   # group names or user ids
+```
+
+- **Menus, at boot** (only when `telegram.polling` is true): the default `/` menu is set empty,
+  and each user id named in any `allow` list (directly or through a group) gets a per-chat menu
+  with only their commands. People who had a menu at an earlier boot and are no longer on any
+  list lose it, so `commands: {}` leaves no per-person menu. If Telegram refuses one person
+  (for example they never opened a chat with the bot) the boot continues, `menu_failed` goes to
+  the audit log and the next boot retries.
+- **In a DM**, a message that starts with `/name` is checked against the allow-list before any
+  module sees it. Allowed: a `command` item (with `command` and `args`) is delivered to the
+  owning module through `GET /updates`. Refused or unknown: the update is stored unrouted and
+  the gateway queues one DM reply, "That command isn't available to you." The reply is saved in
+  the same transaction as the update, so a re-fetched update is never answered twice.
+- **In a group**, commands get no reply and are routed like any other message. An edited
+  command is never delivered or answered.
+- Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
+  (command name and sender id, never the arguments).
 
 ## Run
 

@@ -7,8 +7,9 @@ import logging
 import time
 from collections.abc import Callable
 
+from sixto_gateway.commands import decide_command
 from sixto_gateway.config import Config
-from sixto_gateway.liveness import Liveness
+from sixto_gateway.decision import Decision
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
@@ -26,14 +27,21 @@ class Poller:
         config: Config,
         notifier: Notifier,
         clock: Callable[[], float] = time.time,
-        liveness: Liveness | None = None,
+        queue_wake: Notifier | None = None,
     ):
         self._store = store
         self._client = client
         self._config = config
         self._notifier = notifier
         self._clock = clock
-        self.liveness = liveness or Liveness(clock)
+        self._queue_wake = queue_wake or Notifier()  # poked when a reply is queued
+        self.last_poll_at: float | None = None  # for /healthz and the deadman (later slices)
+
+    def decide(self, update: IncomingUpdate) -> Decision:
+        """A command in a private chat is checked against the allow-list; the rest is routed."""
+        if update.command is not None and update.chat_type == "private":
+            return decide_command(self._config, update)
+        return Decision(self.route(update))
 
     def route(self, update: IncomingUpdate) -> str | None:
         """The owning module, or None (stored, not delivered).
@@ -58,11 +66,13 @@ class Poller:
         updates = await self._client.get_updates(
             self._store.next_offset(), telegram.poll_timeout, telegram.allowed_updates
         )
-        self.liveness.record_poll()
-        delivered = False
+        self.last_poll_at = self._clock()
+        delivered = queued = False
         for update in updates:
-            module = self.route(update)
-            seq = self._store.save_update(update, module, received_at=self._clock())
+            decision = self.decide(update)
+            module = decision.module
+            seq = self._store.save_update(update, decision, received_at=self._clock())
+            queued = queued or decision.reply is not None
             log.info(
                 "update %s chat=%s topic=%s module=%s",
                 update.update_id,
@@ -73,6 +83,8 @@ class Poller:
             delivered = delivered or seq is not None
         if delivered:
             self._notifier.notify()
+        if queued:
+            self._queue_wake.notify()
         return len(updates)
 
     async def run(self, stop: asyncio.Event) -> None:
