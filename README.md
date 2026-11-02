@@ -56,7 +56,8 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - Sends and reactions are paced under Telegram's limits (1/s per private chat, 20/min per group,
   25/s overall); attempt times are stored, so a restart does not reset the windows. Network
   errors and 5xx are retried after 30 s, 2 min, 5 min and 10 min, then the row is `failed`; a 429
-  waits at least `retry_after`; a request that can never succeed (chat not found, bad HTML, bot
+  waits at least `retry_after` and pauses all sending that long, a pause that is stored and survives
+  a restart; a request that can never succeed (chat not found, bad HTML, bot
   blocked) fails at once. Reactions follow the same rules. Each attempt and outcome goes to the
   audit log.
 

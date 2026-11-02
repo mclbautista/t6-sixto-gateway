@@ -66,4 +66,8 @@ MIGRATIONS: list[str] = [
     CREATE TABLE send_attempts (at REAL NOT NULL, chat_id INTEGER NOT NULL);
     CREATE INDEX send_attempts_at ON send_attempts (at);
     """,
+    # 4: the bot-wide pause after a 429, so a restart does not send before Telegram allows it
+    """
+    CREATE TABLE send_pause (id INTEGER PRIMARY KEY CHECK (id = 1), until REAL NOT NULL);
+    """,
 ]

@@ -414,3 +414,44 @@ async def test_a_permanent_aiogram_error_fails_at_once_and_is_audited(tmp_path, 
     assert row["state"] == "failed" and rig.bot.calls == 1
     assert "PermanentSendError" in row["error"]
     assert any(e == "send_failed" for e, _, _ in rig.store.audit_events())
+
+
+# --- the bot-wide 429 pause survives a restart -------------------------------------------------
+
+
+@pytest.mark.parametrize("final_attempt", [False, True])
+async def test_a_429_pause_survives_a_restart(tmp_path, final_attempt):
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import SetMessageReaction
+
+    method = SetMessageReaction(chat_id=GROUP, message_id=5)
+    bot = RaisingBot(TelegramRetryAfter(method, "Too Many Requests", 120))
+    from sixto_gateway.telegram.client import AiogramTelegramClient
+
+    rig = Rig(tmp_path, client=AiogramTelegramClient(bot))
+    ref = rig.queue(GROUP, kind="react")
+    if final_attempt:  # four plain failures first, so the 429 ends the row
+        rig.client = rig.telegram
+        rig.open()
+        for _ in range(4):
+            rig.telegram.fail_with = TransientSendError("503")
+            await rig.drain_now()
+            rig.clock.advance(601)
+        rig.client = AiogramTelegramClient(bot)
+        rig.open()
+    await rig.drain_now()
+    assert bot.calls == 1
+    if final_attempt:
+        assert rig.state(ref)["state"] == "failed"
+
+    other = rig.queue(PRIVATE, "other chat")
+    rig.client = rig.telegram  # Telegram is fine again; only the pause should hold
+    rig.open()  # restart
+    sent_before = len(rig.telegram.sent)
+    rig.clock.advance(1.01)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == sent_before  # still inside Telegram's 120 s
+    assert rig.sender.next_wake_in == pytest.approx(118.99, abs=0.01)
+    rig.clock.advance(118.99)
+    await rig.drain_now()
+    assert rig.state(other)["state"] == "sent"
