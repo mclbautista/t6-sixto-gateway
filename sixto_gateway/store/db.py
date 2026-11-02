@@ -136,6 +136,87 @@ class Store:
         ).fetchall()
         return [{"seq": r["seq"], **json.loads(r["payload"])} for r in rows]
 
+    # --- outbound queue -------------------------------------------------------------------
+
+    def enqueue_outbound(
+        self,
+        module: str,
+        kind: str,
+        target: str,
+        body: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> int:
+        """Save an outbound row and return its ``message_ref`` (the row id).
+
+        A repeated ``idempotency_key`` from the same module returns the existing ref and queues
+        nothing new. The row is committed (``synchronous=FULL``) before this returns.
+        """
+        now = self._clock()
+        with self._transaction():
+            if idempotency_key is not None:
+                row = self._db.execute(
+                    "SELECT id FROM outbound WHERE module = ? AND idempotency_key = ?",
+                    (module, idempotency_key),
+                ).fetchone()
+                if row:
+                    return int(row[0])
+            cursor = self._db.execute(
+                "INSERT INTO outbound (module, kind, target, body, idempotency_key,"
+                " next_attempt_at, created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    module,
+                    kind,
+                    target,
+                    json.dumps(body, ensure_ascii=False),
+                    idempotency_key,
+                    now,
+                    now,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def next_outbound(self) -> dict[str, Any] | None:
+        """The queued row to send next: earliest ``next_attempt_at``, then id."""
+        row = self._db.execute(
+            "SELECT id, module, kind, target, body, attempts FROM outbound"
+            " WHERE state = 'queued' ORDER BY next_attempt_at, id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "body": json.loads(row["body"])}
+
+    def mark_outbound_sent(self, ref: int, telegram_message_id: int | None) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET state = 'sent', attempts = attempts + 1,"
+                " telegram_message_id = ?, last_error = NULL WHERE id = ?",
+                (telegram_message_id, ref),
+            )
+
+    def mark_outbound_failed(self, ref: int, error: str) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET state = 'failed', attempts = attempts + 1, last_error = ?"
+                " WHERE id = ?",
+                (error, ref),
+            )
+
+    def outbound_status(self, ref: int, module: str) -> dict[str, Any] | None:
+        """State of a module's own outbound row, or None (unknown, or another module's)."""
+        row = self._db.execute(
+            "SELECT state, telegram_message_id, last_error FROM outbound"
+            " WHERE id = ? AND module = ?",
+            (ref, module),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "state": row["state"],
+            "telegram_message_id": row["telegram_message_id"],
+            "error": row["last_error"],
+        }
+
     # --- audit ----------------------------------------------------------------------------
 
     def audit(self, event: str, module: str | None = None, detail: str | None = None) -> None:
