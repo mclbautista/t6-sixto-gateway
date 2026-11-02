@@ -1,8 +1,9 @@
 """Send pacing under Telegram's documented limits (spec section 9).
 
 At most 1 message per second per private chat, 20 per minute per group and 25 per second
-overall. Sliding windows over the times of recent sends; the state lives in memory, so a restart
-starts with a clean slate (the limits are far looser than one restart's worth of sends).
+overall. Sliding windows over the times of recent send attempts. The sender also stores each
+attempt and replays the recent ones into a new ``Pacer`` at boot, so a restart cannot reset the
+windows.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections import deque
 PRIVATE_LIMIT = (1, 1.0)
 GROUP_LIMIT = (20, 60.0)
 OVERALL_LIMIT = (25, 1.0)
+LONGEST_WINDOW_SECONDS = max(w for _, w in (PRIVATE_LIMIT, GROUP_LIMIT, OVERALL_LIMIT))
 
 
 class _Window:

@@ -97,6 +97,52 @@ async def test_overall_rate_is_at_most_25_per_second(rig):
         assert len([x for x in times if t <= x < t + 1.0]) <= 25
 
 
+async def test_a_restart_inside_the_group_window_keeps_the_limit(rig):
+    for i in range(40):
+        rig.queue(GROUP, f"m{i}")
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20
+    rig.open()  # crash and restart at once, same fake second
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20  # the new process remembers the first 20
+    rig.clock.advance(59.9)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20
+    rig.clock.advance(0.2)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 40
+
+
+async def test_a_restart_keeps_the_private_and_overall_limits(rig):
+    for chat in range(1, 31):
+        rig.queue(chat)
+    rig.queue(1, "second to chat 1")
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 25
+    rig.open()
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 25  # overall 25/s still applies after the restart
+    rig.clock.advance(1.01)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 31
+    assert rig.telegram.sent[-1]["text"] == "second to chat 1"  # 1/s per private chat
+
+
+async def test_a_failed_attempt_counts_towards_the_window_after_a_restart(rig):
+    """Telegram may have accepted a request whose outcome the gateway never saw."""
+    rig.queue(PRIVATE, "first")
+    rig.telegram.fail_with = TransientSendError("timeout")
+    await rig.drain_now()
+    rig.queue(PRIVATE, "second")
+    rig.open()
+    rig.clock.advance(0.5)
+    await rig.drain_now()
+    assert rig.telegram.sent == []
+    rig.clock.advance(0.51)
+    await rig.drain_now()
+    assert [m["text"] for m in rig.telegram.sent] == ["second"]
+
+
 async def test_paced_chat_does_not_hold_up_other_chats(rig):
     for i in range(3):
         rig.queue(PRIVATE, f"slow{i}")
