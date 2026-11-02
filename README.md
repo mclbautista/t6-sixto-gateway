@@ -53,9 +53,11 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
   error}` for the calling module's own refs (`404` otherwise).
-- Sends are paced under Telegram's limits. Network errors and 5xx are retried after 30 s, 2 min,
+- Sends and reactions are paced under Telegram's limits (1/s per private chat, 20/min per group,
+  25/s overall); attempt times are stored, so a restart does not reset the windows. Network errors and 5xx are retried after 30 s, 2 min,
   5 min and 10 min, then the row is `failed`; a 429 waits at least `retry_after`; a request that
-  can never succeed (chat not found, bad HTML, bot blocked) fails at once. Each attempt and
+  can never succeed (chat not found, bad HTML, bot blocked) fails at once. Reactions follow the
+  same rules. Each attempt and
   outcome goes to the audit log.
 
 ## Commands and the allow-list
@@ -70,7 +72,10 @@ commands:
   with only their commands. People who had a menu at an earlier boot and are no longer on any
   list lose it, so `commands: {}` leaves no per-person menu. If Telegram refuses one person
   (for example they never opened a chat with the bot) the boot continues, `menu_failed` goes to
-  the audit log and the next boot retries.
+  the audit log and the next boot retries. Menu setup gets 2 minutes in total; if Telegram hangs
+  it is abandoned (`menu_failed`, "setup timed out") and polling starts anyway. A person is
+  recorded before their menu is set, so a crash part way through never leaves a menu that a
+  later boot does not know to remove.
 - **In a DM**, a message that starts with `/name` is checked against the allow-list before any
   module sees it. Allowed: a `command` item (with `command` and `args`) is delivered to the
   owning module through `GET /updates`. Refused or unknown: the update is stored unrouted and
@@ -89,8 +94,9 @@ commands:
   calls it; `docker compose ps` shows `healthy` or `unhealthy`. With `telegram.polling: false`
   there is no poll to wait for, so only the database counts and the body says `"polling": false`.
 - **Deadman:** if no `getUpdates` call completes for 10 minutes (counted from boot if none ever
-  does), the process exits with code 1 and `restart: unless-stopped` starts it again. It is off
-  when polling is off. Exit code 2 is a bad config, which a restart will not fix.
+  does), the process exits with code 1 and `restart: unless-stopped` starts it again. A stuck
+  Telegram call cannot hold it up: tasks get 5 seconds to stop, are then cancelled, and the
+  process exits hard if one still has not finished. It is off when polling is off. Exit code 2 is a bad config, which a restart will not fix.
 - **Retention:** once a day (and at every boot) the gateway deletes `updates`, `deliveries` and
   finished (`sent` or `failed`) `outbound` rows older than `retention_days` (default 30), and
   `audit` rows older than 180 days. Queued sends and the polling cursor are never deleted. Age is
