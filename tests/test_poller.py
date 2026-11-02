@@ -182,3 +182,13 @@ async def test_notifier_wakes_waiters_when_a_routed_update_is_saved(config):
     assert not waiter.is_set()
     await poller.poll_once()
     assert waiter.is_set()
+
+
+async def test_edit_of_an_unrouted_original_stays_unrouted(config):
+    text = moved(fixture_updates()["text"], update_id=20, topic=999)  # unrouted topic
+    edit = moved(fixture_updates()["edit"], update_id=21)  # edit arrives tagged with intake topic
+    edit["edited_message"]["message_id"] = text["message"]["message_id"]
+    store, poller = make(config, FakeTelegram([text, edit]))
+    await drain(poller)
+
+    assert store.unrouted_update_ids() == [20, 21]

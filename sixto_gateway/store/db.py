@@ -107,30 +107,27 @@ class Store:
                     (module, update.update_id, payload, received_at),
                 )
                 seq = cursor.lastrowid
-            self._db.execute(
-                "INSERT INTO poll_state (id, last_update_id) VALUES (1, ?)"
-                " ON CONFLICT(id) DO UPDATE SET last_update_id = MAX(last_update_id, ?)",
-                (update.update_id, update.update_id),
-            )
+            self._move_cursor(update.update_id)
         return seq
 
-    def advance_cursor(self, update_id: int) -> None:
-        """Move the cursor past an update we do not store (a kind we do not handle)."""
-        with self._transaction():
-            self._db.execute(
-                "INSERT INTO poll_state (id, last_update_id) VALUES (1, ?)"
-                " ON CONFLICT(id) DO UPDATE SET last_update_id = MAX(last_update_id, ?)",
-                (update_id, update_id),
-            )
+    def _move_cursor(self, update_id: int) -> None:
+        self._db.execute(
+            "INSERT INTO poll_state (id, last_update_id) VALUES (1, ?)"
+            " ON CONFLICT(id) DO UPDATE SET last_update_id = MAX(last_update_id, ?)",
+            (update_id, update_id),
+        )
 
-    def module_of_original(self, chat_id: int, message_id: int) -> str | None:
-        """The module the original (non-edited) message of an edit was routed to."""
+    def original_route(self, chat_id: int, message_id: int) -> tuple[bool, str | None]:
+        """(known, module) for the original (non-edited) message of an edit.
+
+        ``known`` separates "the original was stored unrouted" from "never seen".
+        """
         row = self._db.execute(
             "SELECT module FROM updates WHERE chat_id = ? AND message_id = ? AND edited = 0"
             " ORDER BY update_id LIMIT 1",
             (chat_id, message_id),
         ).fetchone()
-        return row[0] if row else None
+        return (True, row[0]) if row else (False, None)
 
     def deliveries_after(self, module: str, after: int, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._db.execute(

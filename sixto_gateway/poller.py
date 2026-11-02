@@ -39,8 +39,8 @@ class Poller:
         An edit follows its original message's route when the original is known.
         """
         if update.edited:
-            original = self._store.module_of_original(update.chat_id, update.message_id)
-            if original is not None:
+            known, original = self._store.original_route(update.chat_id, update.message_id)
+            if known:
                 return original
         for route in self._config.routes:
             if route.chat == update.chat_id and route.topic in (None, update.topic_id):
