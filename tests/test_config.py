@@ -153,3 +153,11 @@ def test_secrets_never_leak_in_repr_or_errors(tmp_path):
     with pytest.raises(ConfigError) as err:
         load(tmp_path, lambda d: d["telegram"].update(poll_timeout=SECRET))
     assert SECRET not in str(err.value)
+
+
+def test_rejects_a_command_description_telegram_would_refuse(tmp_path):
+    def add(d):
+        d["commands"] = {"jo": {"module": "watchdog", "allow": [1], "description": "x" * 257}}
+
+    with pytest.raises(ConfigError, match="description is longer than 256"):
+        load(tmp_path, add)

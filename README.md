@@ -6,7 +6,7 @@ items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; pha
 issue #1.
 
 Status: this README covers the intake path (config, polling, routing, `GET /updates`) and basic
-sending (`/notify`, `/react`, `GET /notify/{ref}`). Pacing and retries, commands, health and the cutover runbook are added by later slices.
+sending (`/notify`, `/react`, `GET /notify/{ref}`), and commands with the allow-list. Pacing and retries, health and the cutover runbook are added by later slices.
 
 ## Run the tests
 
@@ -54,6 +54,29 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
   error}` for the calling module's own refs (`404` otherwise).
 - Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
   handling come in the next slice. Each attempt and outcome goes to the audit log.
+
+## Commands and the allow-list
+
+```yaml
+commands:
+  jo: { module: jo, allow: [psr, 274983989], description: "Job orders" }   # group names or user ids
+```
+
+- **Menus, at boot** (only when `telegram.polling` is true): the default `/` menu is set empty,
+  and each user id named in any `allow` list (directly or through a group) gets a per-chat menu
+  with only their commands. People who had a menu at an earlier boot and are no longer on any
+  list lose it, so `commands: {}` leaves no per-person menu. If Telegram refuses one person
+  (for example they never opened a chat with the bot) the boot continues, `menu_failed` goes to
+  the audit log and the next boot retries.
+- **In a DM**, a message that starts with `/name` is checked against the allow-list before any
+  module sees it. Allowed: a `command` item (with `command` and `args`) is delivered to the
+  owning module through `GET /updates`. Refused or unknown: the update is stored unrouted and
+  the gateway queues one DM reply, "That command isn't available to you." The reply is saved in
+  the same transaction as the update, so a re-fetched update is never answered twice.
+- **In a group**, commands get no reply and are routed like any other message. An edited
+  command is never delivered or answered.
+- Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
+  (command name and sender id, never the arguments).
 
 ## Run
 

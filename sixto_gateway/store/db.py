@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from sixto_gateway.commands import GATEWAY_MODULE, Decision
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
@@ -74,14 +75,24 @@ class Store:
     # --- updates and deliveries -----------------------------------------------------------
 
     def save_update(
-        self, update: IncomingUpdate, module: str | None, received_at: float | None = None
+        self,
+        update: IncomingUpdate,
+        decision: Decision | str | None,
+        received_at: float | None = None,
     ) -> int | None:
         """Save an update, its delivery (if routed) and move the cursor, in one transaction.
+
+        ``decision`` is a ``Decision``, or just the owning module (or None) for a plain update.
+        A decision's audit row and DM reply are saved in the same transaction, and only the
+        first time the update is seen, so a re-fetch never answers twice.
 
         Returns the new delivery's ``seq``, or None if nothing new was delivered (unrouted, or
         the update was already stored, which makes a re-fetch after a crash idempotent).
         """
         received_at = self._clock() if received_at is None else received_at
+        if not isinstance(decision, Decision):
+            decision = Decision(decision)
+        module = decision.module
         seq: int | None = None
         with self._transaction():
             inserted = self._db.execute(
@@ -100,13 +111,28 @@ class Store:
                 ),
             ).rowcount
             if inserted and module is not None:
-                payload = json.dumps(_item_payload(update), ensure_ascii=False)
+                payload = json.dumps(_item_payload(update, decision.kind), ensure_ascii=False)
                 cursor = self._db.execute(
                     "INSERT INTO deliveries (module, kind, update_id, payload, created_at)"
-                    " VALUES (?, 'update', ?, ?, ?)",
-                    (module, update.update_id, payload, received_at),
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (module, decision.kind, update.update_id, payload, received_at),
                 )
                 seq = cursor.lastrowid
+            if inserted and decision.audit is not None:
+                self._insert_audit(*decision.audit)
+            if inserted and decision.reply is not None:
+                self._insert_outbound(
+                    GATEWAY_MODULE,
+                    "message",
+                    str(update.chat_id),
+                    {
+                        "chat": update.chat_id,
+                        "topic": None,
+                        "text": decision.reply,
+                        "format": "plain",
+                    },
+                    None,
+                )
             self._move_cursor(update.update_id)
         return seq
 
@@ -151,30 +177,41 @@ class Store:
         A repeated ``idempotency_key`` from the same module returns the existing ref and queues
         nothing new. The row is committed (``synchronous=FULL``) before this returns.
         """
-        now = self._clock()
         with self._transaction():
-            if idempotency_key is not None:
-                row = self._db.execute(
-                    "SELECT id FROM outbound WHERE module = ? AND idempotency_key = ?",
-                    (module, idempotency_key),
-                ).fetchone()
-                if row:
-                    return int(row[0])
-            cursor = self._db.execute(
-                "INSERT INTO outbound (module, kind, target, body, idempotency_key,"
-                " next_attempt_at, created_at) VALUES (?,?,?,?,?,?,?)",
-                (
-                    module,
-                    kind,
-                    target,
-                    json.dumps(body, ensure_ascii=False),
-                    idempotency_key,
-                    now,
-                    now,
-                ),
-            )
-            assert cursor.lastrowid is not None
-            return cursor.lastrowid
+            return self._insert_outbound(module, kind, target, body, idempotency_key)
+
+    def _insert_outbound(
+        self,
+        module: str,
+        kind: str,
+        target: str,
+        body: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> int:
+        """``enqueue_outbound`` without its own transaction (the caller holds one)."""
+        now = self._clock()
+        if idempotency_key is not None:
+            row = self._db.execute(
+                "SELECT id FROM outbound WHERE module = ? AND idempotency_key = ?",
+                (module, idempotency_key),
+            ).fetchone()
+            if row:
+                return int(row[0])
+        cursor = self._db.execute(
+            "INSERT INTO outbound (module, kind, target, body, idempotency_key,"
+            " next_attempt_at, created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                module,
+                kind,
+                target,
+                json.dumps(body, ensure_ascii=False),
+                idempotency_key,
+                now,
+                now,
+            ),
+        )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
 
     def next_outbound(self) -> dict[str, Any] | None:
         """The queued row to send next: earliest ``next_attempt_at``, then id."""
@@ -221,10 +258,26 @@ class Store:
 
     def audit(self, event: str, module: str | None = None, detail: str | None = None) -> None:
         with self._transaction():
-            self._db.execute(
-                "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
-                (self._clock(), event, module, detail),
-            )
+            self._insert_audit(event, module, detail)
+
+    def _insert_audit(self, event: str, module: str | None, detail: str | None) -> None:
+        self._db.execute(
+            "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
+            (self._clock(), event, module, detail),
+        )
+
+    # --- per-person "/" menus -------------------------------------------------------------
+
+    def menu_users(self) -> set[int]:
+        return {r[0] for r in self._db.execute("SELECT user_id FROM menu_users")}
+
+    def add_menu_user(self, user_id: int) -> None:
+        with self._transaction():
+            self._db.execute("INSERT OR IGNORE INTO menu_users (user_id) VALUES (?)", (user_id,))
+
+    def remove_menu_user(self, user_id: int) -> None:
+        with self._transaction():
+            self._db.execute("DELETE FROM menu_users WHERE user_id = ?", (user_id,))
 
     # --- inspection (tests, later healthz) -------------------------------------------------
 
@@ -247,10 +300,15 @@ class Store:
         return [(r[0], r[1], r[2]) for r in rows]
 
 
-def _item_payload(update: IncomingUpdate) -> dict[str, Any]:
-    """The delivery item as served by ``GET /updates`` (everything except ``seq``)."""
+def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any]:
+    """The delivery item as served by ``GET /updates`` (everything except ``seq``).
+
+    A ``command`` item adds ``command`` and ``args``.
+    """
+    extra = {"command": update.command, "args": update.command_args} if kind == "command" else {}
     return {
-        "kind": "update",
+        **extra,
+        "kind": kind,
         "update_id": update.update_id,
         "chat": update.chat_id,
         "topic": update.topic_id,
