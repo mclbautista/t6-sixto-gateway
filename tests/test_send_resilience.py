@@ -15,16 +15,17 @@ GROUP = -1003261335368
 
 
 class Rig:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, client=None):
         self.path = tmp_path / "gateway.db"
         self.clock = FakeClock()
         self.telegram = FakeTelegram([], self.clock)
+        self.client = client or self.telegram
         self.open()
 
     def open(self):
         """(Re)open the store and sender on the same database file: a process start."""
         self.store = Store(self.path, clock=self.clock)
-        self.sender = Sender(self.store, self.telegram, Notifier(), clock=self.clock)
+        self.sender = Sender(self.store, self.client, Notifier(), clock=self.clock)
 
     def queue(self, chat, text="hi", module="watchdog", kind="message", **extra):
         if kind == "react":
@@ -94,6 +95,52 @@ async def test_overall_rate_is_at_most_25_per_second(rig):
     assert len(times) == 80
     for t in times:
         assert len([x for x in times if t <= x < t + 1.0]) <= 25
+
+
+async def test_a_restart_inside_the_group_window_keeps_the_limit(rig):
+    for i in range(40):
+        rig.queue(GROUP, f"m{i}")
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20
+    rig.open()  # crash and restart at once, same fake second
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20  # the new process remembers the first 20
+    rig.clock.advance(59.9)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 20
+    rig.clock.advance(0.2)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 40
+
+
+async def test_a_restart_keeps_the_private_and_overall_limits(rig):
+    for chat in range(1, 31):
+        rig.queue(chat)
+    rig.queue(1, "second to chat 1")
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 25
+    rig.open()
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 25  # overall 25/s still applies after the restart
+    rig.clock.advance(1.01)
+    await rig.drain_now()
+    assert len(rig.telegram.sent) == 31
+    assert rig.telegram.sent[-1]["text"] == "second to chat 1"  # 1/s per private chat
+
+
+async def test_a_failed_attempt_counts_towards_the_window_after_a_restart(rig):
+    """Telegram may have accepted a request whose outcome the gateway never saw."""
+    rig.queue(PRIVATE, "first")
+    rig.telegram.fail_with = TransientSendError("timeout")
+    await rig.drain_now()
+    rig.queue(PRIVATE, "second")
+    rig.open()
+    rig.clock.advance(0.5)
+    await rig.drain_now()
+    assert rig.telegram.sent == []
+    rig.clock.advance(0.51)
+    await rig.drain_now()
+    assert [m["text"] for m in rig.telegram.sent] == ["second"]
 
 
 async def test_paced_chat_does_not_hold_up_other_chats(rig):
@@ -303,3 +350,67 @@ async def test_a_429_on_the_last_attempt_still_pauses_other_chats(rig):
     rig.clock.advance(60.01)
     await rig.drain_now()
     assert rig.state(other)["state"] == "sent"
+
+
+class RaisingBot:
+    """Stands in for aiogram's ``Bot``: every send or reaction raises ``exc`` (aiogram-native)."""
+
+    def __init__(self, exc):
+        self.exc = exc
+        self.calls = 0
+
+    async def send_message(self, **kwargs):
+        self.calls += 1
+        raise self.exc
+
+    async def set_message_reaction(self, **kwargs):
+        self.calls += 1
+        raise self.exc
+
+
+def aiogram_rig(tmp_path, exc):
+    from sixto_gateway.telegram.client import AiogramTelegramClient
+
+    bot = RaisingBot(exc)
+    rig = Rig(tmp_path, client=AiogramTelegramClient(bot))
+    rig.bot = bot
+    return rig
+
+
+@pytest.mark.parametrize("kind", ["message", "react"])
+async def test_an_aiogram_429_waits_at_least_retry_after_through_the_real_client(tmp_path, kind):
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import SetMessageReaction
+
+    method = SetMessageReaction(chat_id=GROUP, message_id=5)
+    rig = aiogram_rig(tmp_path, TelegramRetryAfter(method, "Too Many Requests", 120))
+    ref = rig.queue(GROUP, kind=kind)
+    await rig.drain_now()
+    assert rig.state(ref)["state"] == "queued"
+    rig.clock.advance(119)  # the 30 s schedule step is not enough: Telegram said 120
+    await rig.drain_now()
+    assert rig.bot.calls == 1
+    rig.clock.advance(1.01)
+    await rig.drain_now()
+    assert rig.bot.calls == 2
+
+
+@pytest.mark.parametrize("kind", ["message", "react"])
+@pytest.mark.parametrize("error", ["bad_request", "forbidden"])
+async def test_a_permanent_aiogram_error_fails_at_once_and_is_audited(tmp_path, kind, error):
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+    from aiogram.methods import SetMessageReaction
+
+    method = SetMessageReaction(chat_id=GROUP, message_id=5)
+    exc = (
+        TelegramBadRequest(method, "chat not found")
+        if error == "bad_request"
+        else TelegramForbiddenError(method, "bot was blocked by the user")
+    )
+    rig = aiogram_rig(tmp_path, exc)
+    ref = rig.queue(GROUP, kind=kind)
+    await rig.drain_now()
+    row = rig.state(ref)
+    assert row["state"] == "failed" and rig.bot.calls == 1
+    assert "PermanentSendError" in row["error"]
+    assert any(e == "send_failed" for e, _, _ in rig.store.audit_events())

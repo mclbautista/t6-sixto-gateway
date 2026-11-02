@@ -6,6 +6,8 @@ waits ``max(schedule step, retry_after)`` and also pauses all sending for ``retr
 because Telegram limits the bot, not one chat. A request that can never succeed (chat not
 found, bad HTML, bot blocked) fails at once.
 
+Pacing windows are rebuilt from stored attempt times at boot, so a restart cannot burst.
+
 At-least-once: a row stays ``queued`` until Telegram has accepted it and the ``sent`` mark is
 committed, so a crash in between sends it again on restart. That rare duplicate is accepted.
 Retry state (``attempts``, ``next_attempt_at``) is in SQLite, so it survives a restart too.
@@ -19,7 +21,7 @@ import time
 from collections.abc import Callable
 
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.pacing import Pacer
+from sixto_gateway.pacing import LONGEST_WINDOW_SECONDS, Pacer
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.errors import PermanentSendError, RetryAfterError
@@ -45,6 +47,9 @@ class Sender:
         self._wake = queue_wake
         self._clock = clock
         self._pacer = Pacer()
+        since = clock() - LONGEST_WINDOW_SECONDS
+        for at, chat in store.send_attempts_since(since):  # windows survive a restart
+            self._pacer.record(chat, at)
         self._paused_until = 0.0
         self.next_wake_in: float | None = None
         """After ``send_next`` returns False: seconds until it could act (None: queue empty)."""
@@ -61,6 +66,8 @@ class Sender:
             return False
         telegram_id: int | None
         ref, module, body = row["id"], row["module"], row["body"]
+        # stored before the request: Telegram may accept it even if this process never hears
+        self._store.record_send_attempt(body["chat"], now, LONGEST_WINDOW_SECONDS)
         self._pacer.record(body["chat"], now)
         self._store.audit("send_attempt", module, f"ref={ref} kind={row['kind']}")
         try:

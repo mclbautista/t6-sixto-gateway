@@ -61,4 +61,9 @@ MIGRATIONS: list[str] = [
     """
     CREATE TABLE menu_users (user_id INTEGER PRIMARY KEY);
     """,
+    # 3: recent send attempts, so pacing windows survive a restart (spec section 9)
+    """
+    CREATE TABLE send_attempts (at REAL NOT NULL, chat_id INTEGER NOT NULL);
+    CREATE INDEX send_attempts_at ON send_attempts (at);
+    """,
 ]

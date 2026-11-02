@@ -357,6 +357,20 @@ class Store:
         ).fetchone()
         return int(row[0])
 
+    # --- pacing history --------------------------------------------------------------------
+
+    def record_send_attempt(self, chat_id: int, at: float, keep_seconds: float) -> None:
+        """Note a request to Telegram before it is made; forget ones older than the windows."""
+        with self._transaction():
+            self._db.execute("INSERT INTO send_attempts (at, chat_id) VALUES (?, ?)", (at, chat_id))
+            self._db.execute("DELETE FROM send_attempts WHERE at < ?", (at - keep_seconds,))
+
+    def send_attempts_since(self, since: float) -> list[tuple[float, int]]:
+        rows = self._db.execute(
+            "SELECT at, chat_id FROM send_attempts WHERE at >= ? ORDER BY at", (since,)
+        )
+        return [(r[0], r[1]) for r in rows]
+
     # --- per-person "/" menus -------------------------------------------------------------
 
     def menu_users(self) -> set[int]:

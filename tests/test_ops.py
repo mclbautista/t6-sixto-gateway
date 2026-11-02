@@ -152,6 +152,77 @@ async def test_deadman_returns_false_when_stopped(clock):
     assert await watch_deadman(Liveness(clock), stop) is False
 
 
+class HangingTelegram(FakeTelegram):
+    """A Telegram that never answers: every poll (and, if asked, every menu call) hangs."""
+
+    def __init__(self, hang_menus=False):
+        super().__init__([])
+        self.hang_menus = hang_menus
+        self.menu_attempts = 0
+
+    async def get_updates(self, offset, timeout, allowed_updates):
+        self.calls.append({"offset": offset})
+        await asyncio.Event().wait()
+
+    async def set_my_commands(self, chat_id, commands):
+        self.menu_attempts += 1
+        if self.hang_menus:
+            await asyncio.Event().wait()
+        await super().set_my_commands(chat_id, commands)
+
+
+def free_port():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def serve_config(tmp_path):
+    path = write_config(tmp_path)
+    path.write_text(path.read_text() + f"listen: {{host: 127.0.0.1, port: {free_port()}}}\n")
+    return load_config(path, ENV)
+
+
+@pytest.fixture
+def quick_shutdown(monkeypatch):
+    import sixto_gateway.__main__ as entry
+
+    monkeypatch.setattr(entry, "SHUTDOWN_GRACE_SECONDS", 0.2)
+
+
+async def test_a_tripped_deadman_cancels_a_hung_poll_and_exits_non_zero(
+    tmp_path, clock, quick_shutdown
+):
+    from sixto_gateway.__main__ import EXIT_DEADMAN, serve
+
+    liveness = Liveness(clock)
+    clock.advance(DEADMAN_SECONDS)  # no poll has ever completed: the deadman trips at once
+    telegram = HangingTelegram()
+    code = await asyncio.wait_for(serve(serve_config(tmp_path), telegram, liveness), timeout=15)
+    assert code == EXIT_DEADMAN
+    assert telegram.calls  # the poll really was in flight and hung
+
+
+async def test_a_hung_menu_call_does_not_hold_up_boot(tmp_path, clock, monkeypatch, quick_shutdown):
+    import sixto_gateway.__main__ as entry
+
+    monkeypatch.setattr(entry, "MENU_SETUP_SECONDS", 0.1)
+    liveness = Liveness(clock)
+    clock.advance(DEADMAN_SECONDS)
+    telegram = HangingTelegram(hang_menus=True)
+    config = serve_config(tmp_path)
+    code = await asyncio.wait_for(entry.serve(config, telegram, liveness), timeout=15)
+    assert code == entry.EXIT_DEADMAN  # boot went on to start the poller and the deadman
+    assert telegram.menu_attempts == 1 and telegram.calls
+    store = Store(config.database_path, clock=clock)
+    try:
+        assert ("menu_failed", None, "setup timed out after 0.1 s") in store.audit_events()
+    finally:
+        store.close()
+
+
 # --- retention ------------------------------------------------------------------------------
 
 

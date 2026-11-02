@@ -96,7 +96,7 @@ def test_rejects_command_with_two_owners(tmp_path):
         "commands:\n  jo: {module: watchdog, allow: []}\n  jo: {module: psr, allow: []}\n"
     )
     env = {**ENV, "PSR_SECRET": "p" * 40}
-    with pytest.raises(ConfigError, match="duplicate key 'jo'"):
+    with pytest.raises(ConfigError, match="duplicate key at line 6"):
         load_config(write(tmp_path, text), env)
 
 
@@ -161,3 +161,82 @@ def test_rejects_a_command_description_telegram_would_refuse(tmp_path):
 
     with pytest.raises(ConfigError, match="description is longer than 256"):
         load(tmp_path, add)
+
+
+def _set_route_module(d, value):
+    d["routes"][0]["module"] = value
+
+
+def _set_command_name(d, value):
+    d["commands"] = {value: {"module": "watchdog", "allow": [1]}}
+
+
+def _set_command_module(d, value):
+    d["commands"] = {"jo": {"module": value, "allow": [1]}}
+
+
+def _set_allow_entry(d, value):
+    d["commands"] = {"jo": {"module": "watchdog", "allow": [value]}}
+
+
+def _set_module_name(d, value):
+    d["modules"][value] = {"secret_env": "bad name"}
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [_set_route_module, _set_command_name, _set_command_module, _set_allow_entry, _set_module_name],
+)
+@pytest.mark.parametrize("secret", [TOKEN, SECRET, "short-but-still-secret"])
+def test_a_secret_copied_into_a_bad_field_never_appears_in_the_error(tmp_path, mutate, secret):
+    env = {**ENV, "WATCHDOG_SECRET": secret} if secret != TOKEN else ENV
+    with pytest.raises(ConfigError) as err:
+        load(tmp_path, lambda d: mutate(d, secret), env)
+    assert secret not in str(err.value)
+
+
+@pytest.mark.parametrize("secret", [TOKEN, SECRET])
+def test_a_secret_used_as_a_duplicate_key_never_appears_in_the_error(tmp_path, secret):
+    text = (
+        "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
+        f"groups:\n  '{secret}': [1]\n  '{secret}': [2]\n"
+    )
+    with pytest.raises(ConfigError, match="duplicate key") as err:
+        load_config(write(tmp_path, text), ENV)
+    assert secret not in str(err.value)
+    assert "line 4" in str(err.value)  # the second occurrence
+
+
+def test_main_prints_a_scrubbed_config_error(tmp_path, capsys, monkeypatch):
+    from sixto_gateway.__main__ import main
+
+    data = copy.deepcopy(VALID)
+    data["routes"][0]["module"] = SECRET
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    assert main(["--config", str(write(tmp_path, data))]) == 2
+    err = capsys.readouterr().err
+    assert "config error" in err and SECRET not in err
+
+
+@pytest.mark.parametrize(
+    "secret", ["back\\slash-secret-value-0123456789abc", "tab\tsecret-0123456789abcdefghij"]
+)
+def test_a_secret_with_escaped_characters_is_still_scrubbed(tmp_path, secret):
+    env = {**ENV, "WATCHDOG_SECRET": secret}
+    with pytest.raises(ConfigError) as err:
+        load(tmp_path, lambda d: _set_route_module(d, secret), env)
+    assert secret not in str(err.value)
+    assert repr(secret)[1:-1] not in str(err.value)
+
+
+def test_a_secret_pasted_as_the_env_var_name_is_not_echoed(tmp_path):
+    pasted = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    env = {**ENV, "OTHER_SECRET": pasted}
+
+    def mutate(d):
+        d["modules"]["psr"] = {"secret_env": pasted}
+
+    with pytest.raises(ConfigError) as err:
+        load(tmp_path, mutate, env)
+    assert pasted not in str(err.value)
