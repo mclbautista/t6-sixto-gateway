@@ -37,7 +37,9 @@ class Sender:
         client: TelegramClient,
         queue_wake: Notifier,
         clock: Callable[[], float] = time.time,
+        scrub: Callable[[str], str] = lambda text: text,
     ):
+        self._scrub = scrub  # error text is stored and served back, so secrets must not be in it
         self._store = store
         self._client = client
         self._wake = queue_wake
@@ -95,7 +97,7 @@ class Sender:
 
     def _handle_failure(self, row: dict, exc: Exception) -> None:
         ref, module = row["id"], row["module"]
-        error = f"{type(exc).__name__}: {exc}"[:300]
+        error = self._scrub(f"{type(exc).__name__}: {exc}")[:300]
         step = row["attempts"]  # failed attempts so far, before this one
         if isinstance(exc, RetryAfterError):  # Telegram limits the bot: even a last try pauses all
             self._paused_until = max(self._paused_until, self._clock() + exc.retry_after)

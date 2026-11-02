@@ -62,7 +62,7 @@ def http(app):
 
 async def test_healthz_flips_to_503_when_polling_stalls_and_back_when_it_resumes(tmp_path, clock):
     config, store, liveness, telegram, notifier, _, app = build(tmp_path, clock)
-    poller = Poller(store, telegram, config, notifier, clock, liveness)
+    poller = Poller(store, telegram, config, notifier, clock, liveness=liveness)
     async with http(app) as client:
         assert (await client.get("/healthz")).status_code == 503  # nothing polled yet
 
@@ -350,7 +350,7 @@ async def test_no_log_line_contains_a_secret_or_the_token(tmp_path, clock):
                 json={"to": 1, "text": "SECRET BODY TEXT", "format": "plain"},
             )
         ).json()["message_ref"]
-        await Sender(store, telegram, wake, redactor_for(config).scrub).send_next()
+        await Sender(store, telegram, wake, scrub=redactor_for(config).scrub).send_next()
         status = await client.get(f"/notify/{ref}", headers={"Authorization": f"Bearer {WATCHDOG}"})
 
     output = stream.getvalue()

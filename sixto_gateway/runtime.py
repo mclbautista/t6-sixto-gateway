@@ -37,9 +37,11 @@ def start_workers(
         "retention": asyncio.create_task(run_retention(store, config.retention_days, stop))
     }
     if config.telegram.polling:
-        poller = Poller(store, client, config, notifier, liveness=liveness)
+        poller = Poller(store, client, config, notifier, queue_wake=queue_wake, liveness=liveness)
         tasks["poller"] = asyncio.create_task(poller.run(stop))
-        tasks["sender"] = asyncio.create_task(Sender(store, client, queue_wake, scrub).run(stop))
+        tasks["sender"] = asyncio.create_task(
+            Sender(store, client, queue_wake, scrub=scrub).run(stop)
+        )
         tasks["deadman"] = asyncio.create_task(watch_deadman(liveness, stop))
     else:
         log.warning("telegram.polling is false: serving the API only (no polling, no sending)")
