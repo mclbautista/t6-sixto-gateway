@@ -55,6 +55,26 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
   handling come in the next slice. Each attempt and outcome goes to the audit log.
 
+## Sending: pacing, retries, failures
+
+One sender task drains the `outbound` table in order of `next_attempt_at`, then id.
+
+- **Pacing:** at most 1 message per second per private chat, 20 per minute per group, 25 per
+  second overall. A chat that has to wait does not hold up other chats. Reactions count too.
+- **Retries:** a network error or Telegram 5xx is retried after 30 s, 2 min, 5 min and 10 min;
+  after the fifth failed attempt the row is `failed`. The retry state is in SQLite and survives
+  a restart.
+- **429:** the retry waits `max(schedule step, retry_after)`, and all sending pauses for
+  `retry_after`, because Telegram limits the bot rather than one chat. A 429 uses up a step.
+- **Permanent errors:** any other 4xx (chat not found, bad HTML, bot blocked) fails the row at
+  once, with no retries.
+- **At-least-once:** a row stays `queued` until the `sent` mark is committed. A crash after
+  Telegram accepted a message but before that commit sends it again on restart, so a duplicate
+  is possible but a message is never lost. This is accepted, not prevented.
+- **Failures** are written to the audit log (`send_retry`, `send_failed`) and a `failed` row is
+  logged at warning level. Telling a human about it is the sending module's job in phase 1.
+  `GET /notify/{ref}` shows `queued` (with the last error while retrying), `sent` or `failed`.
+
 ## Run
 
 ```sh
