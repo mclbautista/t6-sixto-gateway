@@ -3,9 +3,10 @@
 import asyncio
 import logging
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 
 from sixto_gateway.config import Config
 from sixto_gateway.notifier import Notifier
@@ -15,7 +16,28 @@ log = logging.getLogger(__name__)
 MAX_ITEMS = 100
 
 
-def create_app(config: Config, store: Store, notifier: Notifier) -> FastAPI:
+class NotifyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    to: int
+    topic: int | None = None
+    text: str = Field(min_length=1, max_length=4096)
+    format: Literal["html", "plain"] = "html"
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ReactBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    chat: int
+    message_id: int
+    emoji: str = Field(min_length=1, max_length=32)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+def create_app(
+    config: Config, store: Store, notifier: Notifier, queue_wake: Notifier | None = None
+) -> FastAPI:
+    """``queue_wake`` is poked after each save to the send queue (the sender waits on it)."""
+    queue_wake = queue_wake or Notifier()
     app = FastAPI(title="Sixto gateway", docs_url=None, redoc_url=None, openapi_url=None)
 
     async def calling_module(request: Request) -> str:
@@ -53,5 +75,41 @@ def create_app(config: Config, store: Store, notifier: Notifier) -> FastAPI:
                 await asyncio.wait_for(wake.wait(), timeout=remaining)
             except TimeoutError:
                 pass
+
+    @app.post("/notify", status_code=202)
+    async def post_notify(module: Module, body: NotifyBody) -> dict[str, int]:
+        ref = store.enqueue_outbound(
+            module,
+            "message",
+            str(body.to),
+            {
+                "chat": body.to,
+                "topic": body.topic,
+                "text": body.text,
+                "format": body.format,
+            },
+            body.idempotency_key,
+        )
+        queue_wake.notify()
+        return {"message_ref": ref}
+
+    @app.post("/react", status_code=202)
+    async def post_react(module: Module, body: ReactBody) -> dict[str, int]:
+        ref = store.enqueue_outbound(
+            module,
+            "react",
+            str(body.chat),
+            {"chat": body.chat, "message_id": body.message_id, "emoji": body.emoji},
+            body.idempotency_key,
+        )
+        queue_wake.notify()
+        return {"message_ref": ref}
+
+    @app.get("/notify/{message_ref}")
+    async def get_notify(module: Module, message_ref: int) -> dict[str, Any]:
+        status = store.outbound_status(message_ref, module)
+        if status is None:
+            raise HTTPException(404, "unknown message_ref")
+        return status
 
     return app

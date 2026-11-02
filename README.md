@@ -5,8 +5,8 @@ It saves each Telegram update, routes it to a module by `(chat, topic)`, and mod
 items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; phase 1 spec:
 issue #1.
 
-Status: this README covers the intake path (config, polling, routing, `GET /updates`). Sending
-(`/notify`, `/react`), commands, health and the cutover runbook are added by later slices.
+Status: this README covers the intake path (config, polling, routing, `GET /updates`) and basic
+sending (`/notify`, `/react`, `GET /notify/{ref}`). Pacing and retries, commands, health and the cutover runbook are added by later slices.
 
 ## Run the tests
 
@@ -42,6 +42,18 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
    <its secret>`. It stores `seq` as its cursor only after it has saved the items itself.
    Items stay readable for the retention period, so re-reading is safe. A wrong or missing
    secret gets `401` and is logged and audited.
+
+## Sending
+
+- `POST /notify` `{"to": <chat>, "topic": <optional>, "text": "...", "format": "html"|"plain",
+  "idempotency_key": "..."}` and `POST /react` `{"chat", "message_id", "emoji"}` save a row in
+  `outbound` and answer `202 {"message_ref": N}`. A repeated `idempotency_key` from the same
+  module returns the same ref and queues nothing new. Invalid bodies get `422`.
+- One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
+  parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
+  error}` for the calling module's own refs (`404` otherwise).
+- Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
+  handling come in the next slice. Each attempt and outcome goes to the audit log.
 
 ## Run
 

@@ -67,6 +67,37 @@ class FakeTelegram:
     def __init__(self, raw_updates: list[dict]):
         self.raw_updates = raw_updates
         self.calls: list[dict] = []
+        self.sent: list[dict] = []  # outbound calls in order: messages and reactions
+        self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
+        self._next_message_id = 9000
+
+    async def send_message(
+        self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
+    ) -> int:
+        self._maybe_fail()
+        self._next_message_id += 1
+        self.sent.append(
+            {
+                "kind": "message",
+                "chat_id": chat_id,
+                "topic_id": topic_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "message_id": self._next_message_id,
+            }
+        )
+        return self._next_message_id
+
+    async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+        self._maybe_fail()
+        self.sent.append(
+            {"kind": "react", "chat_id": chat_id, "message_id": message_id, "emoji": emoji}
+        )
+
+    def _maybe_fail(self) -> None:
+        if self.fail_with is not None:
+            exc, self.fail_with = self.fail_with, None
+            raise exc
 
     def push(self, raw: dict) -> None:
         self.raw_updates.append(raw)
