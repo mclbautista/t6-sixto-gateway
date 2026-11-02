@@ -213,15 +213,33 @@ class Store:
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
-    def next_outbound(self) -> dict[str, Any] | None:
-        """The queued row to send next: earliest ``next_attempt_at``, then id."""
-        row = self._db.execute(
+    def due_outbound(self, now: float, limit: int = 500) -> list[dict[str, Any]]:
+        """Queued rows whose time has come, in send order: ``next_attempt_at``, then id."""
+        rows = self._db.execute(
             "SELECT id, module, kind, target, body, attempts FROM outbound"
-            " WHERE state = 'queued' ORDER BY next_attempt_at, id LIMIT 1"
+            " WHERE state = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at, id"
+            " LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [{**dict(r), "body": json.loads(r["body"])} for r in rows]
+
+    def next_outbound_at(self, after: float) -> float | None:
+        """When the earliest queued row that is not yet due (later than ``after``) comes due."""
+        row = self._db.execute(
+            "SELECT MIN(next_attempt_at) FROM outbound"
+            " WHERE state = 'queued' AND next_attempt_at > ?",
+            (after,),
         ).fetchone()
-        if row is None:
-            return None
-        return {**dict(row), "body": json.loads(row["body"])}
+        return row[0]
+
+    def schedule_outbound_retry(self, ref: int, next_attempt_at: float, error: str) -> None:
+        """A failed attempt that will be retried: count it, keep the row queued."""
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET attempts = attempts + 1, next_attempt_at = ?,"
+                " last_error = ? WHERE id = ?",
+                (next_attempt_at, error, ref),
+            )
 
     def mark_outbound_sent(self, ref: int, telegram_message_id: int | None) -> None:
         with self._transaction():

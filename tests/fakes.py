@@ -93,8 +93,11 @@ class FakeClock:
 class FakeTelegram:
     """Serves raw updates through the real aiogram models and the real normalizer."""
 
-    def __init__(self, raw_updates: list[dict]):
+    def __init__(self, raw_updates: list[dict], clock: FakeClock | None = None):
         self.raw_updates = raw_updates
+        self.clock = clock
+        self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
+        self.fail_always: Exception | None = None  # raised by every send/react until cleared
         self.calls: list[dict] = []
         self.sent: list[dict] = []  # outbound calls in order: messages and reactions
         self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
@@ -110,6 +113,7 @@ class FakeTelegram:
         self._next_message_id += 1
         self.sent.append(
             {
+                "at": self.clock() if self.clock else 0.0,
                 "kind": "message",
                 "chat_id": chat_id,
                 "topic_id": topic_id,
@@ -140,6 +144,9 @@ class FakeTelegram:
         self.menus.pop(chat_id, None)
 
     def _maybe_fail(self) -> None:
+        self.attempts.append(self.clock() if self.clock else 0.0)
+        if self.fail_always is not None:
+            raise self.fail_always
         if self.fail_with is not None:
             exc, self.fail_with = self.fail_with, None
             raise exc

@@ -154,7 +154,7 @@ async def test_reply_is_queued_in_the_same_commit_as_the_update(config, monkeypa
     store.close()
 
     store2, telegram2, poller2, sender2 = build(config, [dm_message(1, OTHER, "/jo")])
-    assert store2.count_updates() == 0 and store2.next_outbound() is None  # all or nothing
+    assert store2.count_updates() == 0 and store2.due_outbound(1e18) == []  # all or nothing
     await run(poller2, sender2)
     assert replies(telegram2) == [(OTHER, REFUSAL)]
 
