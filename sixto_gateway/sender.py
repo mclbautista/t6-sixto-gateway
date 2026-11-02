@@ -6,7 +6,8 @@ waits ``max(schedule step, retry_after)`` and also pauses all sending for ``retr
 because Telegram limits the bot, not one chat. A request that can never succeed (chat not
 found, bad HTML, bot blocked) fails at once.
 
-Pacing windows are rebuilt from stored attempt times at boot, so a restart cannot burst.
+Pacing windows are rebuilt from stored attempt times at boot, and the 429 pause is stored too,
+so a restart can neither burst nor send early.
 
 At-least-once: a row stays ``queued`` until Telegram has accepted it and the ``sent`` mark is
 committed, so a crash in between sends it again on restart. That rare duplicate is accepted.
@@ -50,7 +51,7 @@ class Sender:
         since = clock() - LONGEST_WINDOW_SECONDS
         for at, chat in store.send_attempts_since(since):  # windows survive a restart
             self._pacer.record(chat, at)
-        self._paused_until = 0.0
+        self._paused_until = store.paused_until()  # a 429 pause outlives the process
         self.next_wake_in: float | None = None
         """After ``send_next`` returns False: seconds until it could act (None: queue empty)."""
 
@@ -108,6 +109,7 @@ class Sender:
         step = row["attempts"]  # failed attempts so far, before this one
         if isinstance(exc, RetryAfterError):  # Telegram limits the bot: even a last try pauses all
             self._paused_until = max(self._paused_until, self._clock() + exc.retry_after)
+            self._store.extend_pause(self._paused_until)
         if isinstance(exc, PermanentSendError) or step >= len(RETRY_SCHEDULE_SECONDS):
             self._store.mark_outbound_failed(ref, error)
             self._store.audit("send_failed", module, f"ref={ref} attempts={step + 1} {error}")

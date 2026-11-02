@@ -371,6 +371,20 @@ class Store:
         )
         return [(r[0], r[1]) for r in rows]
 
+    def paused_until(self) -> float:
+        """When the bot-wide 429 pause ends (0: no pause was ever recorded)."""
+        row = self._db.execute("SELECT until FROM send_pause WHERE id = 1").fetchone()
+        return float(row[0]) if row else 0.0
+
+    def extend_pause(self, until: float) -> None:
+        """Pause all sending until at least ``until``; an earlier value never shortens it."""
+        with self._transaction():
+            self._db.execute(
+                "INSERT INTO send_pause (id, until) VALUES (1, ?) ON CONFLICT (id) DO UPDATE"
+                " SET until = MAX(until, excluded.until)",
+                (until,),
+            )
+
     # --- per-person "/" menus -------------------------------------------------------------
 
     def menu_users(self) -> set[int]:
