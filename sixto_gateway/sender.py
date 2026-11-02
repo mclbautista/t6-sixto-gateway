@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
@@ -19,7 +20,14 @@ PARSE_MODES = {"html": "HTML", "plain": None}
 
 
 class Sender:
-    def __init__(self, store: Store, client: TelegramClient, queue_wake: Notifier):
+    def __init__(
+        self,
+        store: Store,
+        client: TelegramClient,
+        queue_wake: Notifier,
+        scrub: Callable[[str], str] = lambda text: text,
+    ):
+        self._scrub = scrub  # error text is stored and served back, so secrets must not be in it
         self._store = store
         self._client = client
         self._wake = queue_wake
@@ -41,7 +49,7 @@ class Sender:
                     body["chat"], body.get("topic"), body["text"], PARSE_MODES[body["format"]]
                 )
         except Exception as exc:  # noqa: BLE001 - any failure is recorded, never raised
-            error = f"{type(exc).__name__}: {exc}"[:300]
+            error = self._scrub(f"{type(exc).__name__}: {exc}")[:300]
             self._store.mark_outbound_failed(ref, error)
             self._store.audit("send_failed", module, f"ref={ref} {error}")
             log.warning("send %s for %s failed: %s", ref, module, error)

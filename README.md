@@ -5,8 +5,9 @@ It saves each Telegram update, routes it to a module by `(chat, topic)`, and mod
 items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; phase 1 spec:
 issue #1.
 
-Status: this README covers the intake path (config, polling, routing, `GET /updates`) and basic
-sending (`/notify`, `/react`, `GET /notify/{ref}`). Pacing and retries, commands, health and the cutover runbook are added by later slices.
+Status: intake (config, polling, routing, `GET /updates`), basic sending (`/notify`, `/react`,
+`GET /notify/{ref}`) and operations (`/healthz`, deadman, retention, `set-offset`, deploy,
+rollback and the cutover runbook, below). Pacing and retries and commands come from other tickets.
 
 ## Run the tests
 
@@ -55,14 +56,121 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
   handling come in the next slice. Each attempt and outcome goes to the audit log.
 
+## Health, deadman, retention, logs
+
+- `GET /healthz` (no auth): `200` when a `getUpdates` call completed in the last 5 minutes and the
+  database accepts a write, `503` otherwise. Body: `status`, `polling`, `database_writable`,
+  `last_poll_at` (UTC), `queued` (sends waiting) and `failed_last_24h`. The Docker health check
+  calls it; `docker compose ps` shows `healthy` or `unhealthy`. With `telegram.polling: false`
+  there is no poll to wait for, so only the database counts and the body says `"polling": false`.
+- **Deadman:** if no `getUpdates` call completes for 10 minutes (counted from boot if none ever
+  does), the process exits with code 1 and `restart: unless-stopped` starts it again. It is off
+  when polling is off. Exit code 2 is a bad config, which a restart will not fix.
+- **Retention:** once a day (and at every boot) the gateway deletes `updates`, `deliveries` and
+  finished (`sent` or `failed`) `outbound` rows older than `retention_days` (default 30), and
+  `audit` rows older than 180 days. Queued sends and the polling cursor are never deleted. Age is
+  counted from when the row was created. Each run writes a `retention` audit row with the counts.
+- **Audit log:** the `audit` table records config loads, auth failures, each send attempt and
+  outcome, `set_offset`, `retention` and `deadman`. Read it with
+  `docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('select datetime(at,\'unixepoch\'),event,module,detail from audit order by id desc limit 30')]"`.
+- **Logs** (`docker compose logs -f gateway`): one line per update received (id, chat, topic,
+  routed module), per send outcome and per auth failure. Message text is never logged. Every log
+  line, including tracebacks, goes through a redactor that replaces the bot token, every module
+  secret, anything shaped like a bot token and any `Bearer ...` value with `[redacted]`. The same
+  scrub is applied to send errors before they are stored in `outbound` or `audit`.
+
 ## Run
 
 ```sh
 mkdir -p data && chmod 700 data && sudo chown 1000:1000 data
-docker compose up -d --build         # Intel (linux/amd64), non-root, ./data volume
+cp config.example.yaml config.yaml && cp .env.example .env   # then fill both in (see above)
+GATEWAY_TAG=$(git rev-parse --short HEAD) docker compose up -d --build   # Intel linux/amd64
 ```
 
-Set `telegram.polling: false` to serve the API without touching Telegram (no polling and no
-sending; `/notify` rows are saved and stay `queued`).
+Set `telegram.polling: false` to serve the API without touching Telegram (no polling, no
+sending, no deadman; `/notify` rows are saved and stay `queued`). Changing config means
+`docker compose restart gateway`.
 
-Rollback: `GATEWAY_TAG=<previous> docker compose up -d`.
+## Deploy
+
+Run on the Mac mini (Hermes does this over SSH):
+
+```sh
+cd <gateway checkout>
+git pull && GATEWAY_TAG=$(git rev-parse --short HEAD) docker compose up -d --build
+docker compose ps                                    # wait for "healthy" (up to about 1 minute)
+curl -fsS http://127.0.0.1:8780/healthz              # expect HTTP 200 and "status": "ok"
+```
+
+Plain `git pull && docker compose up -d --build` also works, but it rebuilds `sixto-gateway:latest`
+in place and leaves no image to roll back to. The `GATEWAY_TAG` form keeps one image per commit.
+A restart keeps the data: the SQLite file lives in `./data`, and migrations run at boot.
+
+## Rollback (a bad deploy)
+
+```sh
+docker images sixto-gateway                          # tags are commit ids; pick the previous one
+GATEWAY_TAG=<previous tag> docker compose up -d      # no --build: reuses that image
+curl -fsS http://127.0.0.1:8780/healthz
+```
+
+Keep `GATEWAY_TAG=<previous tag>` on every later `docker compose` command until you deploy again,
+or compose will go back to `latest`. Migrations only add, so the previous image can open a
+database that a newer one has already migrated.
+
+## Cutover runbook (watchdog moves from direct polling to the gateway)
+
+For Hermes, step by step. Stop at the first failed check and use the rollback below. `N` is a
+number you read in step 2; `$MINI` is the Mac mini (192.168.88.151).
+Prerequisites: the gateway `.env` has `TELEGRAM_BOT_TOKEN` and `WATCHDOG_SECRET`; the gateway
+`config.yaml` has the real intake `chat` and `topic` copied from the watchdog's `config.yaml`.
+The watchdog's gateway mode (`telegram_mode: gateway`, `gateway_url`, `reset-offset`) is the
+watchdog repo's ticket and must be merged first.
+
+1. **Deploy the gateway with polling off.** In `config.yaml` set `telegram.polling: false`, then
+   follow Deploy above. Check:
+   - `curl -fsS http://$MINI:8780/healthz` answers `200` with `"polling": false`;
+   - `curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer wrong' http://$MINI:8780/updates`
+     prints `401`;
+   - `curl -fsS -H "Authorization: Bearer $WATCHDOG_SECRET" 'http://$MINI:8780/updates?timeout=0'`
+     prints `{"items":[]}`.
+2. **Stop the old watchdog** (on Cyril's machine: `docker compose stop`). Read its last committed
+   offset `N`: `sqlite3 <watchdog ledger file> 'SELECT last_committed_offset FROM offsets'`
+   (the ledger path is `database_path` in the watchdog's `config.yaml`). Write `N` down.
+3. **Hand the cursor to the gateway.** On the mini:
+   ```sh
+   docker compose exec gateway python -m sixto_gateway set-offset N
+   ```
+   It prints `the next getUpdates will use offset N+1`. Then set `telegram.polling: true` in
+   `config.yaml` and `docker compose restart gateway`. Telegram keeps unread updates for 24 hours,
+   so nothing sent while nobody polled is lost. Check `curl -fsS http://$MINI:8780/healthz` shows
+   `"polling": true`, `"status": "ok"` and a recent `last_poll_at` within a minute.
+4. **Start the watchdog against the gateway.** Copy the watchdog's `data/` to the mini while it
+   is stopped, run `python -m jo_watchdog.app reset-offset --to 0` (the cursor now counts gateway
+   `seq`, not Telegram ids), set `telegram_mode: gateway` and `gateway_url: http://$MINI:8780`, put
+   `WATCHDOG_SECRET` in its `.env` in place of `TELEGRAM_BOT_TOKEN`, and start it. Redelivered
+   items are skipped by the ledger.
+5. **Live checks** (spec section 13): post one real intake JO and see it captured with its
+   reaction; the 07:00 heartbeat arrives in the ops topic; stop the watchdog for a few minutes,
+   post a JO, start it again and confirm nothing was lost; `grep TELEGRAM_BOT_TOKEN` finds it
+   only in the gateway's `.env`.
+
+### Rollback after cutover
+
+1. `docker compose stop gateway` on the mini (it is the only poller, so Telegram now queues
+   updates for up to 24 hours).
+2. On the watchdog: `telegram_mode: direct`, put `TELEGRAM_BOT_TOKEN` back in its `.env`, and start
+   the previous watchdog image (`JO_WATCHDOG_TAG=<previous>`). Its offset can stay as it is:
+   Telegram redelivers the pending updates and the ledger skips anything already captured. To
+   resume exactly, set its offset to `poll_state + 1`; read `poll_state` with
+   `docker compose exec gateway python -c "import sqlite3; print(sqlite3.connect('/app/data/gateway.db').execute('select last_update_id from poll_state').fetchone())"`
+   before stopping the gateway.
+3. Run the watchdog live check (one intake JO captured) and leave the gateway stopped.
+
+To go forward again later, repeat the runbook from step 2, so `set-offset` is given a fresh `N`.
+
+## Cutover offset command
+
+`python -m sixto_gateway set-offset N` sets the cursor to exactly `N` (it may also move it
+backwards) and writes a `set_offset` audit row; the next `getUpdates` uses `N + 1`. `N` must be 0
+or more. Run it with `docker compose exec` so it uses the running container's mounted `./data`.

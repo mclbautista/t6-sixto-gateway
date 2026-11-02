@@ -13,6 +13,9 @@ from typing import Any
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
+SECONDS_PER_DAY = 86400.0
+AUDIT_RETENTION_DAYS = 180
+
 
 class Store:
     def __init__(self, path: str | Path, clock: Callable[[], float] = time.time):
@@ -70,6 +73,19 @@ class Store:
         """The offset for ``getUpdates``: last committed update id + 1 (0 before any)."""
         last = self.last_update_id()
         return 0 if last is None else last + 1
+
+    def set_offset(self, last_update_id: int) -> None:
+        """Set the cursor to exactly ``last_update_id`` (cutover); the next poll uses ``+ 1``.
+
+        Unlike the poller's own advance this may also move the cursor backwards.
+        """
+        with self._transaction():
+            self._db.execute(
+                "INSERT INTO poll_state (id, last_update_id) VALUES (1, ?)"
+                " ON CONFLICT(id) DO UPDATE SET last_update_id = excluded.last_update_id",
+                (last_update_id,),
+            )
+            self._audit_in_transaction("set_offset", None, f"last_update_id={last_update_id}")
 
     # --- updates and deliveries -----------------------------------------------------------
 
@@ -221,10 +237,69 @@ class Store:
 
     def audit(self, event: str, module: str | None = None, detail: str | None = None) -> None:
         with self._transaction():
-            self._db.execute(
-                "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
-                (self._clock(), event, module, detail),
-            )
+            self._audit_in_transaction(event, module, detail)
+
+    def _audit_in_transaction(self, event: str, module: str | None, detail: str | None) -> None:
+        self._db.execute(
+            "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
+            (self._clock(), event, module, detail),
+        )
+
+    # --- retention ------------------------------------------------------------------------
+
+    def purge(
+        self, retention_days: int, audit_retention_days: int = AUDIT_RETENTION_DAYS
+    ) -> dict[str, int]:
+        """Delete rows past their limit and return how many went from each table.
+
+        ``updates``, ``deliveries`` and *finished* ``outbound`` rows (``sent`` or ``failed``) are
+        kept ``retention_days``; ``audit`` rows ``audit_retention_days``. Queued sends are never
+        deleted, and neither is the polling cursor. Age is measured from ``received_at`` /
+        ``created_at``.
+        """
+        now = self._clock()
+        cutoff = now - retention_days * SECONDS_PER_DAY
+        audit_cutoff = now - audit_retention_days * SECONDS_PER_DAY
+        with self._transaction():
+            # deliveries first: they reference updates
+            deliveries = self._db.execute(
+                "DELETE FROM deliveries WHERE created_at < ?", (cutoff,)
+            ).rowcount
+            updates = self._db.execute(
+                "DELETE FROM updates WHERE received_at < ?"
+                " AND update_id NOT IN"
+                " (SELECT update_id FROM deliveries WHERE update_id IS NOT NULL)",
+                (cutoff,),
+            ).rowcount
+            outbound = self._db.execute(
+                "DELETE FROM outbound WHERE state IN ('sent', 'failed') AND created_at < ?",
+                (cutoff,),
+            ).rowcount
+            audit = self._db.execute("DELETE FROM audit WHERE at < ?", (audit_cutoff,)).rowcount
+        return {"updates": updates, "deliveries": deliveries, "outbound": outbound, "audit": audit}
+
+    # --- health ---------------------------------------------------------------------------
+
+    def is_writable(self) -> bool:
+        """True if a write transaction can be taken and committed right now."""
+        try:
+            with self._transaction():
+                # rewriting the header with its own value touches the file without changing it
+                version = self._db.execute("PRAGMA user_version").fetchone()[0]
+                self._db.execute(f"PRAGMA user_version = {int(version)}")
+        except sqlite3.Error:
+            return False
+        return True
+
+    def queued_count(self) -> int:
+        return self._db.execute("SELECT COUNT(*) FROM outbound WHERE state = 'queued'").fetchone()[
+            0
+        ]
+
+    def failed_sends_since(self, since: float) -> int:
+        return self._db.execute(
+            "SELECT COUNT(*) FROM audit WHERE event = 'send_failed' AND at >= ?", (since,)
+        ).fetchone()[0]
 
     # --- inspection (tests, later healthz) -------------------------------------------------
 
