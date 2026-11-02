@@ -6,6 +6,7 @@ from sixto_gateway.config import load_config
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
+from sixto_gateway.telegram.errors import PermanentSendError
 from tests.fakes import FakeClock, FakeTelegram
 
 WATCHDOG = "w" * 40
@@ -24,10 +25,11 @@ def env(tmp_path):
     config = load_config(
         path, {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": WATCHDOG, "PSR_SECRET": PSR}
     )
-    store = Store(config.database_path, clock=FakeClock())
+    clock = FakeClock()
+    store = Store(config.database_path, clock=clock)
     wake = Notifier()
-    telegram = FakeTelegram([])
-    sender = Sender(store, telegram, wake)
+    telegram = FakeTelegram([], clock)
+    sender = Sender(store, telegram, wake, clock=clock)
     app = create_app(config, store, Notifier(), wake)
     return store, telegram, sender, app
 
@@ -125,7 +127,7 @@ async def test_idempotency_key_returns_same_ref_and_queues_once(client, env):
 
 async def test_failed_send_is_recorded_with_error_and_audited(client, env):
     store, telegram, sender, _ = env
-    telegram.fail_with = RuntimeError("chat not found")
+    telegram.fail_with = PermanentSendError("chat not found")
     r = await client.post("/notify", json={"to": CHAT, "text": "hi"}, headers=auth())
     ok = await client.post("/notify", json={"to": CHAT, "text": "next"}, headers=auth())
     await drain(sender)

@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from sixto_gateway.telegram.errors import (
+    PermanentSendError,
+    RetryAfterError,
+    SendError,
+    TransientSendError,
+)
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 
@@ -15,7 +21,10 @@ class TelegramClient(Protocol):
     async def send_message(
         self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
     ) -> int:
-        """Send a text message (link previews off); returns the Telegram message id."""
+        """Send a text message (link previews off); returns the Telegram message id.
+
+        Failures raise ``SendError`` subclasses (see ``telegram.errors``).
+        """
         ...
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None: ...
@@ -27,6 +36,24 @@ class TelegramClient(Protocol):
     async def delete_my_commands(self, chat_id: int) -> None:
         """Remove one private chat's own menu, so it falls back to the default."""
         ...
+
+
+def translate_send_error(exc: Exception) -> SendError | None:
+    """Map an aiogram exception to the sender's vocabulary (None: not an aiogram error)."""
+    from aiogram.exceptions import (
+        TelegramAPIError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+        TelegramServerError,
+    )
+
+    if isinstance(exc, TelegramRetryAfter):
+        return RetryAfterError(exc.retry_after, exc.message)
+    if isinstance(exc, TelegramServerError | TelegramNetworkError):
+        return TransientSendError(f"{type(exc).__name__}: {exc.message}")
+    if isinstance(exc, TelegramAPIError):  # every other 4xx can never succeed on a retry
+        return PermanentSendError(f"{type(exc).__name__}: {exc.message}")
+    return None
 
 
 class AiogramTelegramClient:
@@ -46,14 +73,17 @@ class AiogramTelegramClient:
     ) -> int:
         from aiogram.types import LinkPreviewOptions
 
-        message = await self._bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            # Telegram rejects thread id 1 (the General topic); omitting it posts there.
-            message_thread_id=None if topic_id == 1 else topic_id,
-            parse_mode=parse_mode,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
+        try:
+            message = await self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                # Telegram rejects thread id 1 (the General topic); omitting it posts there.
+                message_thread_id=None if topic_id == 1 else topic_id,
+                parse_mode=parse_mode,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+        except Exception as exc:
+            raise translate_send_error(exc) or exc from exc
         return int(message.message_id)
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
