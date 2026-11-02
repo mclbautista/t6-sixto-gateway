@@ -1,0 +1,14 @@
+# Always-on deployment. Deploy: `git pull && docker compose up -d --build`.
+# Rollback: `GATEWAY_TAG=<previous> docker compose up -d` (see "Rollback" in the README).
+services:
+  gateway:
+    build: .
+    image: sixto-gateway:${GATEWAY_TAG:-latest}
+    platform: linux/amd64
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8780:8780"                 # LAN only; never expose to the internet
+    volumes:
+      - ./data:/app/data            # host dir 0700, db 0600, owned by uid 1000
+      - ./config.yaml:/app/config.yaml:ro

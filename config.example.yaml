@@ -1,0 +1,21 @@
+# Non-secret configuration. Copy to config.yaml (mounted read-only into the container).
+# Secrets go in .env, never here: TELEGRAM_BOT_TOKEN and one <MODULE>_SECRET per module
+# (each at least 32 characters). Every key is validated at boot; a bad value fails the boot.
+
+listen: { host: 0.0.0.0, port: 8780 }
+telegram:
+  poll_timeout: 50                              # seconds, Telegram long poll (0..50)
+  allowed_updates: [message, edited_message]    # callback_query is added in phase 2
+  polling: true                                 # false = serve the API only (cutover step 1)
+retention_days: 30
+database_path: ./data/gateway.db
+modules:                                        # each module authenticates with its own secret
+  watchdog: { secret_env: WATCHDOG_SECRET }
+commands: {}                                    # phase 1 registers none; /jo arrives in phase 5
+groups:
+  cyril: [274983989]                            # Telegram user ids
+routes:
+  # FILL IN: copy the intake chat and topic ids from the watchdog's config.yaml
+  # (intake_chat_id / intake_topic_id). Cyril approved copying them as they are; they are not
+  # stored in any repo, so the real values go into the deployed config.yaml.
+  - { chat: -1000000000000, topic: 1, module: watchdog }
