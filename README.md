@@ -6,7 +6,7 @@ items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; pha
 issue #1.
 
 Status: this README covers the intake path (config, polling, routing, `GET /updates`) and basic
-sending (`/notify`, `/react`, `GET /notify/{ref}`). Pacing and retries, commands, health and the cutover runbook are added by later slices.
+sending (`/notify`, `/react`, `GET /notify/{ref}`), and commands with the allow-list. Pacing and retries, health and the cutover runbook are added by later slices.
 
 ## Run the tests
 
@@ -55,25 +55,28 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 - Basic form only: a failed send is recorded as `failed` at once. Pacing, retries and 429
   handling come in the next slice. Each attempt and outcome goes to the audit log.
 
-## Sending: pacing, retries, failures
+## Commands and the allow-list
 
-One sender task drains the `outbound` table in order of `next_attempt_at`, then id.
+```yaml
+commands:
+  jo: { module: jo, allow: [psr, 274983989], description: "Job orders" }   # group names or user ids
+```
 
-- **Pacing:** at most 1 message per second per private chat, 20 per minute per group, 25 per
-  second overall. A chat that has to wait does not hold up other chats. Reactions count too.
-- **Retries:** a network error or Telegram 5xx is retried after 30 s, 2 min, 5 min and 10 min;
-  after the fifth failed attempt the row is `failed`. The retry state is in SQLite and survives
-  a restart.
-- **429:** the retry waits `max(schedule step, retry_after)`, and all sending pauses for
-  `retry_after`, because Telegram limits the bot rather than one chat. A 429 uses up a step.
-- **Permanent errors:** any other 4xx (chat not found, bad HTML, bot blocked) fails the row at
-  once, with no retries.
-- **At-least-once:** a row stays `queued` until the `sent` mark is committed. A crash after
-  Telegram accepted a message but before that commit sends it again on restart, so a duplicate
-  is possible but a message is never lost. This is accepted, not prevented.
-- **Failures** are written to the audit log (`send_retry`, `send_failed`) and a `failed` row is
-  logged at warning level. Telling a human about it is the sending module's job in phase 1.
-  `GET /notify/{ref}` shows `queued` (with the last error while retrying), `sent` or `failed`.
+- **Menus, at boot** (only when `telegram.polling` is true): the default `/` menu is set empty,
+  and each user id named in any `allow` list (directly or through a group) gets a per-chat menu
+  with only their commands. People who had a menu at an earlier boot and are no longer on any
+  list lose it, so `commands: {}` leaves no per-person menu. If Telegram refuses one person
+  (for example they never opened a chat with the bot) the boot continues, `menu_failed` goes to
+  the audit log and the next boot retries.
+- **In a DM**, a message that starts with `/name` is checked against the allow-list before any
+  module sees it. Allowed: a `command` item (with `command` and `args`) is delivered to the
+  owning module through `GET /updates`. Refused or unknown: the update is stored unrouted and
+  the gateway queues one DM reply, "That command isn't available to you." The reply is saved in
+  the same transaction as the update, so a re-fetched update is never answered twice.
+- **In a group**, commands get no reply and are routed like any other message. An edited
+  command is never delivered or answered.
+- Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
+  (command name and sender id, never the arguments).
 
 ## Run
 
