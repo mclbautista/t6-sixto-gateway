@@ -62,6 +62,7 @@ mkdir -p data && chmod 700 data && sudo chown 1000:1000 data
 docker compose up -d --build         # Intel (linux/amd64), non-root, ./data volume
 ```
 
-Set `telegram.polling: false` to serve the API without touching Telegram.
+Set `telegram.polling: false` to serve the API without touching Telegram (no polling and no
+sending; `/notify` rows are saved and stay `queued`).
 
 Rollback: `GATEWAY_TAG=<previous> docker compose up -d`.

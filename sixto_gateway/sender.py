@@ -41,7 +41,7 @@ class Sender:
                     body["chat"], body.get("topic"), body["text"], PARSE_MODES[body["format"]]
                 )
         except Exception as exc:  # noqa: BLE001 - any failure is recorded, never raised
-            error = f"{type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: {exc}"[:300]
             self._store.mark_outbound_failed(ref, error)
             self._store.audit("send_failed", module, f"ref={ref} {error}")
             log.warning("send %s for %s failed: %s", ref, module, error)

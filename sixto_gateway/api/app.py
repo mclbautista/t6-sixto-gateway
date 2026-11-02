@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from sixto_gateway.config import Config
@@ -14,12 +14,14 @@ from sixto_gateway.store import Store
 
 log = logging.getLogger(__name__)
 MAX_ITEMS = 100
+INT64_MAX = 2**63 - 1
+BigInt = Annotated[int, Field(ge=-INT64_MAX, le=INT64_MAX)]
 
 
 class NotifyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    to: int
-    topic: int | None = None
+    to: BigInt
+    topic: BigInt | None = None
     text: str = Field(min_length=1, max_length=4096)
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
@@ -27,8 +29,8 @@ class NotifyBody(BaseModel):
 
 class ReactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    chat: int
-    message_id: int
+    chat: BigInt
+    message_id: BigInt
     emoji: str = Field(min_length=1, max_length=32)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
@@ -106,7 +108,9 @@ def create_app(
         return {"message_ref": ref}
 
     @app.get("/notify/{message_ref}")
-    async def get_notify(module: Module, message_ref: int) -> dict[str, Any]:
+    async def get_notify(
+        module: Module, message_ref: Annotated[int, Path(ge=1, le=INT64_MAX)]
+    ) -> dict[str, Any]:
         status = store.outbound_status(message_ref, module)
         if status is None:
             raise HTTPException(404, "unknown message_ref")

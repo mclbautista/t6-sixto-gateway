@@ -41,7 +41,8 @@ class AiogramTelegramClient:
         message = await self._bot.send_message(
             chat_id=chat_id,
             text=text,
-            message_thread_id=topic_id,
+            # Telegram rejects thread id 1 (the General topic); omitting it posts there.
+            message_thread_id=None if topic_id == 1 else topic_id,
             parse_mode=parse_mode,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )

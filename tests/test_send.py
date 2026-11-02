@@ -153,3 +153,9 @@ async def test_status_of_unknown_or_other_modules_ref_is_404(client):
     ref = r.json()["message_ref"]
     assert (await client.get(f"/notify/{ref}", headers=auth(PSR))).status_code == 404
     assert (await client.get("/notify/9999", headers=auth())).status_code == 404
+
+
+async def test_out_of_range_ids_are_422_not_500(client):
+    assert (await client.get("/notify/99999999999999999999", headers=auth())).status_code == 422
+    big = {"to": 2**70, "text": "hi"}
+    assert (await client.post("/notify", json=big, headers=auth())).status_code == 422

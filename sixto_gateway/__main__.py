@@ -36,12 +36,12 @@ async def serve(config_path: str) -> None:
     tasks = [asyncio.create_task(server.serve())]
     bot = Bot(token=config.secrets.bot_token)
     client = AiogramTelegramClient(bot)
-    tasks.append(asyncio.create_task(Sender(store, client, queue_wake).run(stop)))
     if config.telegram.polling:
+        tasks.append(asyncio.create_task(Sender(store, client, queue_wake).run(stop)))
         poller = Poller(store, client, config, notifier)
         tasks.append(asyncio.create_task(poller.run(stop)))
     else:
-        log.warning("telegram.polling is false: serving the API only")
+        log.warning("telegram.polling is false: serving the API only (no polling, no sending)")
     try:
         # If either task ends, the process ends; the container restart policy takes over.
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
