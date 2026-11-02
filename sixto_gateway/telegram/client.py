@@ -27,7 +27,9 @@ class TelegramClient(Protocol):
         """
         ...
 
-    async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None: ...
+    async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+        """Set one emoji reaction. Failures raise ``SendError`` subclasses, like sends."""
+        ...
 
     async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
         """Set the ``/`` menu of one private chat (``chat_id``), or the default (None)."""
@@ -89,9 +91,12 @@ class AiogramTelegramClient:
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         from aiogram.types import ReactionTypeEmoji
 
-        await self._bot.set_message_reaction(
-            chat_id=chat_id, message_id=message_id, reaction=[ReactionTypeEmoji(emoji=emoji)]
-        )
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=chat_id, message_id=message_id, reaction=[ReactionTypeEmoji(emoji=emoji)]
+            )
+        except Exception as exc:
+            raise translate_send_error(exc) or exc from exc
 
     async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
         from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
