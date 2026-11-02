@@ -271,3 +271,40 @@ async def test_a_removed_person_telegram_refuses_is_forgotten_not_retried_foreve
     await register_menus(store, Refusing(PermanentSendError("chat not found")), empty)
     assert store.menu_users() == set()  # Telegram will never take a call for this chat
     assert any(e == "menu_failed" for e, _, _ in store.audit_events())
+
+
+async def test_menus_wait_out_a_stored_429_pause(config):
+    clock = FakeClock()
+    store = Store(config.database_path, clock=clock)
+    store.extend_pause(clock() + 30)
+    telegram = FakeTelegram([])
+    slept: list[float] = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+        clock.advance(seconds)
+
+    await register_menus(store, telegram, config, clock=clock, sleep=sleep)
+    assert slept == [30]  # no menu call before Telegram allows it
+    assert telegram.menus[ALLOWED] == [("jo", "JOs")]
+
+
+async def test_a_429_on_a_menu_call_pauses_the_sender_too(config):
+    from sixto_gateway.telegram.errors import RetryAfterError
+
+    class Limited(FakeTelegram):
+        async def set_my_commands(self, chat_id, commands):
+            if chat_id is not None:
+                raise RetryAfterError(90)
+            await super().set_my_commands(chat_id, commands)
+
+    clock = FakeClock()
+    store = Store(config.database_path, clock=clock)
+    start = clock()
+
+    async def sleep(seconds):
+        clock.advance(seconds)
+
+    await register_menus(store, Limited([]), config, clock=clock, sleep=sleep)
+    # the first refusal pauses 90 s; the next person's call waits it out, then is refused again
+    assert store.paused_until() == start + 180

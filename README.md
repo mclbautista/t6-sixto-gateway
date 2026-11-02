@@ -211,10 +211,12 @@ has consumed, and Telegram does not send again what the gateway already acknowle
 watchdog must drain the gateway first. Never delete either database.
 
 Run this on the mini with `MINI` and `WATCHDOG_SECRET` set as for the cutover, plus the two
-checkouts and the watchdog's ledger file (its `ledger_path`, as a path on the mini):
+checkouts. `LEDGER` is the watchdog's `ledger_path` as seen inside its container; the files in
+`data/` belong to the container user, so they are read through `docker compose exec`, not from the
+host:
 
 ```sh
-GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER="$WD/data/ledger.db"
+GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
 ```
 
 1. **Stop gateway polling, keep its API.** Edit `$GW/config.yaml` in place (it is a single-file
@@ -225,7 +227,7 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER="$WD/data/ledger.db"
 2. **Drain the watchdog.** Leave it running in gateway mode until the gateway has nothing left
    for it. Read its last committed `seq` and ask the gateway for anything after it:
    ```sh
-   W=$(sqlite3 "$LEDGER" 'SELECT COALESCE((SELECT last_committed_offset FROM offsets WHERE id = 1), 0);')
+   W=$(cd "$WD" && docker compose exec -T watchdog python -c "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COALESCE((SELECT last_committed_offset FROM offsets WHERE id = 1), 0)').fetchone()[0])" "$LEDGER")
    curl -fsS -H "Authorization: Bearer $WATCHDOG_SECRET" "http://$MINI:8780/updates?after=$W&timeout=0"
    ```
    Repeat until it prints `{"items":[]}`.
@@ -236,19 +238,20 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER="$WD/data/ledger.db"
      ```
      Telegram will not send these again. Reconcile them after step 6, in `seq` order. A row with
      `"edited": 0` is a new post: if
-     `sqlite3 "$LEDGER" "SELECT 1 FROM messages WHERE telegram_key = '<chat_id>:<message_id>'"`
-     prints nothing, enter that JO by hand from the text in `raw`. A row with `"edited": 1` is an
+     `cd "$WD" && docker compose exec -T watchdog python -c "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM messages WHERE telegram_key = ?', (sys.argv[2],)).fetchone()[0])" "$LEDGER" '<chat_id>:<message_id>'`
+     prints `0`, enter that JO by hand from the text in `raw`. A row with `"edited": 1` is an
      edit: apply it by hand to that JO in Notion.
 3. **Read `T` while the gateway is still up:**
    ```sh
    T=$(cd "$GW" && docker compose exec -T gateway python -c "import sqlite3; print(sqlite3.connect('/app/data/gateway.db').execute('SELECT COALESCE((SELECT last_update_id FROM poll_state WHERE id = 1), 0)').fetchone()[0])")
    echo "T=$T"
    ```
-4. **Stop the watchdog, keep a copy, reset its cursor to `T`.** Do this with the current
-   (gateway-capable) watchdog image: images from before the gateway work have no `reset-offset`.
+4. **Stop the watchdog, keep a copy, reset its cursor to `T`.** Do this with the image it runs now,
+   which has gateway mode; images from before gateway mode have no `reset-offset`.
    ```sh
-   cd "$WD" && docker compose stop && cp -Rp data "data-backup-$(date +%F)"
-   docker compose run --rm watchdog python -m jo_watchdog.app reset-offset --to "$T"
+   cd "$WD" && CURRENT=$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q watchdog)" | cut -d: -f2) && echo "CURRENT=$CURRENT"
+   cd "$WD" && docker compose stop && cp -Rp data "data-backup-$(date +%F)" && \
+     JO_WATCHDOG_TAG="$CURRENT" docker compose run --rm watchdog python -m jo_watchdog.app reset-offset --to "$T"
    ```
    It prints the old offset. The next poll will be `T + 1`: the first update the gateway never
    fetched.
@@ -260,15 +263,23 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER="$WD/data/ledger.db"
    ```
    They are not sent after the rollback: set those reactions by hand and read the ops posts.
    Then `docker compose stop gateway && cp -Rp data "data-backup-$(date +%F)"`.
-6. **Start the watchdog in direct mode.** Put `TELEGRAM_BOT_TOKEN` back in its `.env`, then pick
-   the image and make the config match it:
+6. **Start the watchdog in direct mode.** Put `TELEGRAM_BOT_TOKEN` back in `$WD/.env`, choose the
+   tag `TAG` to run, and edit `$WD/config.yaml` in place (it is a single-file mount too) to match
+   that image:
    - **Current image, or any image with gateway mode** (usually the right choice when the gateway
      was the problem): set `telegram_mode: direct` and remove `gateway_url`.
-   - **An image from before gateway mode** (only if the watchdog itself must go back): it refuses
-     unknown config keys, so delete the `telegram_mode` and `gateway_url` lines altogether.
+   - **An image from before gateway mode** (only if the watchdog itself must go back; anything
+     older than `$CURRENT` that `docker compose run --rm watchdog python -m jo_watchdog.app --help`
+     shows without `reset-offset`): it refuses unknown config keys, so delete the
+     `telegram_mode` and `gateway_url` lines altogether.
 
-   Start it with that image (`JO_WATCHDOG_TAG=<tag> docker compose up -d --no-build`) and check
-   `docker compose logs --tail 20` shows it polling, not a config error.
+   Check the config against that image before starting it, then start it:
+   ```sh
+   cd "$WD" && JO_WATCHDOG_TAG="$TAG" docker compose run --rm watchdog python -m jo_watchdog.app healthcheck
+   ```
+   Any output other than `bad config: ...` is fine here (a stale poll reads as unhealthy).
+   Then `cd "$WD" && JO_WATCHDOG_TAG="$TAG" docker compose up -d --no-build` and check
+   `docker compose logs --tail 20` shows it polling.
 7. Run the watchdog live check (one intake JO captured with its reaction), and reconcile the
    stranded rows from step 2 if there were any. Leave the gateway stopped.
 
