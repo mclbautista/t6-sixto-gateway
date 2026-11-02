@@ -286,3 +286,20 @@ def test_aiogram_errors_map_to_retry_or_fail():
     ):
         assert isinstance(translate_send_error(permanent), PermanentSendError)
     assert translate_send_error(OSError("reset")) is None  # unknown: the sender retries it
+
+
+async def test_a_429_on_the_last_attempt_still_pauses_other_chats(rig):
+    ref = rig.queue(GROUP, "doomed")
+    for _ in range(4):  # use up the four retries with plain network errors
+        rig.telegram.fail_with = TransientSendError("503")
+        await rig.drain_now()
+        rig.clock.advance(601)
+    rig.telegram.fail_with = RetryAfterError(60)
+    await rig.drain_now()
+    assert rig.state(ref)["state"] == "failed"
+    other = rig.queue(PRIVATE, "other")
+    await rig.drain_now()
+    assert rig.state(other)["state"] == "queued"
+    rig.clock.advance(60.01)
+    await rig.drain_now()
+    assert rig.state(other)["state"] == "sent"

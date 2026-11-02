@@ -96,6 +96,8 @@ class Sender:
         ref, module = row["id"], row["module"]
         error = f"{type(exc).__name__}: {exc}"[:300]
         step = row["attempts"]  # failed attempts so far, before this one
+        if isinstance(exc, RetryAfterError):  # Telegram limits the bot: even a last try pauses all
+            self._paused_until = max(self._paused_until, self._clock() + exc.retry_after)
         if isinstance(exc, PermanentSendError) or step >= len(RETRY_SCHEDULE_SECONDS):
             self._store.mark_outbound_failed(ref, error)
             self._store.audit("send_failed", module, f"ref={ref} attempts={step + 1} {error}")
@@ -106,7 +108,6 @@ class Sender:
         delay = RETRY_SCHEDULE_SECONDS[step]
         if isinstance(exc, RetryAfterError):
             delay = max(delay, exc.retry_after)
-            self._paused_until = max(self._paused_until, self._clock() + exc.retry_after)
         self._store.schedule_outbound_retry(ref, self._clock() + delay, error)
         self._store.audit("send_retry", module, f"ref={ref} in={delay:.0f}s {error}")
         log.info("send %s for %s will retry in %.0f s: %s", ref, module, delay, error)
