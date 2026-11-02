@@ -50,17 +50,20 @@ async def register_menus(store: Store, client: TelegramClient, config: Config) -
     People who had a menu at an earlier boot and are no longer on any list lose it. A Telegram
     refusal for one person (for example they never opened a chat with the bot) is audited and
     does not stop boot; the next boot tries again.
+
+    A person is recorded before their menu is set and stays recorded until a delete succeeds,
+    so a crash or failure at any point (Telegram may have set it anyway) never leaves a menu
+    that a later boot does not know to remove.
     """
     await client.set_my_commands(None, [])
     wanted = allowed_commands(config)
     for user, names in sorted(wanted.items()):
         menu = [(n, config.commands[n].description or n) for n in sorted(names)]
+        store.add_menu_user(user)
         try:
             await client.set_my_commands(user, menu)
         except Exception as exc:  # noqa: BLE001 - one person must not stop boot
             _menu_failed(store, "set", user, exc)
-        else:
-            store.add_menu_user(user)
     for user in sorted(store.menu_users() - wanted.keys()):
         try:
             await client.delete_my_commands(user)

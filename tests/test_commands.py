@@ -220,3 +220,29 @@ async def test_phase_1_with_no_commands_sets_nothing_but_the_empty_default(tmp_p
 
     assert telegram.menus == {None: []}
     assert replies(telegram) == [(ALLOWED, REFUSAL)]
+
+
+class CrashAfterTelegramAccepts(FakeTelegram):
+    """Telegram sets the menu, then the process dies before the gateway records it."""
+
+    async def set_my_commands(self, chat_id, commands):
+        await super().set_my_commands(chat_id, commands)
+        if chat_id is not None:
+            raise SystemExit("crash")
+
+
+async def test_a_crash_after_telegram_set_a_menu_cannot_leave_it_behind(tmp_path):
+    config = make_config(tmp_path, "commands: {jo: {module: jo, allow: [5003]}}\n")
+    store = Store(config.database_path, clock=FakeClock())
+    crashing = CrashAfterTelegramAccepts([])
+    with pytest.raises(SystemExit):
+        await register_menus(store, crashing, config)
+    assert 5003 in crashing.menus  # Telegram has it
+    store.close()
+
+    telegram = FakeTelegram([])
+    telegram.menus = crashing.menus  # same bot, next boot
+    store = Store(config.database_path, clock=FakeClock())
+    await register_menus(store, telegram, make_config(tmp_path, "commands: {}\n"))
+    assert telegram.menus == {None: []}
+    assert store.menu_users() == set()
