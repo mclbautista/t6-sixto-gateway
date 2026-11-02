@@ -1,4 +1,4 @@
-"""Starts the background tasks that run beside the HTTP server."""
+"""Starts the background tasks that run beside the HTTP server (spec sections 6, 9 and 10)."""
 
 from __future__ import annotations
 

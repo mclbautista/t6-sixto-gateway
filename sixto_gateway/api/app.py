@@ -15,6 +15,7 @@ from sixto_gateway.config import Config
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
+from sixto_gateway.store.db import SECONDS_PER_DAY
 
 log = logging.getLogger(__name__)
 MAX_ITEMS = 100
@@ -82,7 +83,7 @@ def create_app(
             "database_writable": writable,
             "last_poll_at": datetime.fromtimestamp(last, UTC).isoformat() if last else None,
             "queued": store.queued_count(),
-            "failed_last_24h": store.failed_sends_since(liveness.now() - 86400),
+            "failed_last_24h": store.failed_sends_since(liveness.now() - SECONDS_PER_DAY),
         }
         return JSONResponse(body, status_code=200 if healthy else 503)
 

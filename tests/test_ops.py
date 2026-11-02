@@ -362,6 +362,23 @@ async def test_no_log_line_contains_a_secret_or_the_token(tmp_path, clock):
     assert TOKEN not in " ".join(str(e) for e in store.audit_events())
 
 
+async def test_a_successful_send_logs_one_line_without_the_text(tmp_path, clock):
+    config = load_config(write_config(tmp_path), ENV)
+    stream = io.StringIO()
+    configure_logging(redactor_for(config), stream)
+    store = Store(config.database_path, clock=clock)
+    store.enqueue_outbound(
+        "watchdog",
+        "message",
+        "1",
+        {"chat": 1, "topic": None, "text": "PRIVATE WORDS", "format": "plain"},
+    )
+    await Sender(store, FakeTelegram([]), Notifier()).send_next()
+    output = stream.getvalue()
+    assert "send 1 for watchdog ok" in output
+    assert "PRIVATE WORDS" not in output
+
+
 def test_redactor_scrubs_configured_secrets_tokens_and_bearer_values():
     from sixto_gateway.logsafe import Redactor
 

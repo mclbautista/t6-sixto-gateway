@@ -6,9 +6,10 @@ import asyncio
 import logging
 
 from sixto_gateway.store import Store
+from sixto_gateway.store.db import SECONDS_PER_DAY
 
 log = logging.getLogger(__name__)
-RUN_EVERY_SECONDS = 24 * 60 * 60
+RUN_EVERY_SECONDS = SECONDS_PER_DAY
 
 
 def run_retention_once(store: Store, retention_days: int) -> dict[str, int]:

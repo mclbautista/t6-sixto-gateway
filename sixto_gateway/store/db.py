@@ -285,6 +285,7 @@ class Store:
         try:
             with self._transaction():
                 # rewriting the header with its own value touches the file without changing it
+                # PRAGMA cannot take bound parameters; the value is an int read from the file
                 version = self._db.execute("PRAGMA user_version").fetchone()[0]
                 self._db.execute(f"PRAGMA user_version = {int(version)}")
         except sqlite3.Error:

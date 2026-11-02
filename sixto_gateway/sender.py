@@ -56,6 +56,7 @@ class Sender:
         else:
             self._store.mark_outbound_sent(ref, telegram_id)
             self._store.audit("send_ok", module, f"ref={ref} telegram_message_id={telegram_id}")
+            log.info("send %s for %s ok kind=%s", ref, module, row["kind"])
         return True
 
     async def run(self, stop: asyncio.Event) -> None:
