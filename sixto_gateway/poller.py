@@ -10,6 +10,7 @@ from collections.abc import Callable
 from sixto_gateway.commands import decide_command
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision
+from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
@@ -28,6 +29,7 @@ class Poller:
         notifier: Notifier,
         clock: Callable[[], float] = time.time,
         queue_wake: Notifier | None = None,
+        liveness: Liveness | None = None,
     ):
         self._store = store
         self._client = client
@@ -35,7 +37,7 @@ class Poller:
         self._notifier = notifier
         self._clock = clock
         self._queue_wake = queue_wake or Notifier()  # poked when a reply is queued
-        self.last_poll_at: float | None = None  # for /healthz and the deadman (later slices)
+        self.liveness = liveness or Liveness(clock)
 
     def decide(self, update: IncomingUpdate) -> Decision:
         """A command in a private chat is checked against the allow-list; the rest is routed."""
@@ -66,7 +68,7 @@ class Poller:
         updates = await self._client.get_updates(
             self._store.next_offset(), telegram.poll_timeout, telegram.allowed_updates
         )
-        self.last_poll_at = self._clock()
+        self.liveness.record_poll()
         delivered = queued = False
         for update in updates:
             decision = self.decide(update)

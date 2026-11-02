@@ -77,6 +77,10 @@ class Secrets:
                 found = module
         return found
 
+    def redaction_values(self) -> list[str]:
+        """Every secret value, for scrubbing logs. Only the log redactor should call this."""
+        return [self._bot_token, *self._module_secrets.values()]
+
     def __repr__(self) -> str:
         return f"Secrets(modules={sorted(self._module_secrets)})"
 

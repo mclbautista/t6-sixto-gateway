@@ -1,5 +1,7 @@
-# Always-on deployment. Deploy: `git pull && docker compose up -d --build`.
+# Always-on deployment. Deploy: `git pull && GATEWAY_TAG=$(git rev-parse --short HEAD) \
+#   docker compose up -d --build` (the tag keeps the previous image for rollback).
 # Rollback: `GATEWAY_TAG=<previous> docker compose up -d` (see "Rollback" in the README).
+# The health check lives in the Dockerfile (GET /healthz).
 services:
   gateway:
     build: .

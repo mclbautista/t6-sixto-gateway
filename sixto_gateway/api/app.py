@@ -1,16 +1,21 @@
-"""Module HTTP API. Every endpoint here requires ``Authorization: Bearer <module secret>``."""
+"""Module HTTP API. Every endpoint requires ``Authorization: Bearer <module secret>``,
+except ``GET /healthz``."""
 
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from sixto_gateway.config import Config
+from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
+from sixto_gateway.store.db import SECONDS_PER_DAY
 
 log = logging.getLogger(__name__)
 MAX_ITEMS = 100
@@ -36,10 +41,18 @@ class ReactBody(BaseModel):
 
 
 def create_app(
-    config: Config, store: Store, notifier: Notifier, queue_wake: Notifier | None = None
+    config: Config,
+    store: Store,
+    notifier: Notifier,
+    queue_wake: Notifier | None = None,
+    liveness: Liveness | None = None,
 ) -> FastAPI:
-    """``queue_wake`` is poked after each save to the send queue (the sender waits on it)."""
+    """``queue_wake`` is poked after each save to the send queue (the sender waits on it).
+
+    ``liveness`` is the poller's heartbeat, read by ``/healthz``.
+    """
     queue_wake = queue_wake or Notifier()
+    liveness = liveness or Liveness()
     app = FastAPI(title="Sixto gateway", docs_url=None, redoc_url=None, openapi_url=None)
 
     async def calling_module(request: Request) -> str:
@@ -55,6 +68,24 @@ def create_app(
                 401, "invalid or missing module secret", {"WWW-Authenticate": "Bearer"}
             )
         return module
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        """No auth. 200 when polling is fresh (if enabled) and the database is writable."""
+        polling = config.telegram.polling
+        writable = store.is_writable()
+        # With polling off (cutover step 1) there is no poll to wait for: only the database counts.
+        healthy = writable and (liveness.poll_is_fresh() if polling else True)
+        last = liveness.last_poll_at
+        body = {
+            "status": "ok" if healthy else "unhealthy",
+            "polling": polling,
+            "database_writable": writable,
+            "last_poll_at": datetime.fromtimestamp(last, UTC).isoformat() if last else None,
+            "queued": store.queued_count(),
+            "failed_last_24h": store.failed_sends_since(liveness.now() - SECONDS_PER_DAY),
+        }
+        return JSONResponse(body, status_code=200 if healthy else 503)
 
     # async so the SQLite connection is only touched on the event-loop thread
     Module = Annotated[str, Depends(calling_module)]
