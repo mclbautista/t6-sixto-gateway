@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 
 from sixto_gateway.config import Config
@@ -15,6 +16,7 @@ from sixto_gateway.poller import Poller
 from sixto_gateway.retention import run_retention
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
+from sixto_gateway.summary import SummaryWorker
 from sixto_gateway.telegram.client import TelegramClient
 
 log = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ def start_workers(
     *,
     contacts: ContactsDirectory,
     onboarding_wake: Notifier,
+    clock: Callable[[], float] = time.time,
 ) -> dict[str, asyncio.Task]:
     """Retention always runs. Polling, sending and the deadman run only when polling is on.
 
@@ -56,6 +59,9 @@ def start_workers(
             store, contacts, config, onboarding_wake, queue_wake, client=client
         )
         tasks["onboarding"] = asyncio.create_task(worker.run(stop))
+        tasks["summary"] = asyncio.create_task(
+            SummaryWorker(store, config, queue_wake, clock).run(stop)
+        )
         tasks["sender"] = asyncio.create_task(
             Sender(store, client, queue_wake, scrub=scrub).run(stop)
         )

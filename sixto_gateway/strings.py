@@ -49,6 +49,23 @@ FYI_AUTO = (
 CREATED_NOTE = "Created by Sixto /start on {date}."
 TAP_NOTION_FAILED = "Notion did not answer. Nothing was changed. Tap again to retry."
 
+# --- for the approver's daily summary (HTML) ---------------------------------------------------
+
+SUMMARY_TITLE = "Onboarding summary, {date}"
+SUMMARY_COUNTS = (
+    "Approved: {approved} · Pending: {pending} · Rejected: {rejected} · Blocked: {blocked}"
+)
+SUMMARY_PENDING = "Waiting for you:"
+SUMMARY_NO_PENDING = "No one is waiting for you."
+SUMMARY_PENDING_ITEM = "• {person}, waiting {waiting}: {link}"
+SUMMARY_CARD_LINK = "open card"
+SUMMARY_NO_CARD = "card not sent yet"
+SUMMARY_FAILURES = "Messages that failed in the last 24 hours: {count}"
+SUMMARY_NO_FAILURES = "No messages failed in the last 24 hours."
+SUMMARY_FAILURE_MORE = "• and {more} more (see the audit table)"
+SUMMARY_MISSING = "Still missing, no approved member yet: {handles}"
+SUMMARY_NOT_MISSING = "Everyone expected has joined."
+
 
 def first_name_or_there(first_name: str | None) -> str:
     return (first_name or "").strip() or "there"

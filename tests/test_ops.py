@@ -366,7 +366,7 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
         contacts=FakeNotion([]),
         onboarding_wake=Notifier(),
     )
-    assert set(tasks) == {"retention", "poller", "sender", "deadman", "onboarding"}
+    assert set(tasks) == {"retention", "poller", "sender", "deadman", "onboarding", "summary"}
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait(tasks.values(), timeout=5)

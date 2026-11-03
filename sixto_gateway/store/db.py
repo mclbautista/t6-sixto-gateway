@@ -346,6 +346,28 @@ class Store:
                 f"card:{user_id}",
             )
 
+    def member_counts(self) -> dict[str, int]:
+        """How many members have each status (all four statuses are always present)."""
+        counts = dict.fromkeys(("approved", "pending", "rejected", "blocked"), 0)
+        for row in self._db.execute("SELECT status, COUNT(*) FROM members GROUP BY status"):
+            counts[row[0]] = row[1]
+        return counts
+
+    def pending_members(self) -> list[dict[str, Any]]:
+        """Members still waiting for the approver, oldest first."""
+        rows = self._db.execute(
+            "SELECT telegram_user_id FROM members WHERE status = 'pending'"
+            " ORDER BY created_at, telegram_user_id"
+        ).fetchall()
+        return [m for r in rows if (m := self.member(r[0])) is not None]
+
+    def approved_handles(self) -> set[str]:
+        """Telegram handles (lowercase, no ``@``) of approved members."""
+        rows = self._db.execute(
+            "SELECT handle FROM members WHERE status = 'approved' AND handle IS NOT NULL"
+        )
+        return {r[0].lstrip("@").lower() for r in rows if r[0]}
+
     def approved_user_for_contact(self, contact_page_id: str) -> int | None:
         """The Telegram user id of the approved member linked to a Contact, else None.
 
@@ -518,6 +540,21 @@ class Store:
             "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
             (self._clock(), event, module, detail),
         )
+
+    def send_failures_since(self, since: float) -> list[str]:
+        """Detail of each ``send_failed`` audit row since ``since``, oldest first."""
+        rows = self._db.execute(
+            "SELECT module, detail FROM audit WHERE event = 'send_failed' AND at >= ? ORDER BY id",
+            (since,),
+        )
+        return [f"{r[0] or 'gateway'}: {r[1] or ''}".strip() for r in rows]
+
+    def has_outbound(self, module: str, idempotency_key: str) -> bool:
+        row = self._db.execute(
+            "SELECT 1 FROM outbound WHERE module = ? AND idempotency_key = ?",
+            (module, idempotency_key),
+        ).fetchone()
+        return row is not None
 
     # --- retention ------------------------------------------------------------------------
 
