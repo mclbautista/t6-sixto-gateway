@@ -26,6 +26,7 @@ retention_days: 30
 database_path: ./data/gateway.db
 modules:                                        # each module authenticates with its own secret
   watchdog: { secret_env: WATCHDOG_SECRET }
+  shift: { secret_env: SHIFT_SECRET }           # JO shift reports (https://github.com/mclbautista/t6-sixto-gateway/issues/41)
 commands:                                       # /jo arrives in phase 5
   whereami:                                     # built-in: answered by the gateway, no module
     builtin: true
