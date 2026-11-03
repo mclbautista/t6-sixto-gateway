@@ -390,6 +390,48 @@ class Store:
         except sqlite3.IntegrityError:  # the unique index: the Contact already has a member
             return False
 
+    def reject_member(self, user_id: int, decided_by: int, reply: dict[str, Any]) -> bool:
+        """Mark a pending member rejected and queue the neutral reply, in one transaction.
+
+        False (nothing changed) when the member is no longer pending. The reply is queued once
+        per member: rejecting again after an Undo does not repeat it.
+        """
+        with self._transaction():
+            now = self._clock()
+            updated = self._db.execute(
+                "UPDATE members SET status = 'rejected', decided_by = ?, decided_at = ?,"
+                " updated_at = ? WHERE telegram_user_id = ? AND status = 'pending'",
+                (decided_by, now, now, user_id),
+            ).rowcount
+            if not updated:
+                return False
+            self._insert_audit("decision", None, f"user={user_id} rejected by={decided_by}")
+            key = f"rejected:{user_id}"
+            seen = self._db.execute(
+                "SELECT 1 FROM outbound WHERE module = ? AND idempotency_key = ?",
+                (GATEWAY_MODULE, key),
+            ).fetchone()
+            if seen is None:
+                self._insert_audit("reply", None, f"user={user_id} kind=rejected")
+                self._insert_outbound(GATEWAY_MODULE, "message", str(user_id), reply, key)
+            return True
+
+    def undo_rejection(self, user_id: int, undone_by: int) -> bool:
+        """Put a rejected member back to pending, keeping the candidates the card showed.
+
+        False (nothing changed) when the member is not rejected.
+        """
+        with self._transaction():
+            updated = self._db.execute(
+                "UPDATE members SET status = 'pending', decided_by = NULL, decided_at = NULL,"
+                " updated_at = ? WHERE telegram_user_id = ? AND status = 'rejected'",
+                (self._clock(), user_id),
+            ).rowcount
+            if not updated:
+                return False
+            self._insert_audit("undo", None, f"user={user_id} by={undone_by}")
+            return True
+
     def next_tap(self) -> dict[str, Any] | None:
         """The oldest button tap not yet handled."""
         row = self._db.execute(

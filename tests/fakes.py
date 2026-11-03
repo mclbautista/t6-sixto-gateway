@@ -252,6 +252,9 @@ class FakeNotion:
         self.block: asyncio.Event | None = None
         self.fail = False
         self.fail_write = False
+        self.fail_create = False
+        self.created: list[Contact] = []
+        self.notes: list[str] = []  # body line of each created Contact
         self.calls = 0
         self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
 
@@ -268,6 +271,16 @@ class FakeNotion:
             replace(c, telegram_user_id=str(user_id)) if c.page_id == contact.page_id else c
             for c in self.contacts
         ]
+
+    async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
+        if self.fail_create:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        page_id = f"cccccccc-0000-0000-0000-{len(self.created) + 1:012d}"
+        made = contact(page_id, name, handle=handle, user_id=str(user_id))
+        self.created.append(made)
+        self.notes.append(note)
+        self.contacts = [*self.contacts, made]
+        return made
 
     async def list_contacts(self) -> list[Contact]:
         self.calls += 1

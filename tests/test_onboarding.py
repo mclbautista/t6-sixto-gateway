@@ -422,6 +422,193 @@ async def test_the_adapter_writes_a_number_or_text_property_as_the_contact_has_i
     }
 
 
+# --- rejecting, undoing and creating (#22) --------------------------------------------------
+
+
+def data_of(card, label):
+    return next(b["callback_data"] for b in buttons(card) if b["text"].startswith(label))
+
+
+async def test_reject_marks_the_row_replies_neutrally_and_leaves_notion_alone(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)  # past the pacing gap after the waiting reply
+    tap(rig, 2, data_of(rig.card(), "Reject"))
+    await rig.settle()
+
+    member = rig.store.member(USER)
+    assert member["status"] == "rejected" and member["decided_by"] == APPROVER
+    assert rig.texts_to(USER)[-1] == "Thanks. There is nothing more you need to do here."
+    assert rig.notion.writes == [] and rig.notion.created == []
+    (edit,) = rig.telegram.edits
+    assert "Rejected" in edit["text"]
+    assert [b["text"] for row in edit["keyboard"] for b in row] == ["Undo"]
+    assert any(e == "decision" and "rejected" in d for e, _, d in rig.store.audit_events())
+
+
+async def test_undo_puts_the_row_back_to_pending_with_the_original_buttons(config):
+    rig = await approved_rig(config, contacts=(JUAN, MARIA, contact("p-3", "Juan Two", "@juandc")))
+    original = rig.card()
+    tap(rig, 2, data_of(original, "Reject"))
+    await rig.settle()
+    rig.clock.advance(10)
+    tap(rig, 3, data_of(rig.card(), "Reject").replace(":no:", ":undo:"))
+    await rig.settle()
+
+    assert rig.store.member(USER)["status"] == "pending"
+    undone = rig.telegram.edits[-1]
+    assert undone["text"] == original["text"] and undone["keyboard"] == original["keyboard"]
+    assert any(e == "undo" for e, _, _ in rig.store.audit_events())
+    assert rig.notion.calls >= 2  # the card is rebuilt from the stored candidates
+
+    tap(rig, 4, data_of(undone, "Pick Juan Dela"))  # a decision works again after Undo
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_undo_then_approve_works_as_in_approving(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)  # past the pacing gap after the waiting reply
+    tap(rig, 2, data_of(rig.card(), "Reject"))
+    tap(rig, 3, callback_for(rig, "undo"))
+    tap(rig, 4, approve_data(rig))
+    await rig.settle()
+    rig.clock.advance(10)  # the sender paces messages to one chat
+    await rig.settle()
+
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.store.member(USER)["status"] == "approved"
+    # rejecting never repeats: the person was told once, then told they are all set
+    assert rig.texts_to(USER)[-1].startswith("You are all set")
+
+
+def callback_for(rig, action):
+    return f"ob:{action}:{USER}"
+
+
+async def test_rejecting_twice_with_an_undo_between_tells_the_person_once(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)  # past the pacing gap after the waiting reply
+    reject = data_of(rig.card(), "Reject")
+    tap(rig, 2, reject)
+    tap(rig, 3, callback_for(rig, "undo"))
+    tap(rig, 4, reject)
+    await rig.settle()
+
+    assert rig.store.member(USER)["status"] == "rejected"
+    assert rig.texts_to(USER).count("Thanks. There is nothing more you need to do here.") == 1
+
+
+async def test_undo_with_notion_down_changes_nothing_and_can_be_retried(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, data_of(rig.card(), "Reject"))
+    await rig.settle()
+    rig.notion.fail = True
+    tap(rig, 3, callback_for(rig, "undo"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "rejected" and rig.telegram.answers[-1]["alert"]
+
+    rig.notion.fail = False
+    tap(rig, 4, callback_for(rig, "undo"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "pending"
+
+
+async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)  # past the pacing gap after the waiting reply
+    tap(rig, 2, data_of(rig.card(), "Create new"))
+    await rig.settle()
+
+    (made,) = rig.notion.created
+    assert (made.name, made.telegram_handle, made.telegram_user_id) == (
+        "Juan Dela Cruz",
+        "juandc",
+        str(USER),
+    )
+    assert rig.notion.writes == []
+    assert rig.notion.notes == ["Created by Sixto /start on 2026-09-18."]
+    member = rig.store.member(USER)
+    assert member["status"] == "approved" and member["contact_page_id"] == made.page_id
+    assert rig.texts_to(USER)[-1].startswith("You are all set, Juan.")
+    assert "✅ Approved:" in rig.telegram.edits[-1]["text"]
+    assert any(e == "notion_write" and "created" in d for e, _, d in rig.store.audit_events())
+
+
+async def test_a_failed_create_leaves_the_row_pending_and_the_buttons_usable(config):
+    rig = await approved_rig(config)
+    rig.notion.fail_create = True
+    tap(rig, 2, data_of(rig.card(), "Create new"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "pending" and rig.telegram.edits == []
+    assert rig.telegram.answers[0]["alert"] is True
+
+    rig.notion.fail_create = False
+    tap(rig, 3, data_of(rig.card(), "Create new"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_reject_undo_and_create_ignore_taps_from_anyone_but_the_approver(config):
+    rig = await approved_rig(config)
+    for n, data in enumerate((data_of(rig.card(), "Reject"), data_of(rig.card(), "Create new"))):
+        tap(rig, 2 + n, data, user=555)
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "pending"
+    assert rig.notion.created == [] and rig.telegram.edits == []
+
+    tap(rig, 5, data_of(rig.card(), "Reject"))
+    await rig.settle()
+    tap(rig, 6, callback_for(rig, "undo"), user=555)
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "rejected"
+
+
+async def test_a_stale_reject_tap_after_approval_changes_nothing(config):
+    rig = await approved_rig(config)
+    reject = data_of(rig.card(), "Reject")
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    tap(rig, 3, reject)
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+    assert rig.texts_to(USER).count("Thanks. There is nothing more you need to do here.") == 0
+
+
+async def test_the_adapter_creates_a_contact_page_in_the_data_source():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.read()))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "properties": {
+                        "TelegramUserID": {"type": "rich_text"},
+                        "TelegramHandle": {"type": "rich_text"},
+                    }
+                },
+            )
+        return httpx.Response(200, json=page("p-9", "Juan", "juandc", user_id="42"))
+
+    notion = notion_with(handler)
+    made = await notion.create_contact("Juan", "juandc", 42, "Created by Sixto /start on X.")
+    await notion.close()
+
+    assert made.page_id == "p-9"
+    assert seen[0][:2] == ("GET", f"/v1/data_sources/{CONTACTS_SOURCE}")
+    assert seen[1][:2] == ("POST", "/v1/pages")
+    body = json.loads(seen[1][2])
+    assert body["parent"] == {"type": "data_source_id", "data_source_id": CONTACTS_SOURCE}
+    assert body["properties"] == {
+        "Name": {"title": [{"type": "text", "text": {"content": "Juan"}}]},
+        "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "42"}}]},
+        "TelegramHandle": {"rich_text": [{"type": "text", "text": {"content": "juandc"}}]},
+    }
+    (block,) = body["children"]
+    assert block["paragraph"]["rich_text"][0]["text"]["content"] == "Created by Sixto /start on X."
+
+
 # --- config ---------------------------------------------------------------------------------
 
 
