@@ -154,7 +154,7 @@ class Store:
                     str(update.chat_id),
                     {
                         "chat": update.chat_id,
-                        "topic": None,
+                        "topic": update.topic_id if update.chat_type != "private" else None,
                         "text": decision.reply,
                         "format": "plain",
                     },

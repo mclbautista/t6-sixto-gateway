@@ -38,6 +38,7 @@ def decide_start(store: Store, update: IncomingUpdate) -> Decision:
         return Decision(
             None,
             audit=("start", None, f"{detail} in_group"),
+            extra_audits=(("reply", None, f"{detail} kind=dm_me"),),
             reply=strings.IN_A_GROUP.format(deep_link=strings.DEEP_LINK),
         )
     existing = store.member(user)
@@ -46,6 +47,7 @@ def decide_start(store: Store, update: IncomingUpdate) -> Decision:
             return Decision(
                 None,
                 audit=("start", None, f"{detail} again"),
+                extra_audits=(("reply", None, f"{detail} kind=pending_again"),),
                 reply=strings.PENDING_AGAIN,
             )
         # approved, rejected and blocked members are handled by tickets #21, #22 and #26

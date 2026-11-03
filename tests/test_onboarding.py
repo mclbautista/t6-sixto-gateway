@@ -175,6 +175,7 @@ async def test_start_in_a_group_or_topic_gets_the_dm_me_reply_and_no_row(config)
         (INTAKE_CHAT, expected),
         (INTAKE_CHAT, expected),
     ]
+    assert [m["topic_id"] for m in rig.telegram.sent] == [INTAKE_TOPIC, None]  # answered in place
     assert rig.store.member(USER) is None
     assert rig.notion.calls == 0
 
