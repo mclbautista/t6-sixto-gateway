@@ -102,9 +102,20 @@ saves a `pending` row in `members` and queues the "waiting" reply in the same tr
 update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`),
 matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
 `Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
-down Notion never holds up polling; a failed lookup is retried every minute. Buttons are shown
-but taps are not handled yet (#21). `/start` in a group gets a "message me directly" reply with a
+down Notion never holds up polling. `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
+
+### When Notion or Telegram fail
+
+- **Lookup:** a failed lookup is retried 1, 5 and 30 minutes after the first failure (the count
+  is in `members`, so it survives a restart). After the fourth failure the card says "Lookup
+  failed" with Retry, Create new Contact and Reject. Retry looks the person up once more.
+- **Writes after a tap** (approve, Replace ID, create): retried after 1, 5 and 15 seconds. If all
+  fail, the card says "Write failed" with a Retry button, and the member stays `pending`.
+- **Create new Contact** first looks for a Contact that already has the person's Telegram id (left
+  by an earlier create that did not finish) and uses it instead of making a second page.
+- **Sends:** the send queue retries cards and replies; permanent failures go to the `audit` table
+  (`send_failed`) and the daily summary, and a 403 on an approved member sets them to `blocked`.
 
 ### Daily onboarding summary
 

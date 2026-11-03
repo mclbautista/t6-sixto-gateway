@@ -329,6 +329,38 @@ class Store:
         ).fetchall()
         return [m for r in rows if (m := self.member(r[0])) is not None]
 
+    def record_lookup_failure(self, user_id: int, error: str) -> int:
+        """Count a failed Notion lookup for a waiting member. Returns the failures so far."""
+        with self._transaction():
+            now = self._clock()
+            self._db.execute(
+                "UPDATE members SET lookup_attempts = lookup_attempts + 1,"
+                " lookup_failed_at = COALESCE(lookup_failed_at, ?), updated_at = ?"
+                " WHERE telegram_user_id = ? AND status = 'pending' AND candidates IS NULL",
+                (now, now, user_id),
+            )
+            row = self._db.execute(
+                "SELECT lookup_attempts FROM members WHERE telegram_user_id = ?", (user_id,)
+            ).fetchone()
+            attempts = 0 if row is None else int(row[0])
+            self._insert_audit("lookup", None, f"user={user_id} failed #{attempts}: {error}"[:300])
+            return attempts
+
+    def set_candidates(self, user_id: int, candidates: list[str], detail: str) -> bool:
+        """Store a lookup that finally worked after the card said "Lookup failed".
+
+        False (nothing changed) when the member is not pending.
+        """
+        with self._transaction():
+            updated = self._db.execute(
+                "UPDATE members SET candidates = ?, lookup_attempts = 0, lookup_failed_at = NULL,"
+                " updated_at = ? WHERE telegram_user_id = ? AND status = 'pending'",
+                (json.dumps(candidates), self._clock(), user_id),
+            ).rowcount
+            if updated:
+                self._insert_audit("lookup", None, f"user={user_id} {detail}")
+            return bool(updated)
+
     def queue_approval_card(
         self, user_id: int, candidates: list[str], card_chat: int, card: dict[str, Any], detail: str
     ) -> None:

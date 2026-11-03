@@ -13,7 +13,7 @@ import hashlib
 import html
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -36,7 +36,11 @@ log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 CALLBACK_PREFIX = "ob"
 MANILA = timezone(timedelta(hours=8))
-LOOKUP_RETRY_SECONDS = 60.0  # ticket #27 replaces this with 1/5/30 minutes and a failure card
+# A failed lookup is retried 1, 5 and 30 minutes after the first failure; the next failure
+# sends the card marked "Lookup failed".
+LOOKUP_RETRY_AFTER_SECONDS = (60.0, 300.0, 1800.0)
+# A failed Notion write after a tap is retried after these waits, then the card says "Write failed".
+WRITE_RETRY_WAITS_SECONDS = (1.0, 5.0, 15.0)
 
 
 def decide_start(store: Store, update: IncomingUpdate) -> Decision:
@@ -193,6 +197,26 @@ def outcome_keyboard(member: dict[str, Any]) -> list[list[dict[str, str]]] | Non
     return [[undo]]
 
 
+def render_lookup_failed(member: dict[str, Any]) -> dict[str, Any]:
+    """The card sent when every lookup failed: Retry, Create new Contact and Reject."""
+    user_id = member["telegram_user_id"]
+    lines = [*_card_header(member), strings.CARD_LOOKUP_FAILED]
+    keyboard = [
+        [{"text": strings.BUTTON_RETRY, "callback_data": callback_data("try", user_id)}],
+        [
+            {"text": strings.BUTTON_CREATE, "callback_data": callback_data("new", user_id)},
+            {"text": strings.BUTTON_REJECT, "callback_data": callback_data("no", user_id)},
+        ],
+    ]
+    return {"text": "\n".join(lines), "format": "html", "keyboard": keyboard}
+
+
+def render_write_failed(member: dict[str, Any], retry_data: str) -> tuple[str, list]:
+    """The card text and its one Retry button, which repeats the tap that failed."""
+    lines = [*_card_header(member), strings.CARD_WRITE_FAILED]
+    return "\n".join(lines), [[{"text": strings.BUTTON_RETRY, "callback_data": retry_data}]]
+
+
 def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, Any]:
     """The approver's card as an outbound body (HTML text plus inline buttons)."""
     user_id = member["telegram_user_id"]
@@ -261,7 +285,9 @@ class OnboardingWorker:
         clock: Callable[[], float] = time.time,
         *,
         client: TelegramClient,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
+        self._sleep = sleep
         self._client = client
         self._store = store
         self._contacts = contacts
@@ -269,7 +295,6 @@ class OnboardingWorker:
         self._wake = wake
         self._queue_wake = queue_wake
         self._clock = clock
-        self._retry_at: dict[int, float] = {}
 
     async def process_next(self) -> bool:
         """Handle one button tap, else look up one waiting member and queue their card.
@@ -281,16 +306,24 @@ class OnboardingWorker:
         now = self._clock()
         for member in self._store.members_awaiting_lookup():
             user = member["telegram_user_id"]
-            if self._retry_at.get(user, 0.0) > now:
+            if not self._lookup_due(member, now):
                 continue
             try:
                 contacts = await self._contacts.list_contacts()
             except NotionError as exc:
-                self._retry_at[user] = self._clock() + LOOKUP_RETRY_SECONDS
-                self._store.audit("lookup", None, f"user={user} failed: {exc}"[:300])
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
+                failures = self._store.record_lookup_failure(user, str(exc))
+                if failures > len(LOOKUP_RETRY_AFTER_SECONDS):  # same test as _retry_lookup
+                    self._store.queue_approval_card(
+                        user,
+                        [],
+                        self._approver,
+                        render_lookup_failed(member),
+                        "lookup failed after retries",
+                    )
+                    self._queue_wake.notify()
+                    return True
                 continue
-            self._retry_at.pop(user, None)
             if self._auto_approve(member, contacts):
                 self._queue_wake.notify()
                 return True
@@ -305,6 +338,13 @@ class OnboardingWorker:
             self._queue_wake.notify()
             return True
         return False
+
+    def _lookup_due(self, member: dict[str, Any], now: float) -> bool:
+        """A lookup is tried at once, then again 1, 5 and 30 minutes after its first failure."""
+        failures = member["lookup_attempts"]
+        if failures == 0:
+            return True
+        return now >= member["lookup_failed_at"] + LOOKUP_RETRY_AFTER_SECONDS[failures - 1]
 
     def _auto_approve(self, member: dict[str, Any], contacts: list[Contact]) -> bool:
         """A Contact already holds this user's id: onboard them with no card and no write.
@@ -359,14 +399,16 @@ class OnboardingWorker:
             return
         action, user_id, page, seen = parsed
         member = self._store.member(user_id)
-        if member is None or action not in ("ok", "rep", "no", "new", "undo"):
-            await self._answer(tap)  # ticket #27 adds the Retry buttons
+        if member is None or action not in ("ok", "rep", "no", "new", "undo", "try"):
+            await self._answer(tap)
             return
         if member["status"] != ("rejected" if action == "undo" else "pending"):
             await self._answer(tap)  # stale card: show what is true now
             await self._rerender(tap, member)
             return
-        if action == "no":
+        if action == "try":
+            await self._retry_lookup(tap, member)
+        elif action == "no":
             await self._reject(tap, member)
         elif action == "undo":
             await self._undo(tap, member)
@@ -416,24 +458,79 @@ class OnboardingWorker:
         else:
             await self._rerender(tap, fresh)
 
+    async def _retrying(self, what: str, user: int, operation: Callable[[], Awaitable[Any]]) -> Any:
+        """Run a Notion call, repeating it after each wait in ``WRITE_RETRY_WAITS_SECONDS``.
+
+        Raises the last ``NotionError`` when every try failed.
+        """
+        for wait in (*WRITE_RETRY_WAITS_SECONDS, None):
+            try:
+                return await operation()
+            except NotionError as exc:
+                self._store.audit("notion_write", None, f"user={user} {what} failed: {exc}"[:300])
+                log.warning("%s for user %s failed: %s", what, user, exc)
+                if wait is None:
+                    raise
+                await self._sleep(wait)
+
+    async def _write_failed(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Every try failed: the member stays pending and the card offers one Retry."""
+        await self._answer(tap)
+        text, keyboard = render_write_failed(member, tap["data"])
+        await self._edit_card(tap, text, keyboard)
+
+    async def _retry_lookup(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """The Retry button on a "Lookup failed" card: look the person up once more."""
+        user = member["telegram_user_id"]
+        if member["candidates"] != [] or member["lookup_attempts"] <= len(
+            LOOKUP_RETRY_AFTER_SECONDS
+        ):
+            await self._answer(tap)  # not a failed-lookup card any more
+            return
+        try:
+            contacts = await self._contacts.list_contacts()
+        except NotionError as exc:
+            self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return
+        found = find_candidates_for(contacts, member)
+        stored = self._store.set_candidates(
+            user, [c.page_id for c in found], f"matches={len(found)}"
+        )
+        await self._answer(tap)
+        if stored:
+            card = render_card(self._store.member(user) or member, found)
+            await self._edit_card(tap, card["text"], card["keyboard"])
+
     async def _create(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
-        """Create a Contact for the person, then approve them with it (Notion first)."""
+        """Create a Contact for the person, then approve them with it (Notion first).
+
+        A Contact that already holds this user's id (left by a create whose approval never
+        finished) is used instead of making a second page.
+        """
         user = member["telegram_user_id"]
         name = full_name(member)
         handle = member["handle"] or ""
         note = strings.CREATED_NOTE.format(
             date=datetime.fromtimestamp(self._clock(), MANILA).date()
         )
-        try:
-            created = await self._contacts.create_contact(
+
+        async def make() -> tuple[Contact, bool]:
+            held = holders_of_id(await self._contacts.list_contacts(), user)
+            if len(held) == 1:
+                return held[0], False
+            made = await self._contacts.create_contact(
                 name or handle or str(user), handle, user, note
             )
-        except NotionError as exc:
-            self._store.audit("notion_write", None, f"user={user} create failed: {exc}"[:300])
-            log.warning("creating a Contact for user %s failed: %s", user, exc)
-            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return made, True
+
+        try:
+            created, new = await self._retrying("create", user, make)
+        except NotionError:
+            await self._write_failed(tap, member)
             return
-        self._store.audit("notion_write", None, f"user={user} created contact={created.page_id}")
+        verb = "created" if new else "reused"
+        self._store.audit("notion_write", None, f"user={user} {verb} contact={created.page_id}")
         await self._finish_approval(tap, member, created.page_id, created.name)
 
     async def _approve(
@@ -452,22 +549,27 @@ class OnboardingWorker:
             self._store.audit("decision", None, f"user={user} refused: contact has member {owner}")
             await self._answer(tap, strings.TAP_ALREADY_LINKED, alert=True)
             return
-        try:
+
+        async def write() -> tuple[Contact, str, bool, bool]:
             contact = await self._contacts.get_contact(page_id)
             old_id = contact.telegram_user_id
             if old_id not in ("", str(user)) and (not replace or id_fingerprint(old_id) != seen):
                 # only the Replace ID button overwrites another person's id, and only the id
                 # its card warned about: if Notion changed since, the approver looks again
-                self._store.audit("decision", None, f"user={user} refused: contact has other id")
-                await self._answer(tap, strings.TAP_OTHER_ID, alert=True)
-                return
+                return contact, old_id, False, True
             wrote = old_id != str(user)
             if wrote:
                 await self._contacts.set_telegram_user_id(contact, user)
-        except NotionError as exc:
-            self._store.audit("notion_write", None, f"user={user} failed: {exc}"[:300])
-            log.warning("writing TelegramUserID for user %s failed: %s", user, exc)
-            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return contact, old_id, wrote, False
+
+        try:
+            contact, old_id, wrote, refused = await self._retrying("write", user, write)
+        except NotionError:
+            await self._write_failed(tap, member)
+            return
+        if refused:
+            self._store.audit("decision", None, f"user={user} refused: contact has other id")
+            await self._answer(tap, strings.TAP_OTHER_ID, alert=True)
             return
         if wrote:
             replaced = f" replaced_id={old_id}" if old_id else ""

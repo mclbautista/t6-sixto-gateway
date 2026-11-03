@@ -105,4 +105,11 @@ MIGRATIONS: list[str] = [
         created_at REAL NOT NULL
     );
     """,
+    # 7: the Notion lookup for a waiting member is retried after 1, 5 and 30 minutes (ticket #27).
+    # ``lookup_attempts`` counts failed lookups and ``lookup_failed_at`` is the first failure, so
+    # the schedule survives a restart. 4 failed lookups means the card said "Lookup failed".
+    """
+    ALTER TABLE members ADD COLUMN lookup_attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE members ADD COLUMN lookup_failed_at REAL;
+    """,
 ]

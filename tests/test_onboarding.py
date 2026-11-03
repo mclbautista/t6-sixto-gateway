@@ -79,6 +79,12 @@ class Rig:
             queue_wake=self.queue_wake,
             onboarding_wake=self.onboarding_wake,
         )
+        self.sleeps: list[float] = []  # waits the worker asked for between Notion write tries
+
+        async def sleep(seconds: float) -> None:
+            self.sleeps.append(seconds)
+
+        self.config = config
         self.worker = OnboardingWorker(
             self.store,
             self.notion,
@@ -87,6 +93,7 @@ class Rig:
             self.queue_wake,
             self.clock,
             client=self.telegram,
+            sleep=sleep,
         )
         self.sender = Sender(self.store, self.telegram, self.queue_wake, clock=self.clock)
 
@@ -359,20 +366,44 @@ async def test_a_tap_from_anyone_but_the_approver_changes_nothing(config):
     assert [a["callback_id"] for a in rig.telegram.answers] == ["cb2"]  # spinner stops
 
 
-async def test_a_failed_notion_write_leaves_the_row_pending_and_the_buttons_usable(config):
+async def test_a_failed_notion_write_is_retried_then_the_card_offers_retry(config):
     rig = await approved_rig(config)
     rig.notion.fail_write = True
     tap(rig, 2, approve_data(rig))
     await rig.settle()
 
-    assert rig.store.member(USER)["status"] == "pending" and rig.telegram.edits == []
-    assert rig.telegram.answers[0]["alert"] is True
+    assert rig.sleeps == [1.0, 5.0, 15.0]  # three retries after the first try
+    assert rig.store.member(USER)["status"] == "pending"
+    edit = rig.telegram.edits[-1]
+    assert "Write failed" in edit["text"]
+    assert [b["text"] for b in buttons(edit)] == ["Retry"]
     assert any(e == "notion_write" and "failed" in d for e, _, d in rig.store.audit_events())
 
     rig.notion.fail_write = False
-    tap(rig, 3, approve_data(rig))
+    retry = buttons(edit)[0]["callback_data"]
+    tap(rig, 3, retry)
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
+    assert "✅ Approved:" in rig.telegram.edits[-1]["text"]
+
+
+async def test_a_write_that_works_on_a_retry_needs_no_retry_button(config):
+    rig = await approved_rig(config)
+    real = rig.notion.set_telegram_user_id
+    calls = []
+
+    async def flaky(contact, user_id):
+        calls.append(1)
+        if len(calls) < 3:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        await real(contact, user_id)
+
+    rig.notion.set_telegram_user_id = flaky
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    assert rig.sleeps == [1.0, 5.0]
+    assert rig.store.member(USER)["status"] == "approved"
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
 
 
 def replace_id(c, new_id):
@@ -660,18 +691,35 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
     assert any(e == "notion_write" and "created" in d for e, _, d in rig.store.audit_events())
 
 
-async def test_a_failed_create_leaves_the_row_pending_and_the_buttons_usable(config):
+async def test_a_failed_create_is_retried_then_the_card_offers_retry(config):
     rig = await approved_rig(config)
     rig.notion.fail_create = True
     tap(rig, 2, data_of(rig.card(), "Create new"))
     await rig.settle()
-    assert rig.store.member(USER)["status"] == "pending" and rig.telegram.edits == []
-    assert rig.telegram.answers[0]["alert"] is True
+    assert rig.sleeps == [1.0, 5.0, 15.0]
+    assert rig.store.member(USER)["status"] == "pending"
+    edit = rig.telegram.edits[-1]
+    assert "Write failed" in edit["text"] and [b["text"] for b in buttons(edit)] == ["Retry"]
 
     rig.notion.fail_create = False
-    tap(rig, 3, data_of(rig.card(), "Create new"))
+    tap(rig, 3, buttons(edit)[0]["callback_data"])
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
+    assert len(rig.notion.created) == 1
+
+
+async def test_create_reuses_a_contact_left_by_an_earlier_create_instead_of_making_a_second(
+    config,
+):
+    rig = await approved_rig(config)
+    orphan = contact("bbbbbbbb-0000-0000-0000-000000000009", "Juan Dela Cruz", user_id=str(USER))
+    rig.notion.contacts = [*rig.notion.contacts, orphan]  # made, but the approval never finished
+    tap(rig, 2, data_of(rig.card(), "Create new"))
+    await rig.settle()
+
+    assert rig.notion.created == []
+    member = rig.store.member(USER)
+    assert member["status"] == "approved" and member["contact_page_id"] == orphan.page_id
 
 
 async def test_reject_undo_and_create_ignore_taps_from_anyone_but_the_approver(config):
@@ -953,3 +1001,113 @@ def test_a_telegram_403_is_translated_to_a_block_error():
         TelegramForbiddenError(SendMessage(chat_id=1, text="x"), "blocked")
     )
     assert isinstance(error, BlockedByUserError) and isinstance(error, PermanentSendError)
+
+
+# --- surviving failures (#27) -----------------------------------------------------------------
+
+
+async def test_lookups_are_retried_after_1_5_and_30_minutes_then_a_failure_card_is_sent(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    rig.notion.fail = True
+    await rig.settle()
+    assert rig.notion.calls == 1
+    for minutes, calls in ((0.5, 1), (1, 2), (4.9, 2), (5, 3), (29, 3)):
+        rig.clock.now = 1_789_700_000.0 + minutes * 60
+        await rig.settle()
+        assert rig.notion.calls == calls, minutes
+    assert rig.texts_to(APPROVER) == []
+
+    rig.clock.now = 1_789_700_000.0 + 30 * 60
+    await rig.settle()
+    assert rig.notion.calls == 4
+    card = rig.card()
+    assert "Lookup failed" in card["text"]
+    assert [b["text"] for b in buttons(card)] == ["Retry", "Create new Contact", "Reject"]
+    assert len(rig.texts_to(USER)) == 1  # only the waiting reply, sent at the first Start
+    assert rig.store.member(USER)["status"] == "pending"
+
+    rig.clock.advance(3600)
+    await rig.settle()
+    assert rig.notion.calls == 4  # no more automatic tries
+
+
+async def test_lookup_retries_resume_after_a_restart(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    rig.notion.fail = True
+    await rig.settle()
+    rig.clock.advance(61)
+    await rig.settle()
+    assert rig.notion.calls == 2
+    rig.store.close()
+
+    again = Rig(config, [], [JUAN])  # a new process on the same database
+    again.clock.now = rig.clock.now
+    again.notion.fail = True
+    await again.settle()
+    assert again.notion.calls == 0  # the 5-minute step is not due yet
+    again.clock.advance(5 * 60)
+    await again.settle()
+    assert again.notion.calls == 1
+    assert again.store.member(USER)["lookup_attempts"] == 3
+
+
+async def exhausted_rig(config, contacts=(JUAN,)):
+    rig = Rig(config, [start_from(1)], list(contacts))
+    rig.notion.fail = True
+    for offset in (0, 60, 300, 1800):
+        rig.clock.now = 1_789_700_000.0 + offset
+        await rig.settle()
+    assert "Lookup failed" in rig.card()["text"]
+    return rig
+
+
+async def test_retry_on_the_failure_card_looks_the_person_up_again(config):
+    rig = await exhausted_rig(config)
+    retry = data_of(rig.card(), "Retry")
+
+    tap(rig, 2, retry)  # Notion is still down
+    await rig.settle()
+    assert rig.telegram.answers[-1]["alert"] is True
+    assert rig.telegram.edits == [] and rig.store.member(USER)["candidates"] == []
+
+    rig.notion.fail = False
+    tap(rig, 3, retry)
+    await rig.settle()
+    edit = rig.telegram.edits[-1]
+    assert "Lookup failed" not in edit["text"] and "Juan Dela Cruz" in edit["text"]
+    assert [b["text"] for b in buttons(edit)][0] == "Approve Juan Dela Cruz"
+    assert rig.store.member(USER)["candidates"] == [JUAN.page_id]
+
+    tap(rig, 4, data_of(edit, "Approve Juan Dela Cruz"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_create_new_and_reject_work_on_the_failure_card(config):
+    rig = await exhausted_rig(config)
+    rig.notion.fail = False
+    tap(rig, 2, data_of(rig.card(), "Create new Contact"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved" and len(rig.notion.created) == 1
+
+
+async def test_reject_works_on_the_failure_card(config):
+    rig = await exhausted_rig(config)
+    tap(rig, 2, data_of(rig.card(), "Reject"))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "rejected"
+    assert [b["text"] for b in buttons(rig.telegram.edits[-1])] == ["Undo"]
+
+
+async def test_a_card_that_cannot_be_sent_leaves_the_row_pending_and_is_audited(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    await rig.poller.poll_once()
+    while await rig.worker.process_next():
+        pass
+    rig.telegram.fail_always = RuntimeError("network down")
+    for _ in range(12):  # both queued messages: first try plus the whole retry schedule
+        rig.clock.advance(700)
+        await rig.sender.send_next()
+    assert rig.store.member(USER)["status"] == "pending"
+    failures = rig.store.send_failures_since(0)
+    assert any("network down" in f for f in failures)

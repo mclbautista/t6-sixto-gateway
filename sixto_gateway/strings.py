@@ -37,6 +37,11 @@ BUTTON_REPLACE_NAMED = "Replace ID: {name}"
 BUTTON_CREATE = "Create new Contact"
 BUTTON_REJECT = "Reject"
 BUTTON_UNDO = "Undo"
+BUTTON_RETRY = "Retry"
+CARD_LOOKUP_FAILED = "Lookup failed: Notion did not answer. Tap Retry, or choose below."
+CARD_WRITE_FAILED = (
+    "Write failed: Notion did not accept the change. Nothing was changed. Tap Retry."
+)
 OUTCOME_APPROVED = "✅ Approved: {link}"
 OUTCOME_REJECTED = "Rejected"
 OUTCOME_BLOCKED = "Blocked the bot"
