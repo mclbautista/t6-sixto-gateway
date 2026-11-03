@@ -842,3 +842,114 @@ async def test_adapter_errors_never_carry_the_key(response):
         await notion.list_contacts()
     assert "ntn_secret" not in str(caught.value)
     await notion.close()
+
+
+# --- repeat presses and blocked users (#26) ---------------------------------------------------
+
+
+async def press_again(rig, update_id, **kwargs):
+    rig.clock.advance(10)  # past the per-chat send pacing
+    rig.telegram.push(start_from(update_id, **kwargs))
+    await rig.settle()
+
+
+async def onboarded_rig(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+    return rig
+
+
+async def test_start_again_when_approved_says_already_onboarded_with_no_card_and_no_lookup(config):
+    rig = await onboarded_rig(config)
+    calls, cards = rig.notion.calls, len(rig.texts_to(APPROVER))
+    await press_again(rig, 3)
+
+    assert rig.texts_to(USER)[-1] == strings.ALREADY_ONBOARDED
+    assert len(rig.texts_to(APPROVER)) == cards and rig.notion.calls == calls
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_a_handle_change_after_approval_still_gets_already_onboarded(config):
+    rig = await onboarded_rig(config)
+    await press_again(rig, 3, username="juan_new_name")
+
+    assert rig.texts_to(USER)[-1] == strings.ALREADY_ONBOARDED
+    member = rig.store.member(USER)
+    assert member["status"] == "approved" and member["contact_page_id"] == JUAN.page_id
+    assert len(rig.texts_to(APPROVER)) == 1
+
+
+async def test_start_again_when_rejected_gets_the_neutral_reply_and_no_card(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)
+    tap(rig, 2, data_of(rig.card(), "Reject"))
+    await rig.settle()
+    cards = len(rig.texts_to(APPROVER))
+    await press_again(rig, 3)
+
+    assert rig.texts_to(USER)[-2:] == [strings.REJECTED, strings.REJECTED]
+    assert len(rig.texts_to(APPROVER)) == cards
+    assert rig.store.member(USER)["status"] == "rejected"
+
+
+async def test_a_permanent_block_error_on_a_send_to_a_member_marks_them_blocked(config):
+    from sixto_gateway.telegram.errors import BlockedByUserError
+
+    rig = await onboarded_rig(config)
+    rig.clock.advance(10)
+    rig.telegram.fail_with = BlockedByUserError("bot was blocked by the user")
+    rig.store.enqueue_outbound(
+        "watchdog",
+        "message",
+        str(USER),
+        {"chat": USER, "topic": None, "text": "hi", "format": "plain"},
+    )
+    await rig.settle()
+
+    assert rig.store.member(USER)["status"] == "blocked"
+    assert any(e == "blocked" and f"user={USER}" in d for e, _, d in rig.store.audit_events())
+
+
+async def test_a_block_error_for_a_pending_member_or_a_group_changes_no_row(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    await rig.settle()
+    assert rig.store.block_member(USER) is False  # pending: the approver still decides
+    assert rig.store.block_member(INTAKE_CHAT) is False  # no such member
+    assert rig.store.member(USER)["status"] == "pending"
+
+
+async def test_a_blocked_member_pressing_start_goes_back_to_approved_with_no_card(config):
+    rig = await onboarded_rig(config)
+    rig.store.block_member(USER)
+    cards, calls = len(rig.texts_to(APPROVER)), rig.notion.calls
+    await press_again(rig, 3)
+
+    assert rig.store.member(USER)["status"] == "approved"
+    assert rig.texts_to(USER)[-1] == strings.ALREADY_ONBOARDED
+    assert len(rig.texts_to(APPROVER)) == cards and rig.notion.calls == calls
+
+
+async def test_pressing_start_many_times_while_pending_gives_the_approver_one_card(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    await rig.settle()
+    for n in (2, 3, 4):
+        await press_again(rig, n)
+
+    assert len(rig.texts_to(APPROVER)) == 1
+    assert rig.texts_to(USER).count(strings.PENDING_AGAIN) == 3
+
+
+def test_a_telegram_403_is_translated_to_a_block_error():
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
+
+    from sixto_gateway.telegram.client import translate_send_error
+    from sixto_gateway.telegram.errors import BlockedByUserError, PermanentSendError
+
+    error = translate_send_error(
+        TelegramForbiddenError(SendMessage(chat_id=1, text="x"), "blocked")
+    )
+    assert isinstance(error, BlockedByUserError) and isinstance(error, PermanentSendError)

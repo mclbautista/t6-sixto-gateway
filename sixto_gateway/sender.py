@@ -25,7 +25,11 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.pacing import LONGEST_WINDOW_SECONDS, Pacer
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
-from sixto_gateway.telegram.errors import PermanentSendError, RetryAfterError
+from sixto_gateway.telegram.errors import (
+    BlockedByUserError,
+    PermanentSendError,
+    RetryAfterError,
+)
 
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
@@ -117,6 +121,8 @@ class Sender:
         if isinstance(exc, PermanentSendError) or step >= len(RETRY_SCHEDULE_SECONDS):
             self._store.mark_outbound_failed(ref, error)
             self._store.audit("send_failed", module, f"ref={ref} attempts={step + 1} {error}")
+            if isinstance(exc, BlockedByUserError):
+                self._store.block_member(row["body"]["chat"])
             log.warning(
                 "send %s for %s failed after %d attempt(s): %s", ref, module, step + 1, error
             )

@@ -54,15 +54,25 @@ def decide_start(store: Store, update: IncomingUpdate) -> Decision:
         )
     existing = store.member(user)
     if existing is not None:
-        if existing["status"] == "pending":
-            return Decision(
+        status = existing["status"]
+        reply, kind = {
+            "pending": (strings.PENDING_AGAIN, "pending_again"),
+            "approved": (strings.ALREADY_ONBOARDED, "already_onboarded"),
+            "rejected": (strings.REJECTED, "rejected"),
+            "blocked": (strings.ALREADY_ONBOARDED, "already_onboarded"),
+        }[status]
+        # no card and no Notion lookup in any of these: the member is known by Telegram user id
+        return Decision(
+            None,
+            audit=(
+                "start",
                 None,
-                audit=("start", None, f"{detail} again"),
-                extra_audits=(("reply", None, f"{detail} kind=pending_again"),),
-                reply=strings.PENDING_AGAIN,
-            )
-        # approved, rejected and blocked members are handled by tickets #21, #22 and #26
-        return Decision(None, audit=("start", None, f"{detail} status={existing['status']}"))
+                f"{detail} again" if status == "pending" else f"{detail} status={status}",
+            ),
+            extra_audits=(("reply", None, f"{detail} kind={kind}"),),
+            reply=reply,
+            unblock_member=user if status == "blocked" else None,
+        )
     reply = strings.WAITING.format(first_name=strings.first_name_or_there(update.from_first_name))
     return Decision(
         None,
