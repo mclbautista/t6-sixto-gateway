@@ -20,6 +20,13 @@ REJECTED = "Thanks. There is nothing more you need to do here."
 APPROVED = "You are all set, {first_name}. Your briefings will come to this chat."
 IN_A_GROUP = "Please message me directly to set up your briefings: {deep_link}"
 
+# --- for /whereami (HTML: values go through html.escape) ----------------------------------
+
+WHEREAMI_IN_DM = "Send this in the group topic you want."
+WHEREAMI_CHAT = "Chat id: <code>{chat_id}</code>"
+WHEREAMI_TOPIC = "Topic id: <code>{topic_id}</code>"
+WHEREAMI_NO_TOPIC = "Topic id: none (this group has no topics)"
+
 # --- for the approver's card ----------------------------------------------------------------
 
 CARD_TITLE = "New /start"

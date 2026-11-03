@@ -75,6 +75,13 @@ commands:
   jo: { module: jo, allow: [psr, 274983989], description: "Job orders" }   # group names or user ids
 ```
 
+- **Built-in commands** (`builtin: true`, no `module`) are answered by the gateway itself and
+  never appear in `/updates`. `/whereami` replies, in the same chat and topic, with the chat id
+  and topic id in tap-to-copy code format. Allowed callers are those in its `allow` list
+  (example config: group `chat_ids`). In a group, anyone else gets no reply (audited as
+  `command_refused`); in a DM an allowed caller is told to send it in the group, anyone else gets
+  the standard refusal. Each answer is audited as `command_answered` (chat id and caller id,
+  never args). An edited message gets no second reply.
 - **Menus, at boot** (only when `telegram.polling` is true): the default `/` menu is set empty,
   and each user id named in any `allow` list (directly or through a group) gets a per-chat menu
   with only their commands. People who had a menu at an earlier boot and are no longer on any
