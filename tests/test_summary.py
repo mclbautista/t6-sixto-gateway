@@ -215,3 +215,34 @@ def test_the_example_config_lists_the_psr_handles_and_a_placeholder_for_pio():
         "leizette",
     ]
     assert len(config.onboarding.expected) == 8
+
+
+async def test_a_long_pending_list_is_capped_to_fit_one_telegram_message(config):
+    rig = Rig(
+        config, [start_from(i, user=7000 + i, username=f"person{i}") for i in range(1, 26)], []
+    )
+    await rig.settle()
+    rig.clock.now = NINE
+    worker_for(rig, config).send_due()
+    (row,) = [r for r in rig.store.due_outbound(NINE) if "summary" in r["body"]["text"].lower()]
+    assert "Pending: 25" in row["body"]["text"] and "and 5 more" in row["body"]["text"]
+    assert len(row["body"]["text"]) < 4096
+
+
+async def test_a_failed_attempt_is_retried_at_the_next_check(config, monkeypatch):
+    rig = Rig(config, [], [])
+    rig.clock.now = NINE
+    summary = worker_for(rig, config)
+    real = rig.store.enqueue_outbound
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("disk")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(rig.store, "enqueue_outbound", flaky)
+    with pytest.raises(RuntimeError):
+        summary.send_due()
+    assert summary.send_due() is True

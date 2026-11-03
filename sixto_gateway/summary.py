@@ -29,12 +29,15 @@ from sixto_gateway.store.db import SECONDS_PER_DAY
 log = logging.getLogger(__name__)
 CHECK_EVERY_SECONDS = 30.0
 MAX_FAILURES_SHOWN = 5
+MAX_PENDING_SHOWN = 20  # keeps the message under Telegram's 4096 characters
 FAILURE_DETAIL_CHARS = 160
 
 
-def _waiting(seconds: float) -> str:
+def _format_wait(seconds: float) -> str:
     days = int(seconds // SECONDS_PER_DAY)
-    return "since today" if days <= 0 else f"{days} day" + ("" if days == 1 else "s")
+    if days <= 0:
+        return strings.SUMMARY_WAITING_TODAY
+    return strings.SUMMARY_WAITING_DAYS.format(days=days, s="" if days == 1 else "s")
 
 
 class SummaryWorker:
@@ -66,12 +69,13 @@ class SummaryWorker:
         if self._done_date == date:
             return False
         key = f"summary:{date}"
-        self._done_date = date
         if self._store.has_outbound(GATEWAY_MODULE, key):  # queued before a restart
+            self._done_date = date
             return False
         self._store.enqueue_outbound(
             GATEWAY_MODULE, "message", str(self._approver), self.render(now), key
         )
+        self._done_date = date  # only once queued, so a failure here is retried at the next check
         self._store.audit("summary", None, f"date={date}")
         self._queue_wake.notify()
         return True
@@ -102,16 +106,18 @@ class SummaryWorker:
         if not pending:
             return [strings.SUMMARY_NO_PENDING]
         lines = [strings.SUMMARY_PENDING]
-        for member in pending:
+        for member in pending[:MAX_PENDING_SHOWN]:
             handle = f"@{member['handle']}" if member["handle"] else strings.CARD_NO_HANDLE
             person = html.escape(f"{full_name(member) or '(no name)'} {handle}")
             lines.append(
                 strings.SUMMARY_PENDING_ITEM.format(
                     person=person,
-                    waiting=_waiting(now - member["created_at"]),
+                    waiting=_format_wait(now - member["created_at"]),
                     link=self._card_link(member),
                 )
             )
+        if len(pending) > MAX_PENDING_SHOWN:
+            lines.append(strings.SUMMARY_PENDING_MORE.format(more=len(pending) - MAX_PENDING_SHOWN))
         return lines
 
     def _card_link(self, member: dict[str, Any]) -> str:
@@ -128,7 +134,8 @@ class SummaryWorker:
             return [strings.SUMMARY_NO_FAILURES]
         lines = [strings.SUMMARY_FAILURES.format(count=len(failures))]
         lines += [
-            f"• {html.escape(f[:FAILURE_DETAIL_CHARS])}" for f in failures[:MAX_FAILURES_SHOWN]
+            f"• {html.escape(detail[:FAILURE_DETAIL_CHARS])}"
+            for detail in failures[:MAX_FAILURES_SHOWN]
         ]
         if len(failures) > MAX_FAILURES_SHOWN:
             lines.append(

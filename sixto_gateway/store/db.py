@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from sixto_gateway.config import normalize_handle
 from sixto_gateway.decision import GATEWAY_MODULE, Decision
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
@@ -366,7 +367,7 @@ class Store:
         rows = self._db.execute(
             "SELECT handle FROM members WHERE status = 'approved' AND handle IS NOT NULL"
         )
-        return {r[0].lstrip("@").lower() for r in rows if r[0]}
+        return {normalize_handle(r[0]) for r in rows if r[0]}
 
     def approved_user_for_contact(self, contact_page_id: str) -> int | None:
         """The Telegram user id of the approved member linked to a Contact, else None.

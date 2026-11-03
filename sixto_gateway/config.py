@@ -77,6 +77,11 @@ SUMMARY_TIME_PATTERN = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 HANDLE_PATTERN = re.compile(r"[a-z0-9_]{5,32}")  # Telegram usernames, lowercase
 
 
+def normalize_handle(handle: str) -> str:
+    """Telegram handles compare without ``@`` and in lowercase."""
+    return handle.strip().removeprefix("@").lower()
+
+
 class OnboardingConfig(_Model):
     approver: StrictInt  # Telegram user id of the person whose DM gets the approval cards
     summary_time: StrictStr = "09:00"  # HH:MM, Asia/Manila: the daily summary DM to the approver
@@ -93,7 +98,7 @@ class OnboardingConfig(_Model):
     @classmethod
     def _expected_are_handles(cls, values: list[str]) -> list[str]:
         """Handles are stored without ``@`` and in lowercase, as Telegram compares them."""
-        handles = [v.strip().removeprefix("@").lower() for v in values]
+        handles = [normalize_handle(v) for v in values]
         for i, handle in enumerate(handles):
             if not HANDLE_PATTERN.fullmatch(handle):
                 raise ValueError(
