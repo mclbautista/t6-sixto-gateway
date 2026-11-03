@@ -50,6 +50,13 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
   "idempotency_key": "..."}` and `POST /react` `{"chat", "message_id", "emoji"}` save a row in
   `outbound` and answer `202 {"message_ref": N}`. A repeated `idempotency_key` from the same
   module returns the same ref and queues nothing new. Invalid bodies get `422`.
+- **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id>",
+  "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@juandc"}, "text": "..."}`.
+  If the Contact has an `approved` member (see /start onboarding), the message is queued to that
+  person's DM. Otherwise it goes to the fallback chat and topic with `@handle` added at the start
+  of the text. The lookup reads only the local `members` table, never Notion, and dashes in the
+  page id do not matter. Send either `to` or `contact` with `fallback`, never both and never
+  neither (`422`); the topic belongs inside `fallback`, and a text that the `@handle` would push past 4096 characters is a `422` too. `format`, `text` and `idempotency_key` work the same in both forms.
 - One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
   error}` for the calling module's own refs (`404` otherwise).

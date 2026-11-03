@@ -167,3 +167,86 @@ async def test_out_of_range_ids_are_422_not_500(client):
     assert (await client.get("/notify/99999999999999999999", headers=auth())).status_code == 422
     big = {"to": 2**70, "text": "hi"}
     assert (await client.post("/notify", json=big, headers=auth())).status_code == 422
+
+
+# --- /notify by Notion Contact (#24) -------------------------------------------------------
+
+CONTACT = "0a1b2c3d-1111-2222-3333-444455556666"
+USER = 123456789
+TOPIC = 777
+FALLBACK = {"to": CHAT, "topic": TOPIC, "handle": "juandc"}
+
+
+def add_member(store, status="approved", contact=CONTACT, user=USER):
+    store._db.execute(
+        "INSERT INTO members (telegram_user_id, handle, first_name, status, contact_page_id,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,0,0)",
+        (user, "juandc", "Juan", status, contact),
+    )
+    store._db.commit()
+
+
+async def test_contact_with_approved_member_goes_to_their_dm(client, env):
+    add_member(env[0])
+    body = {"contact": CONTACT, "fallback": FALLBACK, "text": "hello"}
+    r = await client.post("/notify", json=body, headers=auth())
+    assert r.status_code == 202
+    row = env[0].due_outbound(10**12)[0]
+    assert row["target"] == str(USER)
+    assert row["body"] == {"chat": USER, "topic": None, "text": "hello", "format": "html"}
+
+
+async def test_contact_page_id_dashes_do_not_matter(client, env):
+    add_member(env[0])
+    body = {"contact": CONTACT.replace("-", ""), "fallback": FALLBACK, "text": "hello"}
+    await client.post("/notify", json=body, headers=auth())
+    assert env[0].due_outbound(10**12)[0]["target"] == str(USER)
+
+
+@pytest.mark.parametrize("status", ["pending", "rejected", "blocked"])
+async def test_contact_without_approved_member_uses_fallback_with_mention(client, env, status):
+    add_member(env[0], status=status)
+    body = {"contact": CONTACT, "fallback": FALLBACK, "text": "hello"}
+    await client.post("/notify", json=body, headers=auth())
+    row = env[0].due_outbound(10**12)[0]
+    assert row["target"] == str(CHAT)
+    assert row["body"] == {"chat": CHAT, "topic": TOPIC, "text": "@juandc hello", "format": "html"}
+
+
+async def test_unknown_contact_uses_fallback_and_handle_is_normalised(client, env):
+    body = {"contact": CONTACT, "fallback": {**FALLBACK, "handle": "@juandc"}, "text": "hi"}
+    await client.post("/notify", json=body, headers=auth())
+    assert env[0].due_outbound(10**12)[0]["body"]["text"] == "@juandc hi"
+
+
+async def test_contact_form_is_sent_by_the_sender(client, env):
+    add_member(env[0])
+    await client.post(
+        "/notify", json={"contact": CONTACT, "fallback": FALLBACK, "text": "x"}, headers=auth()
+    )
+    await drain(env[2])
+    assert env[1].sent[-1]["chat_id"] == USER
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},  # neither
+        {"to": CHAT, "contact": CONTACT, "fallback": FALLBACK},  # both
+        {"contact": CONTACT},  # no fallback
+        {"to": CHAT, "fallback": FALLBACK},  # fallback without contact
+        {"contact": CONTACT, "fallback": {"to": CHAT, "topic": TOPIC}},  # no handle
+        {"contact": CONTACT, "fallback": {"topic": TOPIC, "handle": "juandc"}},  # no chat
+        {"contact": CONTACT, "fallback": {**FALLBACK, "handle": "not a handle"}},
+        {"contact": "", "fallback": FALLBACK},
+    ],
+)
+async def test_invalid_contact_combinations_are_422(client, extra):
+    r = await client.post("/notify", json={"text": "hi", **extra}, headers=auth())
+    assert r.status_code == 422
+
+
+async def test_fallback_mention_cannot_push_text_over_the_limit(client):
+    body = {"contact": CONTACT, "fallback": FALLBACK, "text": "x" * 4096}
+    r = await client.post("/notify", json=body, headers=auth())
+    assert r.status_code == 422
