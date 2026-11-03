@@ -9,6 +9,8 @@ Status: intake (config, polling, routing, `GET /updates`), sending with pacing a
 (`/notify`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
 (`/healthz`, deadman, retention, `set-offset`, deploy, rollback and the cutover runbook).
 
+As of Nov 3 the Mac mini cutover is done and the first onboarding test has passed.
+
 ## Run the tests
 
 ```sh
@@ -339,3 +341,7 @@ To go forward again later, repeat the runbook from step 2, so `set-offset` is gi
 `python -m sixto_gateway set-offset N` sets the cursor to exactly `N` (it may also move it
 backwards) and writes a `set_offset` audit row; the next `getUpdates` uses `N + 1`. `N` must be 0
 or more. Run it with `docker compose exec` so it uses the running container's mounted `./data`.
+
+## Workflow
+
+Work moves through five separate stages: grill, spec, tickets, implement, code review. Finish one before starting the next. Work is tracked in GitHub Issues and sub-issues (spec as one issue, tickets as its sub-issues). Agent instructions: see `AGENTS.md`.
