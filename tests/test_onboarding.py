@@ -375,6 +375,10 @@ async def test_a_failed_notion_write_leaves_the_row_pending_and_the_buttons_usab
     assert rig.store.member(USER)["status"] == "approved"
 
 
+def replace_id(c, new_id):
+    return replace(c, telegram_user_id=new_id)
+
+
 TAKEN = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id="987")
 
 
@@ -403,6 +407,16 @@ async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
         e == "notion_write" and "replaced_id=987" in d for e, _, d in rig.store.audit_events()
     )
     assert "✅ Approved:" in rig.telegram.edits[-1]["text"]
+
+
+async def test_replace_id_refuses_when_the_id_changed_since_the_card_was_sent(config):
+    rig = await approved_rig(config, contacts=(TAKEN,))
+    replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
+    rig.notion.contacts = [replace_id(TAKEN, "555")]  # someone edited Notion meanwhile
+    tap(rig, 2, replace["callback_data"])
+    await rig.settle()
+    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.telegram.answers[-1]["alert"] is True
 
 
 async def test_replace_id_names_the_candidate_when_there_are_several(config):
