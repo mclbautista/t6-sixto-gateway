@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from pathlib import Path
 
 from aiogram.types import Update
 
+from sixto_gateway.notion import Contact, NotionError
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 FIXTURES = Path(__file__).parent / "fixtures" / "telegram_updates.json"
 INTAKE_CHAT = -1001234567890
 INTAKE_TOPIC = 77
+APPROVER = 274983989  # onboarding.approver in test configs
+CONTACTS_SOURCE = "77b2a701-71db-4e88-a694-37f07303e77e"
+NOTION_YAML = (
+    f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
+    f"onboarding: {{approver: {APPROVER}}}\n"
+)
+NOTION_ENV = {"NOTION_API_KEY": "ntn_" + "k" * 40}
 
 
 def fixture_updates() -> dict[str, dict]:
@@ -107,7 +116,12 @@ class FakeTelegram:
         self.menu_failures: set[int] = set()  # user ids Telegram refuses ("chat not found")
 
     async def send_message(
-        self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: list[list[dict[str, str]]] | None = None,
     ) -> int:
         self._maybe_fail()
         self._next_message_id += 1
@@ -119,6 +133,7 @@ class FakeTelegram:
                 "topic_id": topic_id,
                 "text": text,
                 "parse_mode": parse_mode,
+                "keyboard": keyboard,
                 "message_id": self._next_message_id,
             }
         )
@@ -168,3 +183,31 @@ class FakeTelegram:
             if incoming is not None:
                 out.append(incoming)
         return out
+
+
+def contact(page_id: str, name: str, handle: str = "", aliases: str = "") -> Contact:
+    return Contact(
+        page_id=page_id,
+        name=name,
+        url=f"https://www.notion.so/{page_id.replace('-', '')}",
+        telegram_handle=handle,
+        aliases=aliases,
+    )
+
+
+class FakeNotion:
+    """The Contacts directory. ``block`` holds lookups until set; ``fail`` makes them raise."""
+
+    def __init__(self, contacts: list[Contact]):
+        self.contacts = contacts
+        self.block: asyncio.Event | None = None
+        self.fail = False
+        self.calls = 0
+
+    async def list_contacts(self) -> list[Contact]:
+        self.calls += 1
+        if self.block is not None:
+            await self.block.wait()
+        if self.fail:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        return list(self.contacts)

@@ -136,6 +136,17 @@ class Store:
                 seq = cursor.lastrowid
             if inserted and decision.audit is not None:
                 self._insert_audit(*decision.audit)
+            if inserted:
+                for extra in decision.extra_audits:
+                    self._insert_audit(*extra)
+            if inserted and decision.member is not None:
+                m = decision.member
+                self._db.execute(
+                    "INSERT INTO members (telegram_user_id, handle, first_name, last_name,"
+                    " status, created_at, updated_at) VALUES (?,?,?,?,'pending',?,?)"
+                    " ON CONFLICT(telegram_user_id) DO NOTHING",
+                    (m.user_id, m.handle, m.first_name, m.last_name, received_at, received_at),
+                )
             if inserted and decision.reply is not None:
                 self._insert_outbound(
                     GATEWAY_MODULE,
@@ -143,7 +154,7 @@ class Store:
                     str(update.chat_id),
                     {
                         "chat": update.chat_id,
-                        "topic": None,
+                        "topic": update.topic_id if update.chat_type != "private" else None,
                         "text": decision.reply,
                         "format": "plain",
                     },
@@ -263,6 +274,61 @@ class Store:
                 "UPDATE outbound SET state = 'sent', attempts = attempts + 1,"
                 " telegram_message_id = ?, last_error = NULL WHERE id = ?",
                 (telegram_message_id, ref),
+            )
+            row = self._db.execute("SELECT body FROM outbound WHERE id = ?", (ref,)).fetchone()
+            card_for = json.loads(row["body"]).get("card_for") if row else None
+            if card_for is not None:  # an approval card: remember it so it can be edited later
+                self._db.execute(
+                    "UPDATE members SET card_message_id = ?, updated_at = ?"
+                    " WHERE telegram_user_id = ?",
+                    (telegram_message_id, self._clock(), card_for),
+                )
+                self._insert_audit("card_sent", None, f"user={card_for}")
+
+    # --- onboarding members ---------------------------------------------------------------
+
+    def member(self, user_id: int) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT * FROM members WHERE telegram_user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        member = dict(row)
+        member["candidates"] = (
+            None if member["candidates"] is None else json.loads(member["candidates"])
+        )
+        return member
+
+    def members_awaiting_lookup(self) -> list[dict[str, Any]]:
+        """Pending members whose Notion lookup has not finished, oldest first."""
+        rows = self._db.execute(
+            "SELECT telegram_user_id FROM members WHERE status = 'pending' AND candidates IS NULL"
+            " ORDER BY created_at, telegram_user_id"
+        ).fetchall()
+        return [m for r in rows if (m := self.member(r[0])) is not None]
+
+    def queue_approval_card(
+        self, user_id: int, candidates: list[str], card_chat: int, card: dict[str, Any], detail: str
+    ) -> None:
+        """Record the finished lookup and queue the approver's card, in one transaction.
+
+        A second call for the same member is ignored, so a card is never queued twice.
+        """
+        with self._transaction():
+            updated = self._db.execute(
+                "UPDATE members SET candidates = ?, updated_at = ?"
+                " WHERE telegram_user_id = ? AND candidates IS NULL",
+                (json.dumps(candidates), self._clock(), user_id),
+            ).rowcount
+            if not updated:
+                return
+            self._insert_audit("lookup", None, f"user={user_id} {detail}")
+            self._insert_outbound(
+                GATEWAY_MODULE,
+                "message",
+                str(card_chat),
+                {**card, "chat": card_chat, "topic": None, "card_for": user_id},
+                f"card:{user_id}",
             )
 
     def mark_outbound_failed(self, ref: int, error: str) -> None:

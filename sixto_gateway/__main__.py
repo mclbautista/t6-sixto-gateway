@@ -21,6 +21,7 @@ from sixto_gateway.config import Config, ConfigError, load_config
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.logsafe import Redactor, configure_logging
 from sixto_gateway.notifier import Notifier
+from sixto_gateway.notion import ContactsDirectory, NotionContacts
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import AiogramTelegramClient, TelegramClient
@@ -36,11 +37,15 @@ def redactor_for(config: Config) -> Redactor:
 
 
 async def serve(
-    config: Config, client: TelegramClient | None = None, liveness: Liveness | None = None
+    config: Config,
+    client: TelegramClient | None = None,
+    liveness: Liveness | None = None,
+    contacts: ContactsDirectory | None = None,
 ) -> int:
     """Run until any task ends; returns the process exit code.
 
-    ``client`` and ``liveness`` are for tests; by default a real Bot and the wall clock are used.
+    ``client``, ``liveness`` and ``contacts`` are for tests; by default a real Bot, the wall
+    clock and the real Notion Contacts are used.
     """
     store = Store(config.database_path)
     store.audit("config_loaded", detail=f"modules={sorted(config.modules)}")
@@ -54,10 +59,27 @@ async def serve(
     stop = asyncio.Event()
     bot = Bot(token=config.secrets.bot_token) if client is None else None
     client = client or AiogramTelegramClient(bot)
+    notion = None
+    if contacts is None:
+        notion = NotionContacts(
+            config.secrets.notion_api_key,
+            config.notion.contacts_data_source_id,
+            config.notion.version,
+        )
+        contacts = notion
     if config.telegram.polling:
         await _register_menus_bounded(store, client, config)
     workers = start_workers(
-        config, store, client, notifier, queue_wake, liveness, stop, redactor_for(config).scrub
+        config,
+        store,
+        client,
+        notifier,
+        queue_wake,
+        liveness,
+        stop,
+        redactor_for(config).scrub,
+        contacts=contacts,
+        onboarding_wake=Notifier(),
     )
     tasks = {"server": asyncio.create_task(server.serve()), **workers}
     exit_code = 0
@@ -70,6 +92,8 @@ async def serve(
         stuck = await _shut_down(tasks)
         if bot is not None:
             await _bounded(bot.session.close(), SHUTDOWN_GRACE_SECONDS)
+        if notion is not None:
+            await _bounded(notion.close(), SHUTDOWN_GRACE_SECONDS)
     deadman = tasks.get("deadman")
     if deadman and deadman.done() and not deadman.cancelled() and deadman.exception() is None:
         if deadman.result():

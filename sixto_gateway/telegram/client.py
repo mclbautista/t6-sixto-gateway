@@ -14,6 +14,9 @@ from sixto_gateway.telegram.errors import (
 )
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
+Keyboard = list[list[dict[str, str]]]
+"""Inline buttons: rows of ``{"text": ..., "callback_data": ...}``."""
+
 
 class TelegramClient(Protocol):
     async def get_updates(
@@ -21,9 +24,16 @@ class TelegramClient(Protocol):
     ) -> list[IncomingUpdate]: ...
 
     async def send_message(
-        self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
     ) -> int:
         """Send a text message (link previews off); returns the Telegram message id.
+
+        ``keyboard`` adds inline buttons under the message.
 
         Failures raise ``SendError`` subclasses (see ``telegram.errors``).
         """
@@ -85,9 +95,30 @@ class AiogramTelegramClient:
         return [u for update in updates if (u := normalize(update)) is not None]
 
     async def send_message(
-        self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
     ) -> int:
-        from aiogram.types import LinkPreviewOptions
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+
+        markup = (
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=button["text"], callback_data=button["callback_data"]
+                        )
+                        for button in row
+                    ]
+                    for row in keyboard
+                ]
+            )
+            if keyboard
+            else None
+        )
 
         with _translated_errors():
             message = await self._bot.send_message(
@@ -97,6 +128,7 @@ class AiogramTelegramClient:
                 message_thread_id=None if topic_id == 1 else topic_id,
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
+                reply_markup=markup,
             )
         return int(message.message_id)
 
