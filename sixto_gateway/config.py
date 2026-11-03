@@ -39,7 +39,7 @@ class ListenConfig(_Model):
 
 class TelegramConfig(_Model):
     poll_timeout: Annotated[int, Field(ge=0, le=50)] = 50
-    allowed_updates: list[str] = ["message", "edited_message"]
+    allowed_updates: list[str] = ["message", "edited_message", "callback_query"]
     # Cutover step 1 deploys with polling off (spec section 12).
     polling: bool = True
 

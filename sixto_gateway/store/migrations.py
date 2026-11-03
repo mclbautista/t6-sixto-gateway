@@ -91,4 +91,18 @@ MIGRATIONS: list[str] = [
     CREATE UNIQUE INDEX members_approved_contact
         ON members (contact_page_id) WHERE status = 'approved';
     """,
+    # 6: taps on the approver's card buttons, saved with the update and handled by the onboarding
+    # worker (Notion is written before a member is approved, so a tap cannot be handled inline)
+    """
+    CREATE TABLE taps (
+        update_id INTEGER PRIMARY KEY,
+        callback_id TEXT NOT NULL,
+        from_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        done INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    );
+    """,
 ]

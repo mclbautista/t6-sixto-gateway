@@ -147,6 +147,21 @@ class Store:
                     " ON CONFLICT(telegram_user_id) DO NOTHING",
                     (m.user_id, m.handle, m.first_name, m.last_name, received_at, received_at),
                 )
+            if inserted and decision.tap is not None:
+                t = decision.tap
+                self._db.execute(
+                    "INSERT OR IGNORE INTO taps (update_id, callback_id, from_id, chat_id,"
+                    " message_id, data, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        update.update_id,
+                        t.callback_id,
+                        t.from_id,
+                        t.chat_id,
+                        t.message_id,
+                        t.data,
+                        received_at,
+                    ),
+                )
             if inserted and decision.reply is not None:
                 self._insert_outbound(
                     GATEWAY_MODULE,
@@ -330,6 +345,61 @@ class Store:
                 {**card, "chat": card_chat, "topic": None, "card_for": user_id},
                 f"card:{user_id}",
             )
+
+    def approved_user_for_contact(self, contact_page_id: str) -> int | None:
+        """The Telegram user id of the approved member linked to a Contact, else None.
+
+        Dashes in the page id do not matter. ``/notify`` addresses people through this.
+        """
+        row = self._db.execute(
+            "SELECT telegram_user_id FROM members WHERE status = 'approved'"
+            " AND REPLACE(contact_page_id, '-', '') = ?",
+            (contact_page_id.replace("-", ""),),
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    def approve_member(
+        self, user_id: int, contact_page_id: str, decided_by: int, reply: dict[str, Any]
+    ) -> bool:
+        """Mark a pending member approved and queue their "approved" reply, in one transaction.
+
+        Call this only after the Contact's ``TelegramUserID`` is written. False (nothing
+        changed) when the member is no longer pending or the Contact belongs to someone else.
+        """
+        try:
+            with self._transaction():
+                now = self._clock()
+                updated = self._db.execute(
+                    "UPDATE members SET status = 'approved', contact_page_id = ?, decided_by = ?,"
+                    " decided_at = ?, updated_at = ? WHERE telegram_user_id = ?"
+                    " AND status = 'pending'",
+                    (contact_page_id, decided_by, now, now, user_id),
+                ).rowcount
+                if not updated:
+                    return False
+                self._insert_audit(
+                    "decision",
+                    None,
+                    f"user={user_id} approved contact={contact_page_id} by={decided_by}",
+                )
+                self._insert_audit("reply", None, f"user={user_id} kind=approved")
+                self._insert_outbound(
+                    GATEWAY_MODULE, "message", str(user_id), reply, f"approved:{user_id}"
+                )
+                return True
+        except sqlite3.IntegrityError:  # the unique index: the Contact already has a member
+            return False
+
+    def next_tap(self) -> dict[str, Any] | None:
+        """The oldest button tap not yet handled."""
+        row = self._db.execute(
+            "SELECT * FROM taps WHERE done = 0 ORDER BY update_id LIMIT 1"
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def finish_tap(self, update_id: int) -> None:
+        with self._transaction():
+            self._db.execute("UPDATE taps SET done = 1 WHERE update_id = ?", (update_id,))
 
     def mark_outbound_failed(self, ref: int, error: str) -> None:
         with self._transaction():

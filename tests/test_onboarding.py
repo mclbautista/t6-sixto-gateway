@@ -1,6 +1,8 @@
 """/start onboarding, first slice (#20): a Start becomes a pending member and an approval card."""
 
 import asyncio
+import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -22,6 +24,7 @@ from tests.fakes import (
     FakeClock,
     FakeNotion,
     FakeTelegram,
+    button_tap,
     contact,
     dm_message,
     group_command,
@@ -76,7 +79,13 @@ class Rig:
             onboarding_wake=self.onboarding_wake,
         )
         self.worker = OnboardingWorker(
-            self.store, self.notion, config, self.onboarding_wake, self.queue_wake, self.clock
+            self.store,
+            self.notion,
+            config,
+            self.onboarding_wake,
+            self.queue_wake,
+            self.clock,
+            client=self.telegram,
         )
         self.sender = Sender(self.store, self.telegram, self.queue_wake, clock=self.clock)
 
@@ -238,6 +247,171 @@ async def test_a_failed_lookup_leaves_the_member_pending_and_is_retried(config):
     rig.clock.advance(61)
     await rig.settle()
     assert len(rig.texts_to(APPROVER)) == 1
+
+
+# --- approving (#21) ------------------------------------------------------------------------
+
+
+async def approved_rig(config, contacts=(JUAN, MARIA), extra=()):
+    rig = Rig(config, [start_from(1), *extra], list(contacts))
+    await rig.settle()
+    return rig
+
+
+def tap(rig, update_id, data, user=APPROVER):
+    rig.telegram.push(button_tap(update_id, user, data, APPROVER, rig.card()["message_id"]))
+
+
+def approve_data(rig, contact_=JUAN):
+    return next(b["callback_data"] for b in buttons(rig.card()) if b["text"].startswith("Approve"))
+
+
+async def test_approve_writes_notion_then_marks_the_row_approved_and_replies(config):
+    rig = await approved_rig(config)
+    rig.clock.advance(10)
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    member = rig.store.member(USER)
+    assert member["status"] == "approved" and member["contact_page_id"] == JUAN.page_id
+    assert member["decided_by"] == APPROVER and member["decided_at"] is not None
+    assert rig.texts_to(USER)[-1] == (
+        "You are all set, Juan. Your briefings will come to this chat."
+    )
+    (edit,) = rig.telegram.edits
+    assert edit["message_id"] == rig.card()["message_id"] and not edit["keyboard"]
+    assert "✅ Approved:" in edit["text"] and "Juan Dela Cruz" in edit["text"]
+    assert rig.telegram.answers == [{"callback_id": "cb2", "text": None, "alert": False}]
+    events = [(e, d) for e, _, d in rig.store.audit_events()]
+    assert any(e == "decision" and "approved" in d for e, d in events)
+    assert any(e == "notion_write" and d.endswith(f"contact={JUAN.page_id}") for e, d in events)
+
+
+async def test_a_second_tap_changes_nothing_and_rerenders_the_card(config):
+    rig = await approved_rig(config)
+    data = approve_data(rig)
+    tap(rig, 2, data)
+    await rig.settle()
+    rig.clock.advance(10)
+    tap(rig, 3, data)
+    await rig.settle()
+
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert len(rig.telegram.answers) == 2  # both taps were answered
+    assert len(rig.telegram.edits) == 2 and "✅ Approved:" in rig.telegram.edits[1]["text"]
+    assert (
+        rig.texts_to(USER).count("You are all set, Juan. Your briefings will come to this chat.")
+        == 1
+    )
+
+
+async def test_a_tap_from_anyone_but_the_approver_changes_nothing(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, approve_data(rig), user=555)
+    await rig.settle()
+
+    assert rig.store.member(USER)["status"] == "pending"
+    assert rig.notion.writes == [] and rig.telegram.edits == []
+    assert [a["callback_id"] for a in rig.telegram.answers] == ["cb2"]  # spinner stops
+
+
+async def test_a_failed_notion_write_leaves_the_row_pending_and_the_buttons_usable(config):
+    rig = await approved_rig(config)
+    rig.notion.fail_write = True
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+
+    assert rig.store.member(USER)["status"] == "pending" and rig.telegram.edits == []
+    assert rig.telegram.answers[0]["alert"] is True
+    assert any(e == "notion_write" and "failed" in d for e, _, d in rig.store.audit_events())
+
+    rig.notion.fail_write = False
+    tap(rig, 3, approve_data(rig))
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_a_contact_with_a_different_telegram_id_is_not_overwritten(config):
+    taken = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id="987")
+    rig = await approved_rig(config, contacts=(taken,))
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+
+    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.telegram.answers[0]["alert"] is True
+
+
+async def test_a_contact_that_already_has_this_id_is_approved_without_a_second_write(config):
+    same = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id=str(USER))
+    rig = await approved_rig(config, contacts=(same,))
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "approved"
+
+
+async def test_one_contact_cannot_be_linked_to_two_users(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    rig.clock.advance(10)
+    rig.telegram.push(start_from(3, user=6002, username="juandc", first="Other"))
+    await rig.settle()
+    (second,) = [
+        m for m in rig.telegram.sent if m["chat_id"] == APPROVER and "id 6002" in m["text"]
+    ]
+    approve = next(b for b in second["keyboard"][0] if b["text"].startswith("Approve"))
+    rig.telegram.push(
+        button_tap(4, APPROVER, approve["callback_data"], APPROVER, second["message_id"])
+    )
+    await rig.settle()
+
+    assert rig.store.member(6002)["status"] == "pending"
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.telegram.answers[-1]["alert"] is True
+
+
+async def test_the_contact_to_user_lookup_returns_only_approved_members(config):
+    rig = await approved_rig(config)
+    assert rig.store.approved_user_for_contact(JUAN.page_id) is None  # pending
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    assert rig.store.approved_user_for_contact(JUAN.page_id) == USER
+    assert rig.store.approved_user_for_contact(JUAN.page_id.replace("-", "")) == USER
+    assert rig.store.approved_user_for_contact(MARIA.page_id) is None
+
+
+async def test_taps_are_stored_and_never_routed_to_a_module(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, "something:else")
+    await rig.poller.poll_once()
+    assert rig.store.deliveries_after("watchdog", 0) == []
+    assert rig.store.count_updates() == 2
+
+
+async def test_callback_query_is_polled_by_default(config):
+    assert "callback_query" in config.telegram.allowed_updates
+
+
+async def test_the_adapter_writes_a_number_or_text_property_as_the_contact_has_it():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, request.read()))
+        return httpx.Response(200, json=page("p-1", "Juan"))
+
+    notion = notion_with(handler)
+    await notion.set_telegram_user_id(contact("p-1", "Juan"), 42)
+    await notion.set_telegram_user_id(replace(contact("p-2", "Mia"), user_id_kind="rich_text"), 7)
+    await notion.close()
+
+    assert seen[0][:2] == ("PATCH", "/v1/pages/p-1")
+    assert json.loads(seen[0][2]) == {"properties": {"TelegramUserID": {"number": 42}}}
+    assert json.loads(seen[1][2]) == {
+        "properties": {
+            "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "7"}}]}
+        }
+    }
 
 
 # --- config ---------------------------------------------------------------------------------

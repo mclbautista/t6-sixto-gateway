@@ -1,4 +1,4 @@
-"""The gateway's own small Notion adapter for the Contacts data source (read only for now).
+"""The gateway's own small Notion adapter for the Contacts data source.
 
 Matching rules (``normalize_handle``, ``split_aliases``) are ported from ``t6-jo-tg-ntn``
 ``jo_watchdog/core/resolve.py``; that repo is deliberately not imported.
@@ -28,11 +28,20 @@ class Contact:
     telegram_handle: str = ""
     aliases: str = ""
     telegram_user_id: str = ""
+    user_id_kind: str = "number"  # the TelegramUserID property type: "number" or "rich_text"
 
 
 class ContactsDirectory(Protocol):
     async def list_contacts(self) -> list[Contact]:
         """Every Contact. Failures raise ``NotionError``."""
+        ...
+
+    async def get_contact(self, page_id: str) -> Contact:
+        """One Contact, read fresh. Failures raise ``NotionError``."""
+        ...
+
+    async def set_telegram_user_id(self, contact: Contact, user_id: int) -> None:
+        """Write ``TelegramUserID`` on the Contact. Failures raise ``NotionError``."""
         ...
 
 
@@ -92,6 +101,7 @@ def contact_from_page(page: dict[str, Any]) -> Contact:
         telegram_handle=_text(props.get("TelegramHandle")),
         aliases=_text(props.get("Aliases")),
         telegram_user_id=_text(props.get("TelegramUserID")),
+        user_id_kind=(props.get("TelegramUserID") or {}).get("type") or "number",
     )
 
 
@@ -135,9 +145,27 @@ class NotionContacts:
             if not data.get("has_more") or not cursor:
                 return contacts
 
+    async def get_contact(self, page_id: str) -> Contact:
+        return contact_from_page(await self._request("GET", f"/pages/{page_id}"))
+
+    async def set_telegram_user_id(self, contact: Contact, user_id: int) -> None:
+        value: dict[str, Any] = (
+            {"rich_text": [{"type": "text", "text": {"content": str(user_id)}}]}
+            if contact.user_id_kind == "rich_text"
+            else {"number": user_id}
+        )
+        await self._request(
+            "PATCH", f"/pages/{contact.page_id}", {"properties": {"TelegramUserID": value}}
+        )
+
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        return await self._request("POST", path, body)
+
+    async def _request(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         try:
-            response = await self._client.post(path, json=body)
+            response = await self._client.request(method, path, json=body)
         except httpx.HTTPError as exc:
             raise NotionError(f"Notion request failed: {type(exc).__name__}") from None
         if response.status_code >= 400:
