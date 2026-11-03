@@ -313,7 +313,7 @@ class OnboardingWorker:
             except NotionError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
-                if failures > len(LOOKUP_RETRY_AFTER_SECONDS):
+                if failures > len(LOOKUP_RETRY_AFTER_SECONDS):  # same test as _retry_lookup
                     self._store.queue_approval_card(
                         user,
                         [],
