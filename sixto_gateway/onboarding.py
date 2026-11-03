@@ -176,7 +176,7 @@ def render_outcome(member: dict[str, Any], contact_name: str | None = None) -> s
     status = member["status"]
     if status == "approved":
         page = member["contact_page_id"] or ""
-        url = f"https://www.notion.so/{page.replace('-', '')}"
+        url = contact_url(page)
         label = html.escape(contact_name or strings.OUTCOME_CONTACT)
         lines.append(strings.OUTCOME_APPROVED.format(link=f'<a href="{url}">{label}</a>'))
     elif status == "blocked":
@@ -266,6 +266,10 @@ def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, 
         ]
     )
     return {"text": "\n".join(lines), "format": "html", "keyboard": keyboard}
+
+
+def contact_url(page_id: str) -> str:
+    return f"https://www.notion.so/{page_id.replace('-', '')}"
 
 
 def _link(contact: Contact) -> str:
@@ -363,7 +367,8 @@ class OnboardingWorker:
             "chat": user,
             "topic": None,
             "text": strings.APPROVED.format(
-                first_name=strings.first_name_or_there(member["first_name"])
+                first_name=strings.first_name_or_there(member["first_name"]),
+                contact_url=holder.url,
             ),
             "format": "plain",
         }
@@ -584,7 +589,8 @@ class OnboardingWorker:
             "chat": user,
             "topic": None,
             "text": strings.APPROVED.format(
-                first_name=strings.first_name_or_there(member["first_name"])
+                first_name=strings.first_name_or_there(member["first_name"]),
+                contact_url=contact_url(page_id),
             ),
             "format": "plain",
         }
