@@ -179,11 +179,7 @@ class NotionContacts:
             "TelegramUserID": id_value,
         }
         if handle:
-            properties["TelegramHandle"] = (
-                {"title": [_rich(handle)]}
-                if kinds.get("TelegramHandle") == "title"
-                else {"rich_text": [_rich(handle)]}
-            )
+            properties["TelegramHandle"] = {"rich_text": [_rich(handle)]}
         body = {
             "parent": {"type": "data_source_id", "data_source_id": self._data_source_id},
             "properties": properties,

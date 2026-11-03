@@ -7,6 +7,7 @@ from dataclasses import replace
 import httpx
 import pytest
 
+from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.notion import NotionContacts, NotionError, matches_handle
@@ -437,7 +438,7 @@ async def test_reject_marks_the_row_replies_neutrally_and_leaves_notion_alone(co
 
     member = rig.store.member(USER)
     assert member["status"] == "rejected" and member["decided_by"] == APPROVER
-    assert rig.texts_to(USER)[-1] == "Thanks. There is nothing more you need to do here."
+    assert rig.texts_to(USER)[-1] == strings.REJECTED
     assert rig.notion.writes == [] and rig.notion.created == []
     (edit,) = rig.telegram.edits
     assert "Rejected" in edit["text"]
@@ -451,7 +452,7 @@ async def test_undo_puts_the_row_back_to_pending_with_the_original_buttons(confi
     tap(rig, 2, data_of(original, "Reject"))
     await rig.settle()
     rig.clock.advance(10)
-    tap(rig, 3, data_of(rig.card(), "Reject").replace(":no:", ":undo:"))
+    tap(rig, 3, callback_for(rig, "undo"))
     await rig.settle()
 
     assert rig.store.member(USER)["status"] == "pending"
@@ -495,7 +496,7 @@ async def test_rejecting_twice_with_an_undo_between_tells_the_person_once(config
     await rig.settle()
 
     assert rig.store.member(USER)["status"] == "rejected"
-    assert rig.texts_to(USER).count("Thanks. There is nothing more you need to do here.") == 1
+    assert rig.texts_to(USER).count(strings.REJECTED) == 1
 
 
 async def test_undo_with_notion_down_changes_nothing_and_can_be_retried(config):
@@ -571,7 +572,7 @@ async def test_a_stale_reject_tap_after_approval_changes_nothing(config):
     tap(rig, 3, reject)
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
-    assert rig.texts_to(USER).count("Thanks. There is nothing more you need to do here.") == 0
+    assert rig.texts_to(USER).count(strings.REJECTED) == 0
 
 
 async def test_the_adapter_creates_a_contact_page_in_the_data_source():
