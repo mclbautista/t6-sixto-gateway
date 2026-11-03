@@ -39,6 +39,29 @@ class TelegramClient(Protocol):
         """
         ...
 
+    async def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+    ) -> None:
+        """Replace a message's text; without ``keyboard`` its buttons are removed.
+
+        Failures raise ``SendError`` subclasses (Telegram refuses an edit that changes nothing).
+        """
+        ...
+
+    async def answer_callback_query(
+        self, callback_id: str, text: str | None = None, alert: bool = False
+    ) -> None:
+        """Stop the spinner on a tapped button; ``text`` shows a toast (a popup if ``alert``).
+
+        Failures raise ``SendError`` subclasses.
+        """
+        ...
+
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         """Set one emoji reaction. Failures raise ``SendError`` subclasses, like sends."""
         ...
@@ -131,6 +154,49 @@ class AiogramTelegramClient:
                 reply_markup=markup,
             )
         return int(message.message_id)
+
+    async def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+    ) -> None:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+
+        markup = (
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=button["text"], callback_data=button["callback_data"]
+                        )
+                        for button in row
+                    ]
+                    for row in keyboard
+                ]
+            )
+            if keyboard
+            else None
+        )
+        with _translated_errors():
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                reply_markup=markup,
+            )
+
+    async def answer_callback_query(
+        self, callback_id: str, text: str | None = None, alert: bool = False
+    ) -> None:
+        with _translated_errors():
+            await self._bot.answer_callback_query(
+                callback_query_id=callback_id, text=text, show_alert=alert
+            )
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         from aiogram.types import ReactionTypeEmoji

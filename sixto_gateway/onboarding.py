@@ -17,14 +17,16 @@ from typing import Any
 
 from sixto_gateway import strings
 from sixto_gateway.config import Config
-from sixto_gateway.decision import Decision, NewMember
+from sixto_gateway.decision import Decision, NewMember, NewTap
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.notion import Contact, ContactsDirectory, NotionError, matches_handle
 from sixto_gateway.store import Store
+from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
+CALLBACK_PREFIX = "ob"
 LOOKUP_RETRY_SECONDS = 60.0  # ticket #27 replaces this with 1/5/30 minutes and a failure card
 
 
@@ -67,6 +69,31 @@ def decide_start(store: Store, update: IncomingUpdate) -> Decision:
     )
 
 
+def decide_tap(update: IncomingUpdate) -> Decision:
+    """A button tap is saved for the worker. It never goes to a module."""
+    if update.callback_id is None or update.from_id is None:
+        return Decision(None)
+    # any tap is saved, so even a payload that is not ours gets answered by the worker
+    return Decision(
+        None,
+        tap=NewTap(
+            update.callback_id,
+            update.from_id,
+            update.chat_id,
+            update.message_id,
+            update.callback_data,
+        ),
+    )
+
+
+def parse_callback(data: str) -> tuple[str, int, str] | None:
+    """``(action, user id, page id without dashes)`` from a button payload, else None."""
+    parts = data.split(":")
+    if len(parts) not in (3, 4) or parts[0] != CALLBACK_PREFIX or not parts[2].isdigit():
+        return None
+    return parts[1], int(parts[2]), parts[3] if len(parts) == 4 else ""
+
+
 def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact]:
     """Contacts whose handle or an alias equals ``handle``. No handle, no candidates."""
     if not handle:
@@ -76,23 +103,45 @@ def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact
 
 def callback_data(action: str, user_id: int, page_id: str = "") -> str:
     """Button payload (Telegram allows 64 bytes): ``ob:<action>:<user id>[:<page id>]``."""
-    parts = ["ob", action, str(user_id)]
+    parts = [CALLBACK_PREFIX, action, str(user_id)]
     if page_id:
         parts.append(page_id.replace("-", ""))
     return ":".join(parts)
 
 
-def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, Any]:
-    """The approver's card as an outbound body (HTML text plus inline buttons)."""
+def _card_header(member: dict[str, Any]) -> list[str]:
     name = " ".join(p for p in (member["first_name"], member["last_name"]) if p) or "(no name)"
     handle = f"@{member['handle']}" if member["handle"] else strings.CARD_NO_HANDLE
-    user_id = member["telegram_user_id"]
-    lines = [
+    return [
         f"<b>{strings.CARD_TITLE}</b>",
         strings.CARD_TELEGRAM.format(
-            name=html.escape(name), handle=html.escape(handle), user_id=user_id
+            name=html.escape(name),
+            handle=html.escape(handle),
+            user_id=member["telegram_user_id"],
         ),
     ]
+
+
+def render_outcome(member: dict[str, Any], contact_name: str | None = None) -> str:
+    """The card's text once the member is decided: the same header and the outcome, no buttons."""
+    lines = _card_header(member)
+    status = member["status"]
+    if status == "approved":
+        page = member["contact_page_id"] or ""
+        url = f"https://www.notion.so/{page.replace('-', '')}"
+        label = html.escape(contact_name or strings.OUTCOME_CONTACT)
+        lines.append(strings.OUTCOME_APPROVED.format(link=f'<a href="{url}">{label}</a>'))
+    elif status == "blocked":
+        lines.append(strings.OUTCOME_BLOCKED)
+    else:
+        lines.append(strings.OUTCOME_REJECTED)
+    return "\n".join(lines)
+
+
+def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, Any]:
+    """The approver's card as an outbound body (HTML text plus inline buttons)."""
+    user_id = member["telegram_user_id"]
+    lines = _card_header(member)
     row: list[dict[str, str]] = []
     if not candidates:
         lines.append(strings.CARD_NO_MATCH)
@@ -140,7 +189,10 @@ class OnboardingWorker:
         wake: Notifier,
         queue_wake: Notifier,
         clock: Callable[[], float] = time.time,
+        *,
+        client: TelegramClient,
     ):
+        self._client = client
         self._store = store
         self._contacts = contacts
         self._approver = config.onboarding.approver
@@ -150,7 +202,12 @@ class OnboardingWorker:
         self._retry_at: dict[int, float] = {}
 
     async def process_next(self) -> bool:
-        """Look up one waiting member and queue their card. False when nothing is due."""
+        """Handle one button tap, else look up one waiting member and queue their card.
+
+        False when nothing is due.
+        """
+        if await self.process_tap():
+            return True
         now = self._clock()
         for member in self._store.members_awaiting_lookup():
             user = member["telegram_user_id"]
@@ -174,6 +231,98 @@ class OnboardingWorker:
             self._queue_wake.notify()
             return True
         return False
+
+    async def process_tap(self) -> bool:
+        """Handle the oldest unhandled button tap. False when there is none."""
+        tap = self._store.next_tap()
+        if tap is None:
+            return False
+        try:
+            await self._handle_tap(tap)
+        except Exception:
+            await self._answer(tap)  # the spinner stops even when handling broke
+            raise
+        finally:  # a tap is never retried: the person taps again
+            self._store.finish_tap(tap["update_id"])
+        return True
+
+    async def _handle_tap(self, tap: dict[str, Any]) -> None:
+        parsed = parse_callback(tap["data"])
+        if tap["from_id"] != self._approver or parsed is None:
+            await self._answer(tap)  # nobody else's tap counts, but the spinner still stops
+            return
+        action, user_id, page = parsed
+        member = self._store.member(user_id)
+        if member is None or action != "ok":  # the other buttons come with tickets #22 and #23
+            await self._answer(tap)
+            return
+        if member["status"] != "pending":  # stale card: show what is true now
+            await self._answer(tap)
+            await self._rerender(tap, member)
+            return
+        chosen = next((p for p in member["candidates"] or [] if p.replace("-", "") == page), None)
+        if chosen is None:
+            await self._answer(tap)
+            return
+        await self._approve(tap, member, chosen)
+
+    async def _approve(self, tap: dict[str, Any], member: dict[str, Any], page_id: str) -> None:
+        user = member["telegram_user_id"]
+        owner = self._store.approved_user_for_contact(page_id)
+        if owner is not None and owner != user:
+            self._store.audit("decision", None, f"user={user} refused: contact has member {owner}")
+            await self._answer(tap, strings.TAP_ALREADY_LINKED, alert=True)
+            return
+        try:
+            contact = await self._contacts.get_contact(page_id)
+            if contact.telegram_user_id not in ("", str(user)):
+                # ticket #23 adds the "Replace ID" button; until then nothing is overwritten
+                self._store.audit("decision", None, f"user={user} refused: contact has other id")
+                await self._answer(tap, strings.TAP_OTHER_ID, alert=True)
+                return
+            wrote = contact.telegram_user_id != str(user)
+            if wrote:
+                await self._contacts.set_telegram_user_id(contact, user)
+        except NotionError as exc:
+            self._store.audit("notion_write", None, f"user={user} failed: {exc}"[:300])
+            log.warning("writing TelegramUserID for user %s failed: %s", user, exc)
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return
+        if wrote:
+            self._store.audit("notion_write", None, f"user={user} contact={page_id}")
+        reply = {
+            "chat": user,
+            "topic": None,
+            "text": strings.APPROVED.format(
+                first_name=strings.first_name_or_there(member["first_name"])
+            ),
+            "format": "plain",
+        }
+        approved = self._store.approve_member(user, page_id, tap["from_id"], reply)
+        await self._answer(tap)
+        if approved:
+            self._queue_wake.notify()
+            fresh = self._store.member(user) or member
+            await self._edit_card(tap, render_outcome(fresh, contact.name))
+        else:  # decided while Notion was being written
+            await self._rerender(tap, self._store.member(user) or member)
+
+    async def _rerender(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        await self._edit_card(tap, render_outcome(member))
+
+    async def _answer(
+        self, tap: dict[str, Any], text: str | None = None, alert: bool = False
+    ) -> None:
+        try:
+            await self._client.answer_callback_query(tap["callback_id"], text, alert)
+        except Exception as exc:  # noqa: BLE001 - an old query id may have expired
+            log.warning("answering callback %s failed: %s", tap["callback_id"], exc)
+
+    async def _edit_card(self, tap: dict[str, Any], text: str) -> None:
+        try:
+            await self._client.edit_message(tap["chat_id"], tap["message_id"], text, "HTML")
+        except Exception as exc:  # noqa: BLE001 - "message is not modified" counts too
+            log.warning("editing card %s failed: %s", tap["message_id"], exc)
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

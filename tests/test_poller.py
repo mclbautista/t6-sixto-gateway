@@ -63,7 +63,7 @@ async def test_fixtures_are_stored_once_and_routed_to_watchdog(config):
     assert all(i["kind"] == "update" and i["chat"] == INTAKE_CHAT for i in items)
     assert telegram.calls[0]["offset"] == 0  # nothing committed yet: no offset constraint
     assert telegram.calls[-1]["offset"] == max(i["update_id"] for i in items) + 1
-    assert telegram.calls[0]["allowed_updates"] == ["message", "edited_message"]
+    assert telegram.calls[0]["allowed_updates"] == ["message", "edited_message", "callback_query"]
 
 
 async def test_updates_outside_the_intake_topic_are_kept_but_not_delivered(config):

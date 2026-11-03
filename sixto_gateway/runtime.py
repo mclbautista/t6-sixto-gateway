@@ -52,7 +52,9 @@ def start_workers(
             onboarding_wake=onboarding_wake,
         )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
-        worker = OnboardingWorker(store, contacts, config, onboarding_wake, queue_wake)
+        worker = OnboardingWorker(
+            store, contacts, config, onboarding_wake, queue_wake, client=client
+        )
         tasks["onboarding"] = asyncio.create_task(worker.run(stop))
         tasks["sender"] = asyncio.create_task(
             Sender(store, client, queue_wake, scrub=scrub).run(stop)

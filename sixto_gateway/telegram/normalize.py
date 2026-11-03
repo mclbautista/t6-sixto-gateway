@@ -27,10 +27,14 @@ class IncomingUpdate:
     command_args: str = ""
     from_first_name: str = ""
     from_last_name: str = ""
+    callback_id: str | None = None  # set for a button tap; ``message_id`` is then the card's
+    callback_data: str = ""
 
 
 def normalize(update: Any) -> IncomingUpdate | None:
     """Turn an aiogram ``Update`` into an ``IncomingUpdate``; None for unsupported kinds."""
+    if getattr(update, "callback_query", None) is not None:
+        return _normalize_tap(update, update.callback_query)
     message = update.message or update.edited_message
     if message is None:
         return None
@@ -54,6 +58,31 @@ def normalize(update: Any) -> IncomingUpdate | None:
         command_args=command_args,
         from_first_name=(sender.first_name or "") if sender else "",
         from_last_name=(sender.last_name or "") if sender else "",
+    )
+
+
+def _normalize_tap(update: Any, query: Any) -> IncomingUpdate | None:
+    """A button tap on a message of the bot. Taps on inline-mode messages are not supported."""
+    message = query.message
+    if message is None:
+        return None
+    sender = query.from_user
+    return IncomingUpdate(
+        update_id=update.update_id,
+        chat_id=message.chat.id,
+        topic_id=None,
+        message_id=message.message_id,
+        from_id=sender.id,
+        from_username=sender.username,
+        text="",
+        edited=False,
+        edit_date=None,
+        raw=update.model_dump(mode="json", exclude_unset=True),
+        chat_type=message.chat.type,
+        from_first_name=sender.first_name or "",
+        from_last_name=sender.last_name or "",
+        callback_id=query.id,
+        callback_data=query.data or "",
     )
 
 

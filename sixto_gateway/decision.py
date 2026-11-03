@@ -18,6 +18,17 @@ class NewMember:
 
 
 @dataclass(frozen=True)
+class NewTap:
+    """A tap on a button of the approver's card: saved for the onboarding worker, never routed."""
+
+    callback_id: str
+    from_id: int
+    chat_id: int
+    message_id: int
+    data: str
+
+
+@dataclass(frozen=True)
 class Decision:
     """Where an update goes, and what is saved or queued in the same transaction."""
 
@@ -27,3 +38,4 @@ class Decision:
     reply: str | None = None  # text sent back to the sender's DM through the send queue
     extra_audits: tuple[tuple[str, str | None, str], ...] = ()  # written after ``audit``
     member: NewMember | None = None  # onboarding: save a pending member (wakes the worker)
+    tap: NewTap | None = None  # onboarding: save a button tap (wakes the worker)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from aiogram.types import Update
@@ -88,6 +89,26 @@ def group_command(update_id: int, user_id: int, text: str, chat: int, topic: int
     return raw
 
 
+def button_tap(update_id: int, user_id: int, data: str, chat: int, message_id: int) -> dict:
+    """A tap on an inline button of a message the bot sent to ``chat``."""
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": f"cb{update_id}",
+            "chat_instance": "ci",
+            "from": {"id": user_id, "is_bot": False, "first_name": "C"},
+            "data": data,
+            "message": {
+                "message_id": message_id,
+                "date": 1789700000,
+                "chat": {"id": chat, "type": "private", "first_name": "C"},
+                "from": {"id": 1, "is_bot": True, "first_name": "Sixto"},
+                "text": "card",
+            },
+        },
+    }
+
+
 class FakeClock:
     def __init__(self, now: float = 1_789_700_000.0):
         self.now = now
@@ -108,6 +129,8 @@ class FakeTelegram:
         self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
         self.fail_always: Exception | None = None  # raised by every send/react until cleared
         self.calls: list[dict] = []
+        self.edits: list[dict] = []  # edit_message calls
+        self.answers: list[dict] = []  # answer_callback_query calls
         self.sent: list[dict] = []  # outbound calls in order: messages and reactions
         self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
         self._next_message_id = 9000
@@ -138,6 +161,29 @@ class FakeTelegram:
             }
         )
         return self._next_message_id
+
+    async def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> None:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "keyboard": keyboard,
+            }
+        )
+
+    async def answer_callback_query(
+        self, callback_id: str, text: str | None = None, alert: bool = False
+    ) -> None:
+        self.answers.append({"callback_id": callback_id, "text": text, "alert": alert})
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
         self._maybe_fail()
@@ -185,13 +231,16 @@ class FakeTelegram:
         return out
 
 
-def contact(page_id: str, name: str, handle: str = "", aliases: str = "") -> Contact:
+def contact(
+    page_id: str, name: str, handle: str = "", aliases: str = "", user_id: str = ""
+) -> Contact:
     return Contact(
         page_id=page_id,
         name=name,
         url=f"https://www.notion.so/{page_id.replace('-', '')}",
         telegram_handle=handle,
         aliases=aliases,
+        telegram_user_id=user_id,
     )
 
 
@@ -202,7 +251,23 @@ class FakeNotion:
         self.contacts = contacts
         self.block: asyncio.Event | None = None
         self.fail = False
+        self.fail_write = False
         self.calls = 0
+        self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
+
+    async def get_contact(self, page_id: str) -> Contact:
+        if self.fail:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        return next(c for c in self.contacts if c.page_id == page_id)
+
+    async def set_telegram_user_id(self, contact: Contact, user_id: int) -> None:
+        if self.fail_write:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        self.writes.append((contact.page_id, user_id))
+        self.contacts = [
+            replace(c, telegram_user_id=str(user_id)) if c.page_id == contact.page_id else c
+            for c in self.contacts
+        ]
 
     async def list_contacts(self) -> list[Contact]:
         self.calls += 1
