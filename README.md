@@ -56,7 +56,7 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
   person's DM. Otherwise it goes to the fallback chat and topic with `@handle` added at the start
   of the text. The lookup reads only the local `members` table, never Notion, and dashes in the
   page id do not matter. Send either `to` or `contact` with `fallback`, never both and never
-  neither (`422`). `format`, `text` and `idempotency_key` work the same in both forms.
+  neither (`422`); the topic belongs inside `fallback`, and a text that the `@handle` would push past 4096 characters is a `422` too. `format`, `text` and `idempotency_key` work the same in both forms.
 - One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
   error}` for the calling module's own refs (`404` otherwise).

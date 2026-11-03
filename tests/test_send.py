@@ -244,3 +244,9 @@ async def test_contact_form_is_sent_by_the_sender(client, env):
 async def test_invalid_contact_combinations_are_422(client, extra):
     r = await client.post("/notify", json={"text": "hi", **extra}, headers=auth())
     assert r.status_code == 422
+
+
+async def test_fallback_mention_cannot_push_text_over_the_limit(client):
+    body = {"contact": CONTACT, "fallback": FALLBACK, "text": "x" * 4096}
+    r = await client.post("/notify", json=body, headers=auth())
+    assert r.status_code == 422

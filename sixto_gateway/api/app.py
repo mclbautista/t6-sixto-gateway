@@ -3,7 +3,6 @@ except ``GET /healthz``."""
 
 import asyncio
 import logging
-import re
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Self
@@ -20,12 +19,13 @@ from sixto_gateway.store.db import SECONDS_PER_DAY
 
 log = logging.getLogger(__name__)
 MAX_ITEMS = 100
+MAX_TEXT = 4096
 INT64_MAX = 2**63 - 1
 BigInt = Annotated[int, Field(ge=-INT64_MAX, le=INT64_MAX)]
 
 
-HANDLE = re.compile(r"^@?[A-Za-z0-9_]{1,64}$")
-CONTACT_ID = re.compile(r"^[0-9A-Fa-f-]{32,36}$")
+HANDLE_PATTERN = r"^@?[A-Za-z0-9_]{1,64}$"
+CONTACT_ID_PATTERN = r"^[0-9A-Fa-f-]{32,36}$"
 
 
 class Fallback(BaseModel):
@@ -34,7 +34,7 @@ class Fallback(BaseModel):
     model_config = ConfigDict(extra="forbid")
     to: BigInt
     topic: BigInt | None = None
-    handle: str = Field(pattern=HANDLE.pattern)
+    handle: str = Field(pattern=HANDLE_PATTERN)
 
 
 class NotifyBody(BaseModel):
@@ -43,18 +43,22 @@ class NotifyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     to: BigInt | None = None
     topic: BigInt | None = None
-    contact: str | None = Field(default=None, pattern=CONTACT_ID.pattern)
+    contact: str | None = Field(default=None, pattern=CONTACT_ID_PATTERN)
     fallback: Fallback | None = None
-    text: str = Field(min_length=1, max_length=4096)
+    text: str = Field(min_length=1, max_length=MAX_TEXT)
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def exactly_one_address(self) -> Self:
-        if self.contact is None:
-            if self.to is None or self.fallback is not None:
-                raise ValueError("send either 'to', or 'contact' with 'fallback'")
-        elif self.to is not None or self.topic is not None or self.fallback is None:
+    def to_or_contact_with_fallback(self) -> Self:
+        by_chat = self.to is not None and self.contact is None and self.fallback is None
+        by_contact = (
+            self.to is None
+            and self.topic is None
+            and self.contact is not None
+            and self.fallback is not None
+        )
+        if not (by_chat or by_contact):
             raise ValueError("send either 'to', or 'contact' with 'fallback'")
         return self
 
@@ -142,13 +146,15 @@ def create_app(
         if body.contact is not None:
             assert body.fallback is not None
             # Local members table only: no Notion call on the send path.
-            user = store.approved_user_for_contact(body.contact)
-            if user is not None:
-                chat, topic = user, None
+            user_id = store.approved_user_for_contact(body.contact)
+            if user_id is not None:
+                chat, topic = user_id, None
             else:
-                fb = body.fallback
-                chat, topic = fb.to, fb.topic
-                text = f"@{fb.handle.lstrip('@')} {text}"
+                fallback = body.fallback
+                chat, topic = fallback.to, fallback.topic
+                text = f"@{fallback.handle.lstrip('@')} {text}"
+                if len(text) > MAX_TEXT:  # the mention must not push it past Telegram's limit
+                    raise HTTPException(422, f"text with the @handle is over {MAX_TEXT} characters")
         assert chat is not None
         ref = store.enqueue_outbound(
             module,
