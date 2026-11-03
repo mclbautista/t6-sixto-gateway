@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
 from sixto_gateway.logsafe import Redactor
 
@@ -65,8 +73,40 @@ class NotionConfig(_Model):
     version: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
 
+SUMMARY_TIME_PATTERN = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+HANDLE_PATTERN = re.compile(r"[a-z0-9_]{5,32}")  # Telegram usernames, lowercase
+
+
+def normalize_handle(handle: str) -> str:
+    """Telegram handles compare without ``@`` and in lowercase."""
+    return handle.strip().removeprefix("@").lower()
+
+
 class OnboardingConfig(_Model):
     approver: StrictInt  # Telegram user id of the person whose DM gets the approval cards
+    summary_time: StrictStr = "09:00"  # HH:MM, Asia/Manila: the daily summary DM to the approver
+    expected: list[StrictStr] = []  # handles that should end up approved ("Still missing")
+
+    @field_validator("summary_time")
+    @classmethod
+    def _summary_time_is_hh_mm(cls, value: str) -> str:
+        if not SUMMARY_TIME_PATTERN.fullmatch(value):
+            raise ValueError("must be a 24-hour time written HH:MM, for example 09:00")
+        return value
+
+    @field_validator("expected")
+    @classmethod
+    def _expected_are_handles(cls, values: list[str]) -> list[str]:
+        """Handles are stored without ``@`` and in lowercase, as Telegram compares them."""
+        handles = [normalize_handle(v) for v in values]
+        for i, handle in enumerate(handles):
+            if not HANDLE_PATTERN.fullmatch(handle):
+                raise ValueError(
+                    f"entry {i + 1} is not a Telegram handle (5-32 letters, digits or _)"
+                )
+        if len(set(handles)) != len(handles):
+            raise ValueError("a handle is listed more than once")
+        return handles
 
 
 class Secrets:

@@ -106,6 +106,19 @@ down Notion never holds up polling; a failed lookup is retried every minute. But
 but taps are not handled yet (#21). `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
 
+### Daily onboarding summary
+
+Every day at `onboarding.summary_time` (default `09:00`, Asia/Manila) `onboarding.approver` gets one
+DM: counts of approved, pending, rejected and blocked members; each pending card with an "open
+card" link (cards never expire, so this is the reminder); `send_failed` audit rows from the last
+24 hours (first 5 shown); and the `onboarding.expected` handles with no approved member. The
+summary is queued under the key `summary:<date>`, so a restart never sends a second one for the
+same day; a gateway that was down at 09:00 sends it as soon as it is back up. It runs only while
+`telegram.polling` is on. Both keys are checked at boot. "Still missing" compares the list with
+the Telegram handles of approved members, so a person who uses a different handle than the one
+listed shows as missing until the list is updated. The "open card" link is a `tg://openmessage`
+link built from the bot's id and the card's message id.
+
 ## Health, deadman, retention, logs
 
 - `GET /healthz` (no auth): `200` when a `getUpdates` call completed in the last 5 minutes and the

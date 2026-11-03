@@ -12,6 +12,16 @@ notion:
   version: "2026-03-11"                         # Notion-Version header, pinned
 onboarding:
   approver: 274983989                           # Telegram user id that gets the /start cards
+  summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
+  expected:                                     # handles that should be approved; the rest show as "still missing"
+    - mclb22
+    - eyadane
+    - jamagne
+    - hmmkayy
+    - alecgaba
+    - dentiamson
+    - leizette
+    - replace_with_pios_handle                  # FILL IN: Pio's Telegram handle
 retention_days: 30
 database_path: ./data/gateway.db
 modules:                                        # each module authenticates with its own secret
