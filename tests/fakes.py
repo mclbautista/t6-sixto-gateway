@@ -78,11 +78,13 @@ def dm_message(update_id: int, user_id: int, text: str, *, edited: bool = False)
     return {"update_id": update_id, "message": message}
 
 
-def group_command(update_id: int, user_id: int, text: str, chat: int, topic: int | None) -> dict:
+def group_command(
+    update_id: int, user_id: int, text: str, chat: int, topic: int | None, forum: bool = True
+) -> dict:
     """The same command typed in a group (and topic)."""
     raw = dm_message(update_id, user_id, text)
     message = raw["message"]
-    message["chat"] = {"id": chat, "title": "Group", "type": "supergroup", "is_forum": True}
+    message["chat"] = {"id": chat, "title": "Group", "type": "supergroup", "is_forum": forum}
     if topic is not None:
         message["message_thread_id"] = topic
         message["is_topic_message"] = True

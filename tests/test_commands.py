@@ -397,13 +397,40 @@ async def test_an_edited_whereami_gets_no_second_reply(whereami_config):
     assert len(answered) == 1
 
 
+async def test_general_topic_says_1_general(whereami_config):
+    raw = group_command(1, ALLOWED, "/whereami", PSR_CHAT, None)  # forum, no topic id sent
+    _, telegram, poller, sender = build(whereami_config, [raw])
+    await run(poller, sender)
+
+    (sent,) = telegram.sent
+    assert sent["text"].endswith("Topic id: <code>1</code> (General)")
+
+
 async def test_group_without_topics_says_none(whereami_config):
-    raw = group_command(1, ALLOWED, "/whereami", -1009999999999, None)
+    raw = group_command(1, ALLOWED, "/whereami", -1009999999999, None, forum=False)
     _, telegram, poller, sender = build(whereami_config, [raw])
     await run(poller, sender)
 
     (sent,) = telegram.sent
     assert sent["text"].endswith("Topic id: none (this group has no topics)")
+
+
+async def test_whereami_is_in_each_allowed_dm_menu_and_never_group_scoped(whereami_config):
+    store, telegram, _, _ = build(whereami_config, [])
+    await register_menus(store, telegram, whereami_config)
+
+    menu = [("whereami", "Where am I")]
+    assert telegram.menus == {None: [], ALLOWED: menu, 5003: menu}
+    assert all(chat is None or chat > 0 for chat in telegram.menus)  # no group-scoped menu
+
+
+async def test_removing_whereami_from_config_removes_the_menu_next_boot(whereami_config, tmp_path):
+    store, telegram, _, _ = build(whereami_config, [])
+    await register_menus(store, telegram, whereami_config)
+    removed = make_config(tmp_path, "commands: {}\n")
+    await register_menus(store, telegram, removed)
+
+    assert telegram.menus == {None: []}
 
 
 def test_builtin_command_config_is_validated(tmp_path):

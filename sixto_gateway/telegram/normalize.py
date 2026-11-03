@@ -29,6 +29,7 @@ class IncomingUpdate:
     from_last_name: str = ""
     callback_id: str | None = None  # set for a button tap; ``message_id`` is then the card's
     callback_data: str = ""
+    chat_is_forum: bool = False  # the chat is a group with topics (Telegram's ``is_forum``)
 
 
 def normalize(update: Any) -> IncomingUpdate | None:
@@ -58,6 +59,7 @@ def normalize(update: Any) -> IncomingUpdate | None:
         command_args=command_args,
         from_first_name=(sender.first_name or "") if sender else "",
         from_last_name=(sender.last_name or "") if sender else "",
+        chat_is_forum=bool(getattr(message.chat, "is_forum", None)),
     )
 
 
