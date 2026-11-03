@@ -73,8 +73,7 @@ def decide_tap(update: IncomingUpdate) -> Decision:
     """A button tap is saved for the worker. It never goes to a module."""
     if update.callback_id is None or update.from_id is None:
         return Decision(None)
-    if not update.callback_data.startswith(CALLBACK_PREFIX + ":"):
-        return Decision(None)  # not one of ours: stored, nothing else
+    # any tap is saved, so even a payload that is not ours gets answered by the worker
     return Decision(
         None,
         tap=NewTap(
@@ -240,6 +239,9 @@ class OnboardingWorker:
             return False
         try:
             await self._handle_tap(tap)
+        except Exception:
+            await self._answer(tap)  # the spinner stops even when handling broke
+            raise
         finally:  # a tap is never retried: the person taps again
             self._store.finish_tap(tap["update_id"])
         return True
@@ -278,14 +280,16 @@ class OnboardingWorker:
                 self._store.audit("decision", None, f"user={user} refused: contact has other id")
                 await self._answer(tap, strings.TAP_OTHER_ID, alert=True)
                 return
-            if contact.telegram_user_id != str(user):
+            wrote = contact.telegram_user_id != str(user)
+            if wrote:
                 await self._contacts.set_telegram_user_id(contact, user)
         except NotionError as exc:
             self._store.audit("notion_write", None, f"user={user} failed: {exc}"[:300])
             log.warning("writing TelegramUserID for user %s failed: %s", user, exc)
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        self._store.audit("notion_write", None, f"user={user} contact={page_id}")
+        if wrote:
+            self._store.audit("notion_write", None, f"user={user} contact={page_id}")
         reply = {
             "chat": user,
             "topic": None,

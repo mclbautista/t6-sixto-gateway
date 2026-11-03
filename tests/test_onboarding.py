@@ -389,6 +389,14 @@ async def test_taps_are_stored_and_never_routed_to_a_module(config):
     assert rig.store.count_updates() == 2
 
 
+async def test_a_tap_with_a_foreign_payload_is_still_answered(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, "something:else")
+    await rig.settle()
+    assert [a["callback_id"] for a in rig.telegram.answers] == ["cb2"]
+    assert rig.store.member(USER)["status"] == "pending"
+
+
 async def test_callback_query_is_polled_by_default(config):
     assert "callback_query" in config.telegram.allowed_updates
 
