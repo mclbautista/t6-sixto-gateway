@@ -13,6 +13,7 @@ import html
 import logging
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sixto_gateway import strings
@@ -27,6 +28,7 @@ from sixto_gateway.telegram.normalize import IncomingUpdate
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 CALLBACK_PREFIX = "ob"
+MANILA = timezone(timedelta(hours=8))
 LOOKUP_RETRY_SECONDS = 60.0  # ticket #27 replaces this with 1/5/30 minutes and a failure card
 
 
@@ -136,6 +138,17 @@ def render_outcome(member: dict[str, Any], contact_name: str | None = None) -> s
     else:
         lines.append(strings.OUTCOME_REJECTED)
     return "\n".join(lines)
+
+
+def outcome_keyboard(member: dict[str, Any]) -> list[list[dict[str, str]]] | None:
+    """A rejected card keeps one Undo button. Every other decided card has no buttons."""
+    if member["status"] != "rejected":
+        return None
+    undo = {
+        "text": strings.BUTTON_UNDO,
+        "callback_data": callback_data("undo", member["telegram_user_id"]),
+    }
+    return [[undo]]
 
 
 def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, Any]:
@@ -253,18 +266,82 @@ class OnboardingWorker:
             return
         action, user_id, page = parsed
         member = self._store.member(user_id)
-        if member is None or action != "ok":  # the other buttons come with tickets #22 and #23
-            await self._answer(tap)
+        if member is None or action not in ("ok", "no", "new", "undo"):
+            await self._answer(tap)  # ticket #23 adds the Replace ID and Retry buttons
             return
-        if member["status"] != "pending":  # stale card: show what is true now
-            await self._answer(tap)
+        if member["status"] != ("rejected" if action == "undo" else "pending"):
+            await self._answer(tap)  # stale card: show what is true now
             await self._rerender(tap, member)
             return
-        chosen = next((p for p in member["candidates"] or [] if p.replace("-", "") == page), None)
-        if chosen is None:
-            await self._answer(tap)
+        if action == "no":
+            await self._reject(tap, member)
+        elif action == "undo":
+            await self._undo(tap, member)
+        elif action == "new":
+            await self._create(tap, member)
+        else:
+            chosen = next(
+                (p for p in member["candidates"] or [] if p.replace("-", "") == page), None
+            )
+            if chosen is None:
+                await self._answer(tap)
+                return
+            await self._approve(tap, member, chosen)
+
+    async def _reject(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Nothing is written to Notion. The card keeps one Undo button."""
+        user = member["telegram_user_id"]
+        reply = {"chat": user, "topic": None, "text": strings.REJECTED, "format": "plain"}
+        rejected = self._store.reject_member(user, tap["from_id"], reply)
+        await self._answer(tap)
+        fresh = self._store.member(user) or member
+        if rejected:
+            self._queue_wake.notify()
+        await self._rerender(tap, fresh)
+
+    async def _undo(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Back to pending, and the card shows the choices it had before the rejection."""
+        user = member["telegram_user_id"]
+        try:
+            known = {c.page_id.replace("-", ""): c for c in await self._contacts.list_contacts()}
+        except NotionError as exc:
+            self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        await self._approve(tap, member, chosen)
+        # a Contact deleted since the card was first sent is simply not offered again
+        shown = [
+            c
+            for p in member["candidates"] or []
+            if (c := known.get(p.replace("-", ""))) is not None
+        ]
+        undone = self._store.undo_rejection(user, tap["from_id"])
+        await self._answer(tap)
+        fresh = self._store.member(user) or member
+        if undone:
+            card = render_card(fresh, shown)
+            await self._edit_card(tap, card["text"], card["keyboard"])
+        else:
+            await self._rerender(tap, fresh)
+
+    async def _create(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Create a Contact for the person, then approve them with it (Notion first)."""
+        user = member["telegram_user_id"]
+        name = " ".join(p for p in (member["first_name"], member["last_name"]) if p)
+        handle = member["handle"] or ""
+        note = strings.CREATED_NOTE.format(
+            date=datetime.fromtimestamp(self._clock(), MANILA).date()
+        )
+        try:
+            created = await self._contacts.create_contact(
+                name or handle or str(user), handle, user, note
+            )
+        except NotionError as exc:
+            self._store.audit("notion_write", None, f"user={user} create failed: {exc}"[:300])
+            log.warning("creating a Contact for user %s failed: %s", user, exc)
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return
+        self._store.audit("notion_write", None, f"user={user} created contact={created.page_id}")
+        await self._finish_approval(tap, member, created.page_id, created.name)
 
     async def _approve(self, tap: dict[str, Any], member: dict[str, Any], page_id: str) -> None:
         user = member["telegram_user_id"]
@@ -290,6 +367,12 @@ class OnboardingWorker:
             return
         if wrote:
             self._store.audit("notion_write", None, f"user={user} contact={page_id}")
+        await self._finish_approval(tap, member, page_id, contact.name)
+
+    async def _finish_approval(
+        self, tap: dict[str, Any], member: dict[str, Any], page_id: str, contact_name: str
+    ) -> None:
+        user = member["telegram_user_id"]
         reply = {
             "chat": user,
             "topic": None,
@@ -303,12 +386,12 @@ class OnboardingWorker:
         if approved:
             self._queue_wake.notify()
             fresh = self._store.member(user) or member
-            await self._edit_card(tap, render_outcome(fresh, contact.name))
+            await self._edit_card(tap, render_outcome(fresh, contact_name))
         else:  # decided while Notion was being written
             await self._rerender(tap, self._store.member(user) or member)
 
     async def _rerender(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
-        await self._edit_card(tap, render_outcome(member))
+        await self._edit_card(tap, render_outcome(member), outcome_keyboard(member))
 
     async def _answer(
         self, tap: dict[str, Any], text: str | None = None, alert: bool = False
@@ -318,9 +401,16 @@ class OnboardingWorker:
         except Exception as exc:  # noqa: BLE001 - an old query id may have expired
             log.warning("answering callback %s failed: %s", tap["callback_id"], exc)
 
-    async def _edit_card(self, tap: dict[str, Any], text: str) -> None:
+    async def _edit_card(
+        self,
+        tap: dict[str, Any],
+        text: str,
+        keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> None:
         try:
-            await self._client.edit_message(tap["chat_id"], tap["message_id"], text, "HTML")
+            await self._client.edit_message(
+                tap["chat_id"], tap["message_id"], text, "HTML", keyboard
+            )
         except Exception as exc:  # noqa: BLE001 - "message is not modified" counts too
             log.warning("editing card %s failed: %s", tap["message_id"], exc)
 

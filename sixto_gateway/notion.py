@@ -44,6 +44,10 @@ class ContactsDirectory(Protocol):
         """Write ``TelegramUserID`` on the Contact. Failures raise ``NotionError``."""
         ...
 
+    async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
+        """Create a Contact with these fields and one body line ``note``. Raises ``NotionError``."""
+        ...
+
 
 def normalize_handle(handle: str) -> str:
     return handle.strip().lstrip("@").casefold()
@@ -89,6 +93,10 @@ def _text(prop: dict[str, Any] | None) -> str:
     if kind == "select":
         return ((prop.get("select") or {}).get("name") or "").strip()
     return ""
+
+
+def _rich(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": {"content": text}}
 
 
 def contact_from_page(page: dict[str, Any]) -> Contact:
@@ -157,6 +165,33 @@ class NotionContacts:
         await self._request(
             "PATCH", f"/pages/{contact.page_id}", {"properties": {"TelegramUserID": value}}
         )
+
+    async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
+        schema = await self._request("GET", f"/data_sources/{self._data_source_id}")
+        kinds = {k: (v or {}).get("type") for k, v in (schema.get("properties") or {}).items()}
+        id_value: dict[str, Any] = (
+            {"rich_text": [_rich(str(user_id))]}
+            if kinds.get("TelegramUserID") == "rich_text"
+            else {"number": user_id}
+        )
+        properties: dict[str, Any] = {
+            "Name": {"title": [_rich(name)]},
+            "TelegramUserID": id_value,
+        }
+        if handle:
+            properties["TelegramHandle"] = {"rich_text": [_rich(handle)]}
+        body = {
+            "parent": {"type": "data_source_id", "data_source_id": self._data_source_id},
+            "properties": properties,
+            "children": [
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [_rich(note)]},
+                }
+            ],
+        }
+        return contact_from_page(await self._request("POST", "/pages", body))
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", path, body)
