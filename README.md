@@ -23,7 +23,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN` and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as t6-jo-tg-ntn) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,
@@ -87,6 +87,17 @@ commands:
   command is never delivered or answered.
 - Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
   (command name and sender id, never the arguments).
+
+## /start onboarding (first slice)
+
+`/start` in a private chat is onboarding, never checked against the command allow-list. The poller
+saves a `pending` row in `members` and queues the "waiting" reply in the same transaction as the
+update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`),
+matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
+`Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
+down Notion never holds up polling; a failed lookup is retried every minute. Buttons are shown
+but taps are not handled yet (#21). `/start` in a group gets a "message me directly" reply with a
+deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
 
 ## Health, deadman, retention, logs
 

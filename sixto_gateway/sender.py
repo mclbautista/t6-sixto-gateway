@@ -77,7 +77,11 @@ class Sender:
                 telegram_id = None
             else:
                 telegram_id = await self._client.send_message(
-                    body["chat"], body.get("topic"), body["text"], PARSE_MODES[body["format"]]
+                    body["chat"],
+                    body.get("topic"),
+                    body["text"],
+                    PARSE_MODES[body["format"]],
+                    body.get("keyboard"),
                 )
         except Exception as exc:  # noqa: BLE001 - any failure is recorded, never raised
             self._handle_failure(row, exc)

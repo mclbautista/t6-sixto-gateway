@@ -25,6 +25,8 @@ class IncomingUpdate:
     chat_type: str = ""  # "private", "group", "supergroup", ...
     command: str | None = None  # lower-case name when the text starts with a /command
     command_args: str = ""
+    from_first_name: str = ""
+    from_last_name: str = ""
 
 
 def normalize(update: Any) -> IncomingUpdate | None:
@@ -50,6 +52,8 @@ def normalize(update: Any) -> IncomingUpdate | None:
         chat_type=message.chat.type,
         command=command,
         command_args=command_args,
+        from_first_name=(sender.first_name or "") if sender else "",
+        from_last_name=(sender.last_name or "") if sender else "",
     )
 
 

@@ -17,7 +17,17 @@ from sixto_gateway.retention import run_retention
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
-from tests.fakes import INTAKE_CHAT, INTAKE_TOPIC, FakeClock, FakeTelegram, fixture_updates, moved
+from tests.fakes import (
+    INTAKE_CHAT,
+    INTAKE_TOPIC,
+    NOTION_ENV,
+    NOTION_YAML,
+    FakeClock,
+    FakeNotion,
+    FakeTelegram,
+    fixture_updates,
+    moved,
+)
 
 WATCHDOG = "w" * 40
 TOKEN = "123456789:AAH-secret_token_value_0123456789abcdef"
@@ -30,12 +40,12 @@ def write_config(tmp_path, polling=True):
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"routes: [{{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}]\n"
         f"telegram: {{polling: {str(polling).lower()}}}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
     )
     return path
 
 
-ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": WATCHDOG}
+ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": WATCHDOG, **NOTION_ENV}
 
 
 @pytest.fixture
@@ -305,7 +315,17 @@ async def test_retention_job_runs_at_boot_and_audits(tmp_path, clock):
 async def test_with_polling_off_no_telegram_call_is_made_and_the_api_still_works(tmp_path, clock):
     config, store, liveness, telegram, notifier, wake, app = build(tmp_path, clock, polling=False)
     stop = asyncio.Event()
-    tasks = start_workers(config, store, telegram, notifier, wake, liveness, stop)
+    tasks = start_workers(
+        config,
+        store,
+        telegram,
+        notifier,
+        wake,
+        liveness,
+        stop,
+        contacts=FakeNotion([]),
+        onboarding_wake=Notifier(),
+    )
     assert set(tasks) == {"retention"}  # no poller, sender or deadman
     async with http(app) as client:
         headers = {"Authorization": f"Bearer {WATCHDOG}"}
@@ -335,8 +355,18 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
     config, store, liveness, _, notifier, wake, _ = build(tmp_path, clock)
     telegram = SlowTelegram([])
     stop = asyncio.Event()
-    tasks = start_workers(config, store, telegram, notifier, wake, liveness, stop)
-    assert set(tasks) == {"retention", "poller", "sender", "deadman"}
+    tasks = start_workers(
+        config,
+        store,
+        telegram,
+        notifier,
+        wake,
+        liveness,
+        stop,
+        contacts=FakeNotion([]),
+        onboarding_wake=Notifier(),
+    )
+    assert set(tasks) == {"retention", "poller", "sender", "deadman", "onboarding"}
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait(tasks.values(), timeout=5)

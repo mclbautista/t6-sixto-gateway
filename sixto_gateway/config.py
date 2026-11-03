@@ -21,6 +21,7 @@ from sixto_gateway.logsafe import Redactor
 
 MIN_SECRET_LENGTH = 32
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+NOTION_KEY_ENV = "NOTION_API_KEY"
 
 
 class ConfigError(Exception):
@@ -59,14 +60,28 @@ class RouteConfig(_Model):
     module: str
 
 
+class NotionConfig(_Model):
+    contacts_data_source_id: Annotated[str, Field(pattern=r"^[0-9a-fA-F-]{32,36}$")]
+    version: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+
+
+class OnboardingConfig(_Model):
+    approver: StrictInt  # Telegram user id of the person whose DM gets the approval cards
+
+
 class Secrets:
     """Env secrets. Deliberately opaque: repr and str never show a value."""
 
-    __slots__ = ("_bot_token", "_module_secrets")
+    __slots__ = ("_bot_token", "_module_secrets", "_notion_api_key")
 
-    def __init__(self, bot_token: str, module_secrets: dict[str, str]):
+    def __init__(self, bot_token: str, module_secrets: dict[str, str], notion_api_key: str = ""):
         self._bot_token = bot_token
         self._module_secrets = module_secrets
+        self._notion_api_key = notion_api_key
+
+    @property
+    def notion_api_key(self) -> str:
+        return self._notion_api_key
 
     @property
     def bot_token(self) -> str:
@@ -83,7 +98,7 @@ class Secrets:
 
     def redaction_values(self) -> list[str]:
         """Every secret value, for scrubbing logs. Only the log redactor should call this."""
-        return [self._bot_token, *self._module_secrets.values()]
+        return [self._bot_token, self._notion_api_key, *self._module_secrets.values()]
 
     def __repr__(self) -> str:
         return f"Secrets(modules={sorted(self._module_secrets)})"
@@ -100,6 +115,8 @@ class Config(_Model):
     commands: dict[str, CommandConfig] = {}
     groups: dict[str, list[StrictInt]] = {}
     routes: list[RouteConfig] = []
+    notion: NotionConfig
+    onboarding: OnboardingConfig
 
     # Attached by load_config; not part of the YAML schema.
     _secrets: Secrets | None = None
@@ -157,6 +174,8 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
     problems: list[str] = []
     if not env.get(BOT_TOKEN_ENV):
         problems.append(f"{BOT_TOKEN_ENV} is not set")
+    if not env.get(NOTION_KEY_ENV):
+        problems.append(f"{NOTION_KEY_ENV} is not set")
     module_secrets: dict[str, str] = {}
     owners: dict[str, str] = {}
     for module, module_config in config.modules.items():
@@ -171,7 +190,9 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
                 problems.append(f"modules {owners[value]!r} and {module!r} use the same secret")
             owners[value] = module
             module_secrets[module] = value
-    return Secrets(env.get(BOT_TOKEN_ENV, ""), module_secrets), problems
+    return Secrets(
+        env.get(BOT_TOKEN_ENV, ""), module_secrets, env.get(NOTION_KEY_ENV, "")
+    ), problems
 
 
 def _known_secrets(data: Any, env: Mapping[str, str]) -> list[str]:
@@ -179,7 +200,7 @@ def _known_secrets(data: Any, env: Mapping[str, str]) -> list[str]:
     when the config is invalid: the bot token, every env value a ``modules.*.secret_env`` names,
     and any ``secret_env`` that is itself some env var's value (a secret pasted as the name).
     Each also in its ``repr`` form, because messages quote names with ``!r``."""
-    names = [BOT_TOKEN_ENV]
+    names = [BOT_TOKEN_ENV, NOTION_KEY_ENV]
     modules = data.get("modules") if isinstance(data, dict) else None
     if isinstance(modules, dict):
         for module in modules.values():

@@ -9,6 +9,8 @@ from sixto_gateway.store import Store
 from tests.fakes import (
     INTAKE_CHAT,
     INTAKE_TOPIC,
+    NOTION_ENV,
+    NOTION_YAML,
     FakeClock,
     FakeTelegram,
     fixture_updates,
@@ -25,9 +27,11 @@ def config(tmp_path):
     path.write_text(
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"routes: [{{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}]\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
     )
-    return load_config(path, {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": SECRET})
+    return load_config(
+        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": SECRET, **NOTION_ENV}
+    )
 
 
 def make(config, telegram, clock=None):

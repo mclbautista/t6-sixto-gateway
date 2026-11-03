@@ -7,7 +7,7 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.errors import PermanentSendError
-from tests.fakes import FakeClock, FakeTelegram
+from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
 
 WATCHDOG = "w" * 40
 PSR = "p" * 40
@@ -20,10 +20,16 @@ def env(tmp_path):
     path.write_text(
         "modules:\n  watchdog: {secret_env: WATCHDOG_SECRET}\n  psr: {secret_env: PSR_SECRET}\n"
         "routes: []\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
     )
     config = load_config(
-        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": WATCHDOG, "PSR_SECRET": PSR}
+        path,
+        {
+            "TELEGRAM_BOT_TOKEN": "1:tok",
+            "WATCHDOG_SECRET": WATCHDOG,
+            "PSR_SECRET": PSR,
+            **NOTION_ENV,
+        },
     )
     clock = FakeClock()
     store = Store(config.database_path, clock=clock)

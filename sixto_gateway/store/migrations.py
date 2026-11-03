@@ -70,4 +70,25 @@ MIGRATIONS: list[str] = [
     """
     CREATE TABLE send_pause (id INTEGER PRIMARY KEY CHECK (id = 1), until REAL NOT NULL);
     """,
+    # 5: team members who pressed /start (onboarding spec #17). The user id is also the DM chat id.
+    # ``candidates`` stays NULL until the Notion lookup is done; then it is a JSON list of
+    # Contact page ids. One Contact can belong to only one approved member.
+    """
+    CREATE TABLE members (
+        telegram_user_id INTEGER PRIMARY KEY,
+        contact_page_id TEXT,
+        handle TEXT,
+        first_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'blocked')),
+        candidates TEXT,
+        card_message_id INTEGER,
+        decided_by INTEGER,
+        decided_at REAL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    CREATE UNIQUE INDEX members_approved_contact
+        ON members (contact_page_id) WHERE status = 'approved';
+    """,
 ]

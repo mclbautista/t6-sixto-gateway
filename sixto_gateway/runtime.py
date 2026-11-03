@@ -9,6 +9,8 @@ from collections.abc import Callable
 from sixto_gateway.config import Config
 from sixto_gateway.liveness import Liveness, watch_deadman
 from sixto_gateway.notifier import Notifier
+from sixto_gateway.notion import ContactsDirectory
+from sixto_gateway.onboarding import OnboardingWorker
 from sixto_gateway.poller import Poller
 from sixto_gateway.retention import run_retention
 from sixto_gateway.sender import Sender
@@ -27,6 +29,9 @@ def start_workers(
     liveness: Liveness,
     stop: asyncio.Event,
     scrub: Callable[[str], str] = lambda text: text,
+    *,
+    contacts: ContactsDirectory,
+    onboarding_wake: Notifier,
 ) -> dict[str, asyncio.Task]:
     """Retention always runs. Polling, sending and the deadman run only when polling is on.
 
@@ -37,8 +42,18 @@ def start_workers(
         "retention": asyncio.create_task(run_retention(store, config.retention_days, stop))
     }
     if config.telegram.polling:
-        poller = Poller(store, client, config, notifier, queue_wake=queue_wake, liveness=liveness)
+        poller = Poller(
+            store,
+            client,
+            config,
+            notifier,
+            queue_wake=queue_wake,
+            liveness=liveness,
+            onboarding_wake=onboarding_wake,
+        )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
+        worker = OnboardingWorker(store, contacts, config, onboarding_wake, queue_wake)
+        tasks["onboarding"] = asyncio.create_task(worker.run(stop))
         tasks["sender"] = asyncio.create_task(
             Sender(store, client, queue_wake, scrub=scrub).run(stop)
         )

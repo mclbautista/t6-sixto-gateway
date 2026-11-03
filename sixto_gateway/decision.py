@@ -8,6 +8,16 @@ GATEWAY_MODULE = "gateway"  # owner of the gateway's own outbound rows (command 
 
 
 @dataclass(frozen=True)
+class NewMember:
+    """A person who pressed Start: saved as a ``pending`` member in the same transaction."""
+
+    user_id: int
+    handle: str | None
+    first_name: str
+    last_name: str
+
+
+@dataclass(frozen=True)
 class Decision:
     """Where an update goes, and what is saved or queued in the same transaction."""
 
@@ -15,3 +25,5 @@ class Decision:
     kind: str = "update"  # "update" or "command"
     audit: tuple[str, str | None, str] | None = None  # (event, module, detail)
     reply: str | None = None  # text sent back to the sender's DM through the send queue
+    extra_audits: tuple[tuple[str, str | None, str], ...] = ()  # written after ``audit``
+    member: NewMember | None = None  # onboarding: save a pending member (wakes the worker)

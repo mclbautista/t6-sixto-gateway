@@ -1,10 +1,12 @@
 import subprocess
 import sys
 
+from tests.fakes import NOTION_YAML
+
 
 def test_bad_config_stops_the_boot_with_exit_code_2(tmp_path):
     config = tmp_path / "config.yaml"
-    config.write_text("modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n")
+    config.write_text("modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n" + NOTION_YAML)
     result = subprocess.run(
         [sys.executable, "-m", "sixto_gateway", "--config", str(config)],
         env={"PATH": "/usr/bin"},
@@ -20,7 +22,7 @@ import asyncio, sys, time
 import sixto_gateway.__main__ as entry
 from sixto_gateway.config import load_config
 from sixto_gateway.liveness import DEADMAN_SECONDS, Liveness
-from tests.fakes import FakeClock, FakeTelegram
+from tests.fakes import NOTION_YAML, FakeClock, FakeTelegram
 
 entry.SHUTDOWN_GRACE_SECONDS = 0.2
 
@@ -34,7 +36,10 @@ class StuckInAThread(FakeTelegram):
 clock = FakeClock()
 liveness = Liveness(clock)
 clock.advance(DEADMAN_SECONDS)
-config = load_config(sys.argv[1], {"TELEGRAM_BOT_TOKEN": "1:t", "WATCHDOG_SECRET": "w" * 40})
+config = load_config(
+    sys.argv[1],
+    {"TELEGRAM_BOT_TOKEN": "1:t", "WATCHDOG_SECRET": "w" * 40, "NOTION_API_KEY": "n" * 40},
+)
 sys.exit(entry.run_serving(entry.serve(config, StuckInAThread([]), liveness)))
 """
 
@@ -50,7 +55,7 @@ def test_a_deadman_exit_is_not_held_up_by_a_stuck_thread(tmp_path):
     config.write_text(
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"listen: {{host: 127.0.0.1, port: {port}}}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
     )
     script = tmp_path / "hung.py"
     script.write_text(HUNG_GATEWAY)
