@@ -10,8 +10,8 @@ import pytest
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import NotionContacts, NotionError, matches_handle
-from sixto_gateway.onboarding import OnboardingWorker
+from sixto_gateway.notion import NotionContacts, NotionError, closest_contacts, matches_handle
+from sixto_gateway.onboarding import OnboardingWorker, callback_data
 from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
@@ -151,13 +151,55 @@ async def test_handle_matching_ignores_case_and_at_sign_and_reads_aliases(config
     assert "Approve Maria Santos" in [b["text"] for b in buttons(rig.card())]
 
 
-async def test_no_handle_means_no_match_and_nothing_is_picked(config):
-    rig = Rig(config, [start_from(1, username=None)], [JUAN, MARIA])
+async def test_no_handle_and_no_close_name_means_no_candidates(config):
+    rig = Rig(config, [start_from(1, username=None, first="Zed", last="Quill")], [JUAN, MARIA])
     await rig.settle()
     assert rig.store.member(USER)["candidates"] == []
     card = rig.card()
     assert "Match: none found" in card["text"] and "(no @handle)" in card["text"]
     assert [b["text"] for b in buttons(card)] == ["Create new Contact", "Reject"]
+
+
+async def test_no_handle_lists_the_closest_names_and_aliases_and_picks_nothing(config):
+    rig = Rig(config, [start_from(1, username=None, first="Mia", last="")], [JUAN, MARIA])
+    await rig.settle()
+    card = rig.card()
+    assert "Closest by name:" in card["text"] and "Maria Santos" in card["text"]
+    assert [b["text"] for b in buttons(card)] == [
+        "Pick Maria Santos",
+        "Create new Contact",
+        "Reject",
+    ]
+    assert rig.store.member(USER)["status"] == "pending" and rig.notion.writes == []
+
+
+async def test_a_handle_with_no_match_falls_back_to_the_closest_names(config):
+    rig = Rig(config, [start_from(1, username="somebody_else")], [JUAN, MARIA])
+    await rig.settle()
+    card = rig.card()
+    assert "Closest by name:" in card["text"] and "Juan Dela Cruz" in card["text"]
+    assert "Pick Juan Dela Cruz" in [b["text"] for b in buttons(card)]
+    assert not any(b["text"].startswith("Approve") for b in buttons(card))
+
+
+async def test_picking_a_closest_name_links_that_contact(config):
+    rig = Rig(config, [start_from(1, username=None, first="Mia", last="")], [JUAN, MARIA])
+    await rig.settle()
+    pick = next(b for b in buttons(rig.card()) if b["text"].startswith("Pick"))
+    tap(rig, 2, pick["callback_data"])
+    await rig.settle()
+    assert rig.notion.writes == [(MARIA.page_id, USER)]
+    assert rig.store.member(USER)["contact_page_id"] == MARIA.page_id
+
+
+def test_closest_contacts_ranks_names_and_aliases_and_ignores_honorifics():
+    kuya = contact("aaaaaaaa-0000-0000-0000-000000000004", "Pio Reyes", aliases="Kuya Pio")
+    ranked = closest_contacts([JUAN, MARIA, kuya], "ate mia")
+    assert [c.name for c in ranked] == ["Maria Santos"]
+    assert [c.name for c in closest_contacts([JUAN, MARIA, kuya], "Pio")] == ["Pio Reyes"]
+    assert closest_contacts([JUAN, MARIA], "") == []
+    many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(10)]
+    assert len(closest_contacts(many, "Juan")) == 3
 
 
 async def test_several_matches_get_one_button_each_and_no_single_approve(config):
@@ -333,25 +375,63 @@ async def test_a_failed_notion_write_leaves_the_row_pending_and_the_buttons_usab
     assert rig.store.member(USER)["status"] == "approved"
 
 
-async def test_a_contact_with_a_different_telegram_id_is_not_overwritten(config):
-    taken = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id="987")
-    rig = await approved_rig(config, contacts=(taken,))
-    tap(rig, 2, approve_data(rig))
-    await rig.settle()
+def replace_id(c, new_id):
+    return replace(c, telegram_user_id=new_id)
 
+
+TAKEN = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id="987")
+
+
+async def test_a_conflicting_id_shows_a_warning_and_a_replace_id_button(config):
+    rig = await approved_rig(config, contacts=(TAKEN,))
+    card = rig.card()
+    assert "⚠ This Contact already has Telegram id 987" in card["text"]
+    assert [b["text"] for b in buttons(card)] == ["Replace ID", "Create new Contact", "Reject"]
     assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
-    assert rig.telegram.answers[0]["alert"] is True
 
 
-async def test_a_contact_that_already_has_this_id_is_approved_without_a_second_write(config):
-    same = contact(JUAN.page_id, JUAN.name, handle="@JuanDC", user_id=str(USER))
-    rig = await approved_rig(config, contacts=(same,))
-    tap(rig, 2, approve_data(rig))
+async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
+    rig = await approved_rig(config, contacts=(TAKEN,))
+    # a plain Approve payload for the same Contact (an old or forged card) changes nothing
+    tap(rig, 2, callback_data("ok", USER, TAKEN.page_id))
     await rig.settle()
-    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "approved"
+    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.telegram.answers[-1]["alert"] is True
+
+    replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
+    tap(rig, 3, replace["callback_data"])
+    await rig.settle()
+    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.store.member(USER)["status"] == "approved"
+    assert any(
+        e == "notion_write" and "replaced_id=987" in d for e, _, d in rig.store.audit_events()
+    )
+    assert "✅ Approved:" in rig.telegram.edits[-1]["text"]
 
 
-async def test_one_contact_cannot_be_linked_to_two_users(config):
+async def test_replace_id_refuses_when_the_id_changed_since_the_card_was_sent(config):
+    rig = await approved_rig(config, contacts=(TAKEN,))
+    replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
+    rig.notion.contacts = [replace_id(TAKEN, "555")]  # someone edited Notion meanwhile
+    tap(rig, 2, replace["callback_data"])
+    await rig.settle()
+    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.telegram.answers[-1]["alert"] is True
+
+
+async def test_replace_id_names_the_candidate_when_there_are_several(config):
+    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", aliases="juandc")
+    rig = await approved_rig(config, contacts=(TAKEN, twin))
+    assert [b["text"] for b in buttons(rig.card())] == [
+        "Replace ID: Juan Dela Cruz",
+        "Pick Juan D.",
+        "Create new Contact",
+        "Reject",
+    ]
+    assert rig.card()["text"].count("⚠") == 1
+
+
+async def test_replace_id_cannot_take_a_contact_linked_to_another_user(config):
     rig = await approved_rig(config)
     tap(rig, 2, approve_data(rig))
     await rig.settle()
@@ -361,15 +441,60 @@ async def test_one_contact_cannot_be_linked_to_two_users(config):
     (second,) = [
         m for m in rig.telegram.sent if m["chat_id"] == APPROVER and "id 6002" in m["text"]
     ]
-    approve = next(b for b in second["keyboard"][0] if b["text"].startswith("Approve"))
+    assert f"already has Telegram id {USER}" in second["text"]
+    replace = next(b for b in buttons(second) if b["text"] == "Replace ID")
     rig.telegram.push(
-        button_tap(4, APPROVER, approve["callback_data"], APPROVER, second["message_id"])
+        button_tap(4, APPROVER, replace["callback_data"], APPROVER, second["message_id"])
     )
     await rig.settle()
-
     assert rig.store.member(6002)["status"] == "pending"
     assert rig.notion.writes == [(JUAN.page_id, USER)]
     assert rig.telegram.answers[-1]["alert"] is True
+
+
+async def test_a_contact_that_already_has_this_id_is_approved_with_no_card_and_no_write(config):
+    holder = contact("aaaaaaaa-0000-0000-0000-000000000009", "Juan Dela Cruz", user_id=str(USER))
+    rig = Rig(config, [start_from(1, username="renamed")], [holder, MARIA])
+    await rig.settle()
+    rig.clock.advance(10)  # the sender paces messages to one chat
+    await rig.settle()
+
+    member = rig.store.member(USER)
+    assert member["status"] == "approved" and member["contact_page_id"] == holder.page_id
+    assert member["decided_by"] is None
+    assert rig.notion.writes == [] and rig.notion.created == []
+    assert rig.texts_to(USER) == [
+        strings.WAITING.format(first_name="Juan"),
+        strings.APPROVED.format(first_name="Juan"),
+    ]
+    (fyi,) = rig.texts_to(APPROVER)  # one line, and no buttons
+    assert "Juan Dela Cruz" in fyi and "already had this Telegram id" in fyi
+    assert not any(m.get("keyboard") for m in rig.telegram.sent if m["chat_id"] == APPROVER)
+    assert any(e == "decision" for e, _, _ in rig.store.audit_events())
+
+
+async def test_two_contacts_with_this_id_are_left_to_the_approver(config):
+    one = contact("aaaaaaaa-0000-0000-0000-000000000009", "Juan A", user_id=str(USER))
+    two = contact("aaaaaaaa-0000-0000-0000-000000000010", "Juan B", user_id=str(USER))
+    rig = Rig(config, [start_from(1)], [one, two, JUAN])
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "pending"
+    assert rig.card()["keyboard"]
+
+
+async def test_a_contact_with_this_id_that_belongs_to_another_member_is_left_to_the_approver(
+    config,
+):
+    rig = await approved_rig(config)
+    tap(rig, 2, approve_data(rig))
+    await rig.settle()
+    rig.telegram.push(start_from(3, user=6002, username="juandc", first="Other"))
+    rig.notion.contacts = [
+        replace(c, telegram_user_id="6002") if c.page_id == JUAN.page_id else c
+        for c in rig.notion.contacts
+    ]
+    await rig.settle()
+    assert rig.store.member(6002)["status"] == "pending"
 
 
 async def test_the_contact_to_user_lookup_returns_only_approved_members(config):
