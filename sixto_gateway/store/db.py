@@ -390,6 +390,47 @@ class Store:
         except sqlite3.IntegrityError:  # the unique index: the Contact already has a member
             return False
 
+    def auto_approve_member(
+        self,
+        user_id: int,
+        contact_page_id: str,
+        reply: dict[str, Any],
+        fyi_chat: int,
+        fyi: dict[str, Any],
+    ) -> bool:
+        """Approve a member whose Contact already holds their id: no card and no Notion write.
+
+        Marks the pending member approved (nobody decided, so ``decided_by`` stays empty) and
+        queues the "approved" reply and a one-line FYI for the approver, in one transaction.
+        False (nothing changed) when the lookup is already done, the member is no longer pending
+        or the Contact belongs to someone else.
+        """
+        try:
+            with self._transaction():
+                now = self._clock()
+                updated = self._db.execute(
+                    "UPDATE members SET status = 'approved', contact_page_id = ?, candidates = ?,"
+                    " decided_at = ?, updated_at = ? WHERE telegram_user_id = ?"
+                    " AND status = 'pending' AND candidates IS NULL",
+                    (contact_page_id, json.dumps([contact_page_id]), now, now, user_id),
+                ).rowcount
+                if not updated:
+                    return False
+                self._insert_audit("lookup", None, f"user={user_id} contact already has this id")
+                self._insert_audit(
+                    "decision", None, f"user={user_id} approved contact={contact_page_id} by=id"
+                )
+                self._insert_audit("reply", None, f"user={user_id} kind=approved")
+                self._insert_outbound(
+                    GATEWAY_MODULE, "message", str(user_id), reply, f"approved:{user_id}"
+                )
+                self._insert_outbound(
+                    GATEWAY_MODULE, "message", str(fyi_chat), fyi, f"fyi:{user_id}"
+                )
+                return True
+        except sqlite3.IntegrityError:  # the unique index: the Contact already has a member
+            return False
+
     def reject_member(self, user_id: int, decided_by: int, reply: dict[str, Any]) -> bool:
         """Mark a pending member rejected and queue the neutral reply, in one transaction.
 

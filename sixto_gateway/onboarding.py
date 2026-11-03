@@ -20,7 +20,13 @@ from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, NewMember, NewTap
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import Contact, ContactsDirectory, NotionError, matches_handle
+from sixto_gateway.notion import (
+    Contact,
+    ContactsDirectory,
+    NotionError,
+    closest_contacts,
+    matches_handle,
+)
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
@@ -103,6 +109,20 @@ def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact
     return [c for c in contacts if matches_handle(c, handle)]
 
 
+def find_candidates_for(contacts: list[Contact], member: dict[str, Any]) -> list[Contact]:
+    """Handle or alias matches; with none, the Contacts closest by name. Never picks one."""
+    exact = find_candidates(contacts, member["handle"])
+    if exact:
+        return exact
+    name = " ".join(p for p in (member["first_name"], member["last_name"]) if p)
+    return closest_contacts(contacts, name)
+
+
+def holders_of_id(contacts: list[Contact], user_id: int) -> list[Contact]:
+    """Contacts whose ``TelegramUserID`` is already this user's id."""
+    return [c for c in contacts if c.telegram_user_id == str(user_id)]
+
+
 def callback_data(action: str, user_id: int, page_id: str = "") -> str:
     """Button payload (Telegram allows 64 bytes): ``ob:<action>:<user id>[:<page id>]``."""
     parts = [CALLBACK_PREFIX, action, str(user_id)]
@@ -155,29 +175,39 @@ def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, 
     """The approver's card as an outbound body (HTML text plus inline buttons)."""
     user_id = member["telegram_user_id"]
     lines = _card_header(member)
-    row: list[dict[str, str]] = []
+    handle = member["handle"]
+    by_handle = (
+        bool(handle) and bool(candidates) and all(matches_handle(c, handle) for c in candidates)
+    )
+    single = len(candidates) == 1 and by_handle
     if not candidates:
         lines.append(strings.CARD_NO_MATCH)
-    elif len(candidates) == 1:
-        (only,) = candidates
-        lines.append(strings.CARD_MATCH.format(link=_link(only)))
-        row.append(
-            {
-                "text": strings.BUTTON_APPROVE.format(name=only.name),
-                "callback_data": callback_data("ok", user_id, only.page_id),
-            }
-        )
-    else:  # several matches: nothing is picked for the approver
-        lines.append(strings.CARD_MATCHES)
-        for contact in candidates:
+    elif single:
+        lines.append(strings.CARD_MATCH.format(link=_link(candidates[0])))
+    else:  # several matches, or only names to go on: nothing is picked for the approver
+        lines.append(strings.CARD_MATCHES if by_handle else strings.CARD_CLOSEST)
+    keyboard: list[list[dict[str, str]]] = []
+    for contact in candidates:
+        if not single:
             lines.append(f"• {_link(contact)}")
-            row.append(
-                {
-                    "text": strings.BUTTON_PICK.format(name=contact.name),
-                    "callback_data": callback_data("ok", user_id, contact.page_id),
-                }
+        conflict = contact.telegram_user_id not in ("", str(user_id))
+        if conflict:
+            lines.append(
+                strings.CARD_CONFLICT.format(other_id=html.escape(contact.telegram_user_id))
             )
-    keyboard = [[b] for b in row]
+            label = (
+                strings.BUTTON_REPLACE
+                if len(candidates) == 1
+                else strings.BUTTON_REPLACE_NAMED.format(name=contact.name)
+            )
+            action = "rep"
+        else:
+            template = strings.BUTTON_APPROVE if single else strings.BUTTON_PICK
+            label = template.format(name=contact.name)
+            action = "ok"
+        keyboard.append(
+            [{"text": label, "callback_data": callback_data(action, user_id, contact.page_id)}]
+        )
     keyboard.append(
         [
             {"text": strings.BUTTON_CREATE, "callback_data": callback_data("new", user_id)},
@@ -227,13 +257,17 @@ class OnboardingWorker:
             if self._retry_at.get(user, 0.0) > now:
                 continue
             try:
-                found = find_candidates(await self._contacts.list_contacts(), member["handle"])
+                contacts = await self._contacts.list_contacts()
             except NotionError as exc:
                 self._retry_at[user] = self._clock() + LOOKUP_RETRY_SECONDS
                 self._store.audit("lookup", None, f"user={user} failed: {exc}"[:300])
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 continue
             self._retry_at.pop(user, None)
+            if self._auto_approve(member, contacts):
+                self._queue_wake.notify()
+                return True
+            found = find_candidates_for(contacts, member)
             self._store.queue_approval_card(
                 user,
                 [c.page_id for c in found],
@@ -244,6 +278,38 @@ class OnboardingWorker:
             self._queue_wake.notify()
             return True
         return False
+
+    def _auto_approve(self, member: dict[str, Any], contacts: list[Contact]) -> bool:
+        """A Contact already holds this user's id: onboard them with no card and no write.
+
+        Only when exactly one Contact has the id and no other member is linked to it. In any
+        other case the approver decides on a card.
+        """
+        user = member["telegram_user_id"]
+        holders = holders_of_id(contacts, user)
+        if len(holders) != 1:
+            return False
+        holder = holders[0]
+        if self._store.approved_user_for_contact(holder.page_id) is not None:
+            return False
+        reply = {
+            "chat": user,
+            "topic": None,
+            "text": strings.APPROVED.format(
+                first_name=strings.first_name_or_there(member["first_name"])
+            ),
+            "format": "plain",
+        }
+        name = " ".join(p for p in (member["first_name"], member["last_name"]) if p)
+        fyi = {
+            "chat": self._approver,
+            "topic": None,
+            "text": strings.FYI_AUTO.format(
+                person=html.escape(name or str(user)), link=_link(holder)
+            ),
+            "format": "html",
+        }
+        return self._store.auto_approve_member(user, holder.page_id, reply, self._approver, fyi)
 
     async def process_tap(self) -> bool:
         """Handle the oldest unhandled button tap. False when there is none."""
@@ -266,8 +332,8 @@ class OnboardingWorker:
             return
         action, user_id, page = parsed
         member = self._store.member(user_id)
-        if member is None or action not in ("ok", "no", "new", "undo"):
-            await self._answer(tap)  # ticket #23 adds the Replace ID and Retry buttons
+        if member is None or action not in ("ok", "rep", "no", "new", "undo"):
+            await self._answer(tap)  # ticket #27 adds the Retry buttons
             return
         if member["status"] != ("rejected" if action == "undo" else "pending"):
             await self._answer(tap)  # stale card: show what is true now
@@ -286,7 +352,7 @@ class OnboardingWorker:
             if chosen is None:
                 await self._answer(tap)
                 return
-            await self._approve(tap, member, chosen)
+            await self._approve(tap, member, chosen, replace=action == "rep")
 
     async def _reject(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         """Nothing is written to Notion. The card keeps one Undo button."""
@@ -343,7 +409,10 @@ class OnboardingWorker:
         self._store.audit("notion_write", None, f"user={user} created contact={created.page_id}")
         await self._finish_approval(tap, member, created.page_id, created.name)
 
-    async def _approve(self, tap: dict[str, Any], member: dict[str, Any], page_id: str) -> None:
+    async def _approve(
+        self, tap: dict[str, Any], member: dict[str, Any], page_id: str, *, replace: bool = False
+    ) -> None:
+        """Link the member to a Contact; another id there is overwritten only when ``replace``."""
         user = member["telegram_user_id"]
         owner = self._store.approved_user_for_contact(page_id)
         if owner is not None and owner != user:
@@ -352,12 +421,13 @@ class OnboardingWorker:
             return
         try:
             contact = await self._contacts.get_contact(page_id)
-            if contact.telegram_user_id not in ("", str(user)):
-                # ticket #23 adds the "Replace ID" button; until then nothing is overwritten
+            old_id = contact.telegram_user_id
+            if old_id not in ("", str(user)) and not replace:
+                # only the Replace ID button overwrites another person's id
                 self._store.audit("decision", None, f"user={user} refused: contact has other id")
                 await self._answer(tap, strings.TAP_OTHER_ID, alert=True)
                 return
-            wrote = contact.telegram_user_id != str(user)
+            wrote = old_id != str(user)
             if wrote:
                 await self._contacts.set_telegram_user_id(contact, user)
         except NotionError as exc:
@@ -366,7 +436,8 @@ class OnboardingWorker:
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
         if wrote:
-            self._store.audit("notion_write", None, f"user={user} contact={page_id}")
+            replaced = f" replaced_id={old_id}" if old_id else ""
+            self._store.audit("notion_write", None, f"user={user} contact={page_id}{replaced}")
         await self._finish_approval(tap, member, page_id, contact.name)
 
     async def _finish_approval(

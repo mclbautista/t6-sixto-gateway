@@ -11,9 +11,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
+from rapidfuzz import fuzz
 
 BASE_URL = "https://api.notion.com/v1"
 DEFAULT_HONORIFICS = ("ate", "kuya", "sir")
+CLOSEST_MIN_SCORE = 60.0  # a candidate on a card only needs to be worth a look
+CLOSEST_LIMIT = 3
 
 
 class NotionError(Exception):
@@ -78,6 +81,32 @@ def matches_handle(contact: Contact, handle: str) -> bool:
     if normalize_handle(contact.telegram_handle) == wanted:
         return True
     return any(alias.lstrip("@") == wanted for alias in split_aliases(contact.aliases))
+
+
+def closest_contacts(
+    contacts: Iterable[Contact],
+    name: str,
+    *,
+    limit: int = CLOSEST_LIMIT,
+    min_score: float = CLOSEST_MIN_SCORE,
+) -> list[Contact]:
+    """Contacts whose name or an alias is closest to ``name``, best first.
+
+    Ranks with the same ``WRatio`` scorer and name normalization as t6-jo-tg-ntn
+    (``fuzzy_ranking``), but with a low bar: these are suggestions for the approver to
+    choose from, never picked automatically.
+    """
+    wanted = normalize_name(name)
+    if not wanted:
+        return []
+    scored: list[tuple[float, Contact]] = []
+    for c in contacts:
+        titles = [normalize_name(c.name), *split_aliases(c.aliases)]
+        best = max((fuzz.WRatio(wanted, t) for t in titles if t), default=0.0)
+        if best >= min_score:
+            scored.append((best, c))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [c for _, c in scored[:limit]]
 
 
 def _text(prop: dict[str, Any] | None) -> str:
