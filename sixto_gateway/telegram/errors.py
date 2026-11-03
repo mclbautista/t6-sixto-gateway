@@ -25,3 +25,7 @@ class RetryAfterError(TransientSendError):
 
 class PermanentSendError(SendError):
     """A request that can never succeed (chat not found, bad HTML, bot blocked)."""
+
+
+class BlockedByUserError(PermanentSendError):
+    """Telegram 403: the person blocked the bot (or never allowed it to write to them)."""

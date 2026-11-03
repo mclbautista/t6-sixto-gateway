@@ -38,4 +38,7 @@ class Decision:
     reply: str | None = None  # text sent back to the sender's DM through the send queue
     extra_audits: tuple[tuple[str, str | None, str], ...] = ()  # written after ``audit``
     member: NewMember | None = None  # onboarding: save a pending member (wakes the worker)
+    unblock_member: int | None = (
+        None  # onboarding: a blocked member pressed Start; back to approved
+    )
     tap: NewTap | None = None  # onboarding: save a button tap (wakes the worker)

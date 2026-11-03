@@ -148,6 +148,12 @@ class Store:
                     " ON CONFLICT(telegram_user_id) DO NOTHING",
                     (m.user_id, m.handle, m.first_name, m.last_name, received_at, received_at),
                 )
+            if inserted and decision.unblock_member is not None:
+                self._db.execute(
+                    "UPDATE members SET status = 'approved', updated_at = ?"
+                    " WHERE telegram_user_id = ? AND status = 'blocked'",
+                    (received_at, decision.unblock_member),
+                )
             if inserted and decision.tap is not None:
                 t = decision.tap
                 self._db.execute(
@@ -495,6 +501,23 @@ class Store:
                 return False
             self._insert_audit("undo", None, f"user={user_id} by={undone_by}")
             return True
+
+    def block_member(self, chat_id: int) -> bool:
+        """The bot cannot write to this chat: an approved member becomes ``blocked``.
+
+        Only approved members change. A pending or rejected one must not skip the approver's
+        decision when they unblock the bot and press Start again. False when nothing changed
+        (a group chat, an unknown chat, or a member who is not approved).
+        """
+        with self._transaction():
+            updated = self._db.execute(
+                "UPDATE members SET status = 'blocked', updated_at = ?"
+                " WHERE telegram_user_id = ? AND status = 'approved'",
+                (self._clock(), chat_id),
+            ).rowcount
+            if updated:
+                self._insert_audit("blocked", None, f"user={chat_id} blocked the bot")
+            return bool(updated)
 
     def next_tap(self) -> dict[str, Any] | None:
         """The oldest button tap not yet handled."""

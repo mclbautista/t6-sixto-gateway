@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import Protocol
 
 from sixto_gateway.telegram.errors import (
+    BlockedByUserError,
     PermanentSendError,
     RetryAfterError,
     SendError,
@@ -82,6 +83,7 @@ def translate_send_error(exc: Exception) -> SendError | None:
     """Map an aiogram exception to the sender's vocabulary (None: not an aiogram error)."""
     from aiogram.exceptions import (
         TelegramAPIError,
+        TelegramForbiddenError,
         TelegramNetworkError,
         TelegramRetryAfter,
         TelegramServerError,
@@ -91,6 +93,8 @@ def translate_send_error(exc: Exception) -> SendError | None:
         return RetryAfterError(exc.retry_after, exc.message)
     if isinstance(exc, TelegramServerError | TelegramNetworkError):
         return TransientSendError(f"{type(exc).__name__}: {exc.message}")
+    if isinstance(exc, TelegramForbiddenError):  # 403: the person blocked the bot
+        return BlockedByUserError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError):  # every other 4xx can never succeed on a retry
         return PermanentSendError(f"{type(exc).__name__}: {exc.message}")
     return None

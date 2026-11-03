@@ -412,7 +412,7 @@ async def test_a_permanent_aiogram_error_fails_at_once_and_is_audited(tmp_path, 
     await rig.drain_now()
     row = rig.state(ref)
     assert row["state"] == "failed" and rig.bot.calls == 1
-    assert "PermanentSendError" in row["error"]
+    assert row["error"].startswith(("PermanentSendError", "BlockedByUserError"))
     assert any(e == "send_failed" for e, _, _ in rig.store.audit_events())
 
 
