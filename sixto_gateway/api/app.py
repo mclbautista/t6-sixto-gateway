@@ -3,13 +3,14 @@ except ``GET /healthz``."""
 
 import asyncio
 import logging
+import re
 import time
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sixto_gateway.config import Config
 from sixto_gateway.liveness import Liveness
@@ -23,13 +24,39 @@ INT64_MAX = 2**63 - 1
 BigInt = Annotated[int, Field(ge=-INT64_MAX, le=INT64_MAX)]
 
 
-class NotifyBody(BaseModel):
+HANDLE = re.compile(r"^@?[A-Za-z0-9_]{1,64}$")
+CONTACT_ID = re.compile(r"^[0-9A-Fa-f-]{32,36}$")
+
+
+class Fallback(BaseModel):
+    """Where a Contact's message goes when they have no approved Telegram member."""
+
     model_config = ConfigDict(extra="forbid")
     to: BigInt
     topic: BigInt | None = None
+    handle: str = Field(pattern=HANDLE.pattern)
+
+
+class NotifyBody(BaseModel):
+    """Either ``to`` (a chat id) or ``contact`` with its ``fallback``; never both, never neither."""
+
+    model_config = ConfigDict(extra="forbid")
+    to: BigInt | None = None
+    topic: BigInt | None = None
+    contact: str | None = Field(default=None, pattern=CONTACT_ID.pattern)
+    fallback: Fallback | None = None
     text: str = Field(min_length=1, max_length=4096)
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def exactly_one_address(self) -> Self:
+        if self.contact is None:
+            if self.to is None or self.fallback is not None:
+                raise ValueError("send either 'to', or 'contact' with 'fallback'")
+        elif self.to is not None or self.topic is not None or self.fallback is None:
+            raise ValueError("send either 'to', or 'contact' with 'fallback'")
+        return self
 
 
 class ReactBody(BaseModel):
@@ -111,16 +138,23 @@ def create_app(
 
     @app.post("/notify", status_code=202)
     async def post_notify(module: Module, body: NotifyBody) -> dict[str, int]:
+        chat, topic, text = body.to, body.topic, body.text
+        if body.contact is not None:
+            assert body.fallback is not None
+            # Local members table only: no Notion call on the send path.
+            user = store.approved_user_for_contact(body.contact)
+            if user is not None:
+                chat, topic = user, None
+            else:
+                fb = body.fallback
+                chat, topic = fb.to, fb.topic
+                text = f"@{fb.handle.lstrip('@')} {text}"
+        assert chat is not None
         ref = store.enqueue_outbound(
             module,
             "message",
-            str(body.to),
-            {
-                "chat": body.to,
-                "topic": body.topic,
-                "text": body.text,
-                "format": body.format,
-            },
+            str(chat),
+            {"chat": chat, "topic": topic, "text": text, "format": body.format},
             body.idempotency_key,
         )
         queue_wake.notify()
