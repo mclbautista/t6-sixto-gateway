@@ -25,6 +25,7 @@ IN_A_GROUP = "Please message me directly to set up your briefings: {deep_link}"
 WHEREAMI_IN_DM = "Send this in the group topic you want."
 WHEREAMI_CHAT = "Chat id: <code>{chat_id}</code>"
 WHEREAMI_TOPIC = "Topic id: <code>{topic_id}</code>"
+WHEREAMI_GENERAL_TOPIC = "Topic id: <code>1</code> (General)"
 WHEREAMI_NO_TOPIC = "Topic id: none (this group has no topics)"
 
 # --- for the approver's card ----------------------------------------------------------------

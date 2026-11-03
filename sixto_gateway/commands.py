@@ -76,11 +76,12 @@ def decide_builtin(config: Config, update: IncomingUpdate) -> Decision:
     audit = ("command_answered", None, detail)
     if private:
         return Decision(None, audit=audit, reply=strings.WHEREAMI_IN_DM)
-    topic = (
-        strings.WHEREAMI_NO_TOPIC
-        if update.topic_id is None
-        else strings.WHEREAMI_TOPIC.format(topic_id=update.topic_id)
-    )
+    if update.topic_id is not None:
+        topic = strings.WHEREAMI_TOPIC.format(topic_id=update.topic_id)
+    elif update.chat_is_forum:  # Telegram sends no topic id for a forum's General topic
+        topic = strings.WHEREAMI_GENERAL_TOPIC
+    else:
+        topic = strings.WHEREAMI_NO_TOPIC
     text = strings.WHEREAMI_CHAT.format(chat_id=update.chat_id) + "\n" + topic
     return Decision(None, audit=audit, reply=text, reply_format="html")
 
