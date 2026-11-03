@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from sixto_gateway.commands import decide_command
+from sixto_gateway.commands import decide_builtin, decide_command, is_builtin
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision
 from sixto_gateway.liveness import Liveness
@@ -49,6 +49,8 @@ class Poller:
             return decide_tap(update)
         if update.command == "start":
             return decide_start(self._store, update)
+        if update.command is not None and is_builtin(self._config, update):
+            return decide_builtin(self._config, update)
         if update.command is not None and update.chat_type == "private":
             return decide_command(self._config, update)
         return Decision(self.route(update))

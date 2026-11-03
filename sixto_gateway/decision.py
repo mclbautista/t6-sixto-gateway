@@ -35,7 +35,8 @@ class Decision:
     module: str | None  # owning module, or None: stored, not delivered
     kind: str = "update"  # "update" or "command"
     audit: tuple[str, str | None, str] | None = None  # (event, module, detail)
-    reply: str | None = None  # text sent back to the sender's DM through the send queue
+    reply: str | None = None  # text sent back in the update's own chat and topic (send queue)
+    reply_format: str = "plain"  # "plain" or "html" (html text must already be escaped)
     extra_audits: tuple[tuple[str, str | None, str], ...] = ()  # written after ``audit``
     member: NewMember | None = None  # onboarding: save a pending member (wakes the worker)
     unblock_member: int | None = (

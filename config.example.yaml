@@ -26,9 +26,17 @@ retention_days: 30
 database_path: ./data/gateway.db
 modules:                                        # each module authenticates with its own secret
   watchdog: { secret_env: WATCHDOG_SECRET }
-commands: {}                                    # phase 1 registers none; /jo arrives in phase 5
+commands:                                       # /jo arrives in phase 5
+  whereami:                                     # built-in: answered by the gateway, no module
+    builtin: true
+    allow: [chat_ids]
+    description: Show this chat's id and topic id
 groups:
   cyril: [274983989]                            # Telegram user ids
+  chat_ids:                                     # who may ask /whereami
+    - 274983989                                 # Cyril
+    - 7926844592                                # Leizette
+    # FILL IN at deploy: Pio's Telegram user id
 routes:
   # FILL IN: copy the intake chat and topic ids from the watchdog's config.yaml
   # (intake_chat_id / intake_topic_id). Cyril approved copying them as they are; they are not

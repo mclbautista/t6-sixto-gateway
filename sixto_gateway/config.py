@@ -56,8 +56,12 @@ class ModuleConfig(_Model):
     secret_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
 
 
+BUILTIN_COMMANDS = frozenset({"whereami"})  # answered by the gateway itself, never routed
+
+
 class CommandConfig(_Model):
-    module: str
+    module: str | None = None  # the owning module; omitted for a built-in command
+    builtin: bool = False  # true: the gateway answers it itself and needs no module
     allow: list[StrictInt | str] = []
     description: str = ""
 
@@ -200,7 +204,14 @@ def _check_references(config: Config) -> list[str]:
             problems.append(f"command {name!r} is not a valid Telegram command name")
         if len(command.description) > 256:
             problems.append(f"command {name!r} description is longer than 256 characters")
-        if command.module not in config.modules:
+        if command.builtin:
+            if name not in BUILTIN_COMMANDS:
+                problems.append(f"command {name!r} is not a built-in command")
+            if command.module is not None:
+                problems.append(f"built-in command {name!r} must not name a module")
+        elif command.module is None:
+            problems.append(f"command {name!r} needs a module (or builtin: true)")
+        elif command.module not in config.modules:
             problems.append(f"command {name!r} names unknown module {command.module!r}")
         for entry in command.allow:
             if isinstance(entry, str) and entry not in config.groups:

@@ -178,7 +178,7 @@ class Store:
                         "chat": update.chat_id,
                         "topic": update.topic_id if update.chat_type != "private" else None,
                         "text": decision.reply,
-                        "format": "plain",
+                        "format": decision.reply_format,
                     },
                     None,
                 )

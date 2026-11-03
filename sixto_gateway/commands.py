@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from functools import partial
 
+from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision
 from sixto_gateway.store import Store
@@ -45,8 +46,43 @@ def decide_command(config: Config, update: IncomingUpdate) -> Decision:
     allowed = allowed_commands(config).get(sender, []) if sender is not None else []
     if update.command in allowed:  # only names from config.commands can be in the list
         module = config.commands[update.command].module
+        assert module is not None  # built-ins are answered by decide_builtin, never here
         return Decision(module, "command", ("command_routed", module, detail))
     return Decision(None, audit=("command_refused", None, detail), reply=REFUSAL)
+
+
+def is_builtin(config: Config, update: IncomingUpdate) -> bool:
+    """True when the gateway answers this command itself (it is configured as a built-in)."""
+    command = config.commands.get(update.command or "")
+    return command is not None and command.builtin
+
+
+def decide_builtin(config: Config, update: IncomingUpdate) -> Decision:
+    """A built-in command (``/whereami``): answered here, never delivered to a module.
+
+    An allowed caller gets the answer in the chat and topic it was sent from (a hint in a DM).
+    Anyone else gets the standard refusal in a DM and silence in a group (the attempt is audited).
+    """
+    assert update.command is not None
+    if update.edited:  # an edit never gets a second reply
+        return Decision(None)
+    sender = update.from_id
+    detail = f"command={update.command} chat={update.chat_id} from={sender}"  # never the args
+    private = update.chat_type == "private"
+    if update.command not in (allowed_commands(config).get(sender, []) if sender else []):
+        return Decision(
+            None, audit=("command_refused", None, detail), reply=REFUSAL if private else None
+        )
+    audit = ("command_answered", None, detail)
+    if private:
+        return Decision(None, audit=audit, reply=strings.WHEREAMI_IN_DM)
+    topic = (
+        strings.WHEREAMI_NO_TOPIC
+        if update.topic_id is None
+        else strings.WHEREAMI_TOPIC.format(topic_id=update.topic_id)
+    )
+    text = strings.WHEREAMI_CHAT.format(chat_id=update.chat_id) + "\n" + topic
+    return Decision(None, audit=audit, reply=text, reply_format="html")
 
 
 async def register_menus(

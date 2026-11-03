@@ -320,3 +320,99 @@ async def test_a_429_on_a_menu_call_pauses_the_sender_too(config):
     await register_menus(store, Limited([]), config, clock=clock, sleep=sleep)
     # the first refusal pauses 90 s; the next person's call waits it out, then is refused again
     assert store.paused_until() == start + 180
+
+
+# --- /whereami: a built-in command the gateway answers itself (spec #37) ------------------
+
+WHEREAMI = "commands: {whereami: {builtin: true, allow: [psr], description: Where am I}}\n"
+TOPIC = 77
+
+
+@pytest.fixture
+def whereami_config(tmp_path):
+    return make_config(tmp_path, WHEREAMI)
+
+
+async def test_allowed_user_gets_chat_and_topic_ids_in_the_same_topic(whereami_config):
+    raw = group_command(1, ALLOWED, "/whereami", PSR_CHAT, TOPIC)
+    store, telegram, poller, sender = build(whereami_config, [raw])
+    await run(poller, sender)
+
+    (sent,) = telegram.sent
+    assert sent["chat_id"] == PSR_CHAT and sent["topic_id"] == TOPIC
+    assert sent["text"] == f"Chat id: <code>{PSR_CHAT}</code>\nTopic id: <code>{TOPIC}</code>"
+    assert sent["parse_mode"] == "HTML"
+    assert (
+        "command_answered",
+        None,
+        f"command=whereami chat={PSR_CHAT} from={ALLOWED}",
+    ) in store.audit_events()
+
+
+async def test_whereami_is_never_delivered_to_a_module(whereami_config):
+    raw = [
+        group_command(1, ALLOWED, "/whereami", PSR_CHAT, 1),  # routed to the watchdog
+        dm_message(2, ALLOWED, "/whereami"),
+    ]
+    store, _, poller, sender = build(whereami_config, raw)
+    await run(poller, sender)
+
+    for module in ("watchdog", "jo"):
+        assert store.deliveries_after(module, 0, 100) == []
+
+
+async def test_non_allowed_user_in_a_group_gets_no_reply_but_is_audited(whereami_config):
+    raw = group_command(1, OTHER, "/whereami", PSR_CHAT, TOPIC)
+    store, telegram, poller, sender = build(whereami_config, [raw])
+    await run(poller, sender)
+
+    assert telegram.sent == []
+    assert (
+        "command_refused",
+        None,
+        f"command=whereami chat={PSR_CHAT} from={OTHER}",
+    ) in store.audit_events()
+
+
+async def test_dm_hint_for_allowed_and_refusal_for_others(whereami_config):
+    raw = [dm_message(1, ALLOWED, "/whereami"), dm_message(2, OTHER, "/whereami")]
+    store, telegram, poller, sender = build(whereami_config, raw)
+    await run(poller, sender)
+
+    assert sorted(replies(telegram)) == sorted(
+        [(ALLOWED, "Send this in the group topic you want."), (OTHER, REFUSAL)]
+    )
+    events = [e for e, *_ in store.audit_events()]
+    assert events.count("command_answered") == 1 and events.count("command_refused") == 1
+
+
+async def test_an_edited_whereami_gets_no_second_reply(whereami_config):
+    original = group_command(1, ALLOWED, "/whereami", PSR_CHAT, TOPIC)
+    edit = {"update_id": 2, "edited_message": {**original["message"], "edit_date": 1789700100}}
+    store, telegram, poller, sender = build(whereami_config, [original, edit])
+    await run(poller, sender)
+
+    assert len(telegram.sent) == 1
+    answered = [e for e in store.audit_events() if e[0] == "command_answered"]
+    assert len(answered) == 1
+
+
+async def test_group_without_topics_says_none(whereami_config):
+    raw = group_command(1, ALLOWED, "/whereami", -1009999999999, None)
+    _, telegram, poller, sender = build(whereami_config, [raw])
+    await run(poller, sender)
+
+    (sent,) = telegram.sent
+    assert sent["text"].endswith("Topic id: none (this group has no topics)")
+
+
+def test_builtin_command_config_is_validated(tmp_path):
+    from sixto_gateway.config import ConfigError
+
+    for commands in (
+        "commands: {jo: {builtin: true, allow: [psr]}}\n",  # not a known built-in
+        "commands: {whereami: {builtin: true, module: jo}}\n",  # built-in names no module
+        "commands: {jo: {allow: [psr]}}\n",  # a normal command needs a module
+    ):
+        with pytest.raises(ConfigError):
+            make_config(tmp_path, commands)
