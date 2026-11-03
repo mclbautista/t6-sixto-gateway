@@ -1,7 +1,9 @@
 """Config: a read-only YAML file for non-secrets plus env secrets, validated at boot.
 
-A bad value fails the boot with a ``ConfigError``. Error messages name the key or env var,
-never the offending value, so secrets cannot leak through them.
+A bad value fails the boot with a ``ConfigError``. Messages name the key or env var rather than
+the offending value where they can. Config names (modules, commands, groups) do appear, so every
+message is also scrubbed of the bot token and module secrets before it leaves ``load_config``:
+a secret pasted into the wrong field must not be printed at boot.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from typing import Annotated, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+
+from sixto_gateway.logsafe import Redactor
 
 MIN_SECRET_LENGTH = 32
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -77,6 +81,10 @@ class Secrets:
                 found = module
         return found
 
+    def redaction_values(self) -> list[str]:
+        """Every secret value, for scrubbing logs. Only the log redactor should call this."""
+        return [self._bot_token, *self._module_secrets.values()]
+
     def __repr__(self) -> str:
         return f"Secrets(modules={sorted(self._module_secrets)})"
 
@@ -112,8 +120,9 @@ class _StrictLoader(yaml.SafeLoader):
         seen: set[Any] = set()
         for key_node, _ in node.value:
             key = self.construct_object(key_node, deep=deep)
-            if key in seen:
-                raise ConfigError(f"duplicate key {key!r} in config")
+            if key in seen:  # the key itself could be a pasted secret: give its line
+                line = key_node.start_mark.line + 1
+                raise ConfigError(f"duplicate key at line {line} in config")
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
 
@@ -132,6 +141,8 @@ def _check_references(config: Config) -> list[str]:
     for name, command in config.commands.items():
         if not re.fullmatch(r"[a-z0-9_]{1,32}", name):
             problems.append(f"command {name!r} is not a valid Telegram command name")
+        if len(command.description) > 256:
+            problems.append(f"command {name!r} description is longer than 256 characters")
         if command.module not in config.modules:
             problems.append(f"command {name!r} names unknown module {command.module!r}")
         for entry in command.allow:
@@ -163,6 +174,22 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
     return Secrets(env.get(BOT_TOKEN_ENV, ""), module_secrets), problems
 
 
+def _known_secrets(data: Any, env: Mapping[str, str]) -> list[str]:
+    """Values to scrub from a config error, read leniently from the raw YAML so this works even
+    when the config is invalid: the bot token, every env value a ``modules.*.secret_env`` names,
+    and any ``secret_env`` that is itself some env var's value (a secret pasted as the name).
+    Each also in its ``repr`` form, because messages quote names with ``!r``."""
+    names = [BOT_TOKEN_ENV]
+    modules = data.get("modules") if isinstance(data, dict) else None
+    if isinstance(modules, dict):
+        for module in modules.values():
+            if isinstance(module, dict) and isinstance(module.get("secret_env"), str):
+                names.append(module["secret_env"])
+    env_values = set(env.values())
+    values = [env[n] for n in names if env.get(n)] + [n for n in names if n in env_values]
+    return values + [repr(v)[1:-1] for v in values]
+
+
 def load_config(path: str | Path, env: Mapping[str, str]) -> Config:
     try:
         text = Path(path).read_text()
@@ -174,6 +201,13 @@ def load_config(path: str | Path, env: Mapping[str, str]) -> Config:
         raise ConfigError(f"config file {path} is not valid YAML") from None
     if not isinstance(data, dict):
         raise ConfigError(f"config file {path} must be a mapping")
+    try:
+        return _validate(data, env)
+    except ConfigError as exc:
+        raise ConfigError(Redactor(_known_secrets(data, env)).scrub(str(exc))) from None
+
+
+def _validate(data: dict[str, Any], env: Mapping[str, str]) -> Config:
     try:
         config = Config.model_validate(data)
     except ValidationError as exc:

@@ -10,8 +10,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from sixto_gateway.decision import GATEWAY_MODULE, Decision
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
+
+SECONDS_PER_DAY = 86400.0
+AUDIT_RETENTION_DAYS = 180
 
 
 class Store:
@@ -71,17 +75,40 @@ class Store:
         last = self.last_update_id()
         return 0 if last is None else last + 1
 
+    def set_offset(self, last_update_id: int) -> None:
+        """Set the cursor to exactly ``last_update_id`` (cutover); the next poll uses ``+ 1``.
+
+        Unlike the poller's own advance this may also move the cursor backwards.
+        """
+        with self._transaction():
+            self._db.execute(
+                "INSERT INTO poll_state (id, last_update_id) VALUES (1, ?)"
+                " ON CONFLICT(id) DO UPDATE SET last_update_id = excluded.last_update_id",
+                (last_update_id,),
+            )
+            self._insert_audit("set_offset", None, f"last_update_id={last_update_id}")
+
     # --- updates and deliveries -----------------------------------------------------------
 
     def save_update(
-        self, update: IncomingUpdate, module: str | None, received_at: float | None = None
+        self,
+        update: IncomingUpdate,
+        decision: Decision | str | None,
+        received_at: float | None = None,
     ) -> int | None:
         """Save an update, its delivery (if routed) and move the cursor, in one transaction.
+
+        ``decision`` is a ``Decision``, or just the owning module (or None) for a plain update.
+        A decision's audit row and DM reply are saved in the same transaction, and only the
+        first time the update is seen, so a re-fetch never answers twice.
 
         Returns the new delivery's ``seq``, or None if nothing new was delivered (unrouted, or
         the update was already stored, which makes a re-fetch after a crash idempotent).
         """
         received_at = self._clock() if received_at is None else received_at
+        if not isinstance(decision, Decision):
+            decision = Decision(decision)
+        module = decision.module
         seq: int | None = None
         with self._transaction():
             inserted = self._db.execute(
@@ -100,13 +127,28 @@ class Store:
                 ),
             ).rowcount
             if inserted and module is not None:
-                payload = json.dumps(_item_payload(update), ensure_ascii=False)
+                payload = json.dumps(_item_payload(update, decision.kind), ensure_ascii=False)
                 cursor = self._db.execute(
                     "INSERT INTO deliveries (module, kind, update_id, payload, created_at)"
-                    " VALUES (?, 'update', ?, ?, ?)",
-                    (module, update.update_id, payload, received_at),
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (module, decision.kind, update.update_id, payload, received_at),
                 )
                 seq = cursor.lastrowid
+            if inserted and decision.audit is not None:
+                self._insert_audit(*decision.audit)
+            if inserted and decision.reply is not None:
+                self._insert_outbound(
+                    GATEWAY_MODULE,
+                    "message",
+                    str(update.chat_id),
+                    {
+                        "chat": update.chat_id,
+                        "topic": None,
+                        "text": decision.reply,
+                        "format": "plain",
+                    },
+                    None,
+                )
             self._move_cursor(update.update_id)
         return seq
 
@@ -136,14 +178,225 @@ class Store:
         ).fetchall()
         return [{"seq": r["seq"], **json.loads(r["payload"])} for r in rows]
 
+    # --- outbound queue -------------------------------------------------------------------
+
+    def enqueue_outbound(
+        self,
+        module: str,
+        kind: str,
+        target: str,
+        body: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> int:
+        """Save an outbound row and return its ``message_ref`` (the row id).
+
+        A repeated ``idempotency_key`` from the same module returns the existing ref and queues
+        nothing new. The row is committed (``synchronous=FULL``) before this returns.
+        """
+        with self._transaction():
+            return self._insert_outbound(module, kind, target, body, idempotency_key)
+
+    def _insert_outbound(
+        self,
+        module: str,
+        kind: str,
+        target: str,
+        body: dict[str, Any],
+        idempotency_key: str | None,
+    ) -> int:
+        """``enqueue_outbound`` without its own transaction (the caller holds one)."""
+        now = self._clock()
+        if idempotency_key is not None:
+            row = self._db.execute(
+                "SELECT id FROM outbound WHERE module = ? AND idempotency_key = ?",
+                (module, idempotency_key),
+            ).fetchone()
+            if row:
+                return int(row[0])
+        cursor = self._db.execute(
+            "INSERT INTO outbound (module, kind, target, body, idempotency_key,"
+            " next_attempt_at, created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                module,
+                kind,
+                target,
+                json.dumps(body, ensure_ascii=False),
+                idempotency_key,
+                now,
+                now,
+            ),
+        )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    def due_outbound(self, now: float, limit: int = 500) -> list[dict[str, Any]]:
+        """Queued rows whose time has come, in send order: ``next_attempt_at``, then id."""
+        rows = self._db.execute(
+            "SELECT id, module, kind, target, body, attempts FROM outbound"
+            " WHERE state = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at, id"
+            " LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [{**dict(r), "body": json.loads(r["body"])} for r in rows]
+
+    def next_outbound_at(self, after: float) -> float | None:
+        """When the earliest queued row that is not yet due (later than ``after``) comes due."""
+        row = self._db.execute(
+            "SELECT MIN(next_attempt_at) FROM outbound"
+            " WHERE state = 'queued' AND next_attempt_at > ?",
+            (after,),
+        ).fetchone()
+        return row[0]
+
+    def schedule_outbound_retry(self, ref: int, next_attempt_at: float, error: str) -> None:
+        """A failed attempt that will be retried: count it, keep the row queued."""
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET attempts = attempts + 1, next_attempt_at = ?,"
+                " last_error = ? WHERE id = ?",
+                (next_attempt_at, error, ref),
+            )
+
+    def mark_outbound_sent(self, ref: int, telegram_message_id: int | None) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET state = 'sent', attempts = attempts + 1,"
+                " telegram_message_id = ?, last_error = NULL WHERE id = ?",
+                (telegram_message_id, ref),
+            )
+
+    def mark_outbound_failed(self, ref: int, error: str) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE outbound SET state = 'failed', attempts = attempts + 1, last_error = ?"
+                " WHERE id = ?",
+                (error, ref),
+            )
+
+    def outbound_status(self, ref: int, module: str) -> dict[str, Any] | None:
+        """State of a module's own outbound row, or None (unknown, or another module's)."""
+        row = self._db.execute(
+            "SELECT state, telegram_message_id, last_error FROM outbound"
+            " WHERE id = ? AND module = ?",
+            (ref, module),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "state": row["state"],
+            "telegram_message_id": row["telegram_message_id"],
+            "error": row["last_error"],
+        }
+
     # --- audit ----------------------------------------------------------------------------
 
     def audit(self, event: str, module: str | None = None, detail: str | None = None) -> None:
         with self._transaction():
+            self._insert_audit(event, module, detail)
+
+    def _insert_audit(self, event: str, module: str | None, detail: str | None) -> None:
+        self._db.execute(
+            "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
+            (self._clock(), event, module, detail),
+        )
+
+    # --- retention ------------------------------------------------------------------------
+
+    def purge(
+        self, retention_days: int, audit_retention_days: int = AUDIT_RETENTION_DAYS
+    ) -> dict[str, int]:
+        """Delete rows past their limit and return how many went from each table.
+
+        ``updates``, ``deliveries`` and *finished* ``outbound`` rows (``sent`` or ``failed``) are
+        kept ``retention_days``; ``audit`` rows ``audit_retention_days``. Queued sends, the
+        polling cursor and the menu list are never deleted. Age is measured from ``received_at``
+        / ``created_at``.
+        """
+        now = self._clock()
+        cutoff = now - retention_days * SECONDS_PER_DAY
+        audit_cutoff = now - audit_retention_days * SECONDS_PER_DAY
+        with self._transaction():
+            # deliveries first: they reference updates
+            deliveries = self._db.execute(
+                "DELETE FROM deliveries WHERE created_at < ?", (cutoff,)
+            ).rowcount
+            updates = self._db.execute(
+                "DELETE FROM updates WHERE received_at < ?"
+                " AND update_id NOT IN"
+                " (SELECT update_id FROM deliveries WHERE update_id IS NOT NULL)",
+                (cutoff,),
+            ).rowcount
+            outbound = self._db.execute(
+                "DELETE FROM outbound WHERE state IN ('sent', 'failed') AND created_at < ?",
+                (cutoff,),
+            ).rowcount
+            audit = self._db.execute("DELETE FROM audit WHERE at < ?", (audit_cutoff,)).rowcount
+        return {"updates": updates, "deliveries": deliveries, "outbound": outbound, "audit": audit}
+
+    # --- health ---------------------------------------------------------------------------
+
+    def is_writable(self) -> bool:
+        """True if a write transaction can be taken and committed right now."""
+        try:
+            with self._transaction():
+                # PRAGMA cannot take bound parameters; the value is an int read from the file
+                version = self._db.execute("PRAGMA user_version").fetchone()[0]
+                # rewriting the header with its own value touches the file without changing it
+                self._db.execute(f"PRAGMA user_version = {int(version)}")
+        except sqlite3.Error:
+            return False
+        return True
+
+    def queued_count(self) -> int:
+        row = self._db.execute("SELECT COUNT(*) FROM outbound WHERE state = 'queued'").fetchone()
+        return int(row[0])
+
+    def failed_sends_since(self, since: float) -> int:
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM audit WHERE event = 'send_failed' AND at >= ?", (since,)
+        ).fetchone()
+        return int(row[0])
+
+    # --- pacing history --------------------------------------------------------------------
+
+    def record_send_attempt(self, chat_id: int, at: float, keep_seconds: float) -> None:
+        """Note a request to Telegram before it is made; forget ones older than the windows."""
+        with self._transaction():
+            self._db.execute("INSERT INTO send_attempts (at, chat_id) VALUES (?, ?)", (at, chat_id))
+            self._db.execute("DELETE FROM send_attempts WHERE at < ?", (at - keep_seconds,))
+
+    def send_attempts_since(self, since: float) -> list[tuple[float, int]]:
+        rows = self._db.execute(
+            "SELECT at, chat_id FROM send_attempts WHERE at >= ? ORDER BY at", (since,)
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def paused_until(self) -> float:
+        """When the bot-wide 429 pause ends (0: no pause was ever recorded)."""
+        row = self._db.execute("SELECT until FROM send_pause WHERE id = 1").fetchone()
+        return float(row[0]) if row else 0.0
+
+    def extend_pause(self, until: float) -> None:
+        """Pause all sending until at least ``until``; an earlier value never shortens it."""
+        with self._transaction():
             self._db.execute(
-                "INSERT INTO audit (at, event, module, detail) VALUES (?,?,?,?)",
-                (self._clock(), event, module, detail),
+                "INSERT INTO send_pause (id, until) VALUES (1, ?) ON CONFLICT (id) DO UPDATE"
+                " SET until = MAX(until, excluded.until)",
+                (until,),
             )
+
+    # --- per-person "/" menus -------------------------------------------------------------
+
+    def menu_users(self) -> set[int]:
+        return {r[0] for r in self._db.execute("SELECT user_id FROM menu_users")}
+
+    def add_menu_user(self, user_id: int) -> None:
+        with self._transaction():
+            self._db.execute("INSERT OR IGNORE INTO menu_users (user_id) VALUES (?)", (user_id,))
+
+    def remove_menu_user(self, user_id: int) -> None:
+        with self._transaction():
+            self._db.execute("DELETE FROM menu_users WHERE user_id = ?", (user_id,))
 
     # --- inspection (tests, later healthz) -------------------------------------------------
 
@@ -166,10 +419,15 @@ class Store:
         return [(r[0], r[1], r[2]) for r in rows]
 
 
-def _item_payload(update: IncomingUpdate) -> dict[str, Any]:
-    """The delivery item as served by ``GET /updates`` (everything except ``seq``)."""
+def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any]:
+    """The delivery item as served by ``GET /updates`` (everything except ``seq``).
+
+    A ``command`` item adds ``command`` and ``args``.
+    """
+    extra = {"command": update.command, "args": update.command_args} if kind == "command" else {}
     return {
-        "kind": "update",
+        **extra,
+        "kind": kind,
         "update_id": update.update_id,
         "chat": update.chat_id,
         "topic": update.topic_id,

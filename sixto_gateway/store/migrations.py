@@ -56,4 +56,18 @@ MIGRATIONS: list[str] = [
         detail TEXT
     );
     """,
+    # 2: private chats that currently have their own "/" menu (spec section 8), so a person
+    # who leaves every allow list has their menu removed at the next boot
+    """
+    CREATE TABLE menu_users (user_id INTEGER PRIMARY KEY);
+    """,
+    # 3: recent send attempts, so pacing windows survive a restart (spec section 9)
+    """
+    CREATE TABLE send_attempts (at REAL NOT NULL, chat_id INTEGER NOT NULL);
+    CREATE INDEX send_attempts_at ON send_attempts (at);
+    """,
+    # 4: the bot-wide pause after a 429, so a restart does not send before Telegram allows it
+    """
+    CREATE TABLE send_pause (id INTEGER PRIMARY KEY CHECK (id = 1), until REAL NOT NULL);
+    """,
 ]

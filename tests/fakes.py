@@ -50,6 +50,35 @@ def moved(raw: dict, *, update_id: int, chat: int | None = None, topic: int | No
     return out
 
 
+def dm_message(update_id: int, user_id: int, text: str, *, edited: bool = False) -> dict:
+    """A private-chat message from ``user_id``; a leading ``/word`` carries a bot_command entity."""
+    message: dict = {
+        "message_id": update_id,
+        "from": {"id": user_id, "is_bot": False, "first_name": "P", "username": f"u{user_id}"},
+        "chat": {"id": user_id, "first_name": "P", "type": "private"},
+        "date": 1789700000,
+        "text": text,
+    }
+    if text.startswith("/"):
+        length = len(text.split()[0])
+        message["entities"] = [{"type": "bot_command", "offset": 0, "length": length}]
+    if edited:
+        message["edit_date"] = 1789700100
+        return {"update_id": update_id, "edited_message": message}
+    return {"update_id": update_id, "message": message}
+
+
+def group_command(update_id: int, user_id: int, text: str, chat: int, topic: int | None) -> dict:
+    """The same command typed in a group (and topic)."""
+    raw = dm_message(update_id, user_id, text)
+    message = raw["message"]
+    message["chat"] = {"id": chat, "title": "Group", "type": "supergroup", "is_forum": True}
+    if topic is not None:
+        message["message_thread_id"] = topic
+        message["is_topic_message"] = True
+    return raw
+
+
 class FakeClock:
     def __init__(self, now: float = 1_789_700_000.0):
         self.now = now
@@ -64,9 +93,63 @@ class FakeClock:
 class FakeTelegram:
     """Serves raw updates through the real aiogram models and the real normalizer."""
 
-    def __init__(self, raw_updates: list[dict]):
+    def __init__(self, raw_updates: list[dict], clock: FakeClock | None = None):
         self.raw_updates = raw_updates
+        self.clock = clock
+        self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
+        self.fail_always: Exception | None = None  # raised by every send/react until cleared
         self.calls: list[dict] = []
+        self.sent: list[dict] = []  # outbound calls in order: messages and reactions
+        self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
+        self._next_message_id = 9000
+        self.menus: dict[int | None, list[tuple[str, str]]] = {}  # scope chat id (None = default)
+        self.menu_calls: list[tuple[str, int | None, list[tuple[str, str]]]] = []
+        self.menu_failures: set[int] = set()  # user ids Telegram refuses ("chat not found")
+
+    async def send_message(
+        self, chat_id: int, topic_id: int | None, text: str, parse_mode: str | None
+    ) -> int:
+        self._maybe_fail()
+        self._next_message_id += 1
+        self.sent.append(
+            {
+                "at": self.clock() if self.clock else 0.0,
+                "kind": "message",
+                "chat_id": chat_id,
+                "topic_id": topic_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "message_id": self._next_message_id,
+            }
+        )
+        return self._next_message_id
+
+    async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
+        self._maybe_fail()
+        self.sent.append(
+            {"kind": "react", "chat_id": chat_id, "message_id": message_id, "emoji": emoji}
+        )
+
+    async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
+        """``chat_id`` None is the default scope."""
+        if chat_id in self.menu_failures:
+            raise RuntimeError("Bad Request: chat not found")
+        self.menu_calls.append(("set", chat_id, list(commands)))
+        self.menus[chat_id] = list(commands)
+
+    async def delete_my_commands(self, chat_id: int) -> None:
+        if chat_id in self.menu_failures:
+            raise RuntimeError("Bad Request: chat not found")
+        self.menu_calls.append(("delete", chat_id, []))
+        self.menus.pop(chat_id, None)
+
+    def _maybe_fail(self) -> None:
+        self.attempts.append(self.clock() if self.clock else 0.0)
+        if self.fail_always is not None:
+            raise self.fail_always
+        if self.fail_with is not None:
+            exc, self.fail_with = self.fail_with, None
+            raise exc
 
     def push(self, raw: dict) -> None:
         self.raw_updates.append(raw)

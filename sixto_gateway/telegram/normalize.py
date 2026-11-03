@@ -22,6 +22,9 @@ class IncomingUpdate:
     edited: bool
     edit_date: int | None
     raw: dict[str, Any]
+    chat_type: str = ""  # "private", "group", "supergroup", ...
+    command: str | None = None  # lower-case name when the text starts with a /command
+    command_args: str = ""
 
 
 def normalize(update: Any) -> IncomingUpdate | None:
@@ -32,6 +35,7 @@ def normalize(update: Any) -> IncomingUpdate | None:
     edited = update.message is None
     raw = update.model_dump(mode="json", exclude_unset=True)
     sender = message.from_user
+    command, command_args = _leading_command(message)
     return IncomingUpdate(
         update_id=update.update_id,
         chat_id=message.chat.id,
@@ -43,4 +47,20 @@ def normalize(update: Any) -> IncomingUpdate | None:
         edited=edited,
         edit_date=(raw.get("edited_message") or {}).get("edit_date") if edited else None,
         raw=raw,
+        chat_type=message.chat.type,
+        command=command,
+        command_args=command_args,
     )
+
+
+def _leading_command(message: Any) -> tuple[str | None, str]:
+    """``(name, args)`` when the text starts with a ``bot_command`` entity, else ``(None, "")``.
+
+    The name is lower-cased and drops a ``@botname`` suffix; args are the rest, trimmed.
+    """
+    text = message.text
+    for entity in message.entities or []:
+        if entity.type == "bot_command" and entity.offset == 0 and text:
+            name = text[1 : entity.length].partition("@")[0].lower()
+            return (name or None), text[entity.length :].strip()
+    return None, ""
