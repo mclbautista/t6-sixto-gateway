@@ -1,6 +1,7 @@
 """Entry point: runs the poller and the HTTP API in one process.
 
-``python -m sixto_gateway [--config PATH]`` serves; ``set-offset N`` is the one-off cutover command.
+``python -m sixto_gateway [--config PATH]`` serves; ``set-offset N`` sets (or rewinds) the Telegram
+cursor, and ``show-offset`` prints it with any routed updates that are missing a delivery.
 """
 
 from __future__ import annotations
@@ -176,6 +177,24 @@ def set_offset(config: Config, last_update_id: int) -> int:
     return 0
 
 
+def show_offset(config: Config) -> int:
+    store = Store(config.database_path)
+    try:
+        last = store.last_update_id()
+        missing = store.missing_deliveries()
+    finally:
+        store.close()
+    if last is None:
+        print("poll cursor not set: the next getUpdates will use offset 0")
+    else:
+        print(f"poll cursor: last_update_id={last}, next getUpdates offset {last + 1}")
+    if missing:
+        print(f"routed updates missing a delivery: {', '.join(map(str, missing))}")
+    else:
+        print("routed updates missing a delivery: none")
+    return 0
+
+
 def _non_negative(text: str) -> int:
     value = int(text)
     if value < 0:
@@ -192,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
         help="set the Telegram cursor to N; the next poll uses N + 1 (cutover step 3)",
     )
     offset.add_argument("n", type=_non_negative, metavar="N")
+    commands.add_parser(
+        "show-offset",
+        help="print the Telegram cursor and any routed updates missing a delivery",
+    )
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config, os.environ)
@@ -201,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(redactor_for(config))
     if args.command == "set-offset":
         return set_offset(config, args.n)
+    if args.command == "show-offset":
+        return show_offset(config)
     return run_serving(serve(config))
 
 
