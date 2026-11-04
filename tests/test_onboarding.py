@@ -127,7 +127,7 @@ async def test_start_from_a_matching_handle_gives_a_waiting_reply_and_a_card(con
     assert member["candidates"] == [JUAN.page_id]
     assert rig.texts_to(USER) == [
         "Hi Juan! Thanks for pressing Start. Cyril will confirm who you are soon. "
-        "After that, you will get your briefings here."
+        "After that, you will get your messages here."
     ]
     card = rig.card()
     assert card["parse_mode"] == "HTML"
@@ -229,7 +229,9 @@ async def test_start_in_a_group_or_topic_gets_the_dm_me_reply_and_no_row(config)
     rig = Rig(config, updates, [JUAN])
     await rig.settle()
 
-    expected = "Please message me directly to set up your briefings: https://t.me/sixto_t6bot?start=onboard"
+    expected = (
+        "Please message me directly to set up your messages: https://t.me/sixto_t6bot?start=onboard"
+    )
     assert [(m["chat_id"], m["text"]) for m in rig.telegram.sent] == [
         (INTAKE_CHAT, expected),
         (INTAKE_CHAT, expected),
@@ -327,7 +329,9 @@ async def test_approve_writes_notion_then_marks_the_row_approved_and_replies(con
     assert member["status"] == "approved" and member["contact_page_id"] == JUAN.page_id
     assert member["decided_by"] == APPROVER and member["decided_at"] is not None
     assert rig.texts_to(USER)[-1] == (
-        "You are all set, Juan. Your briefings will come to this chat."
+        "You are all set, Juan. Your messages will come to this chat. "
+        "Your Telegram user ID has been logged in the T6 Notion. "
+        f"Your Contact page: {JUAN.url}"
     )
     (edit,) = rig.telegram.edits
     assert edit["message_id"] == rig.card()["message_id"] and not edit["keyboard"]
@@ -350,10 +354,7 @@ async def test_a_second_tap_changes_nothing_and_rerenders_the_card(config):
     assert rig.notion.writes == [(JUAN.page_id, USER)]
     assert len(rig.telegram.answers) == 2  # both taps were answered
     assert len(rig.telegram.edits) == 2 and "✅ Approved:" in rig.telegram.edits[1]["text"]
-    assert (
-        rig.texts_to(USER).count("You are all set, Juan. Your briefings will come to this chat.")
-        == 1
-    )
+    assert len([t for t in rig.texts_to(USER) if t.startswith("You are all set, Juan.")]) == 1
 
 
 async def test_a_tap_from_anyone_but_the_approver_changes_nothing(config):
@@ -496,7 +497,7 @@ async def test_a_contact_that_already_has_this_id_is_approved_with_no_card_and_n
     assert rig.notion.writes == [] and rig.notion.created == []
     assert rig.texts_to(USER) == [
         strings.WAITING.format(first_name="Juan"),
-        strings.APPROVED.format(first_name="Juan"),
+        strings.APPROVED.format(first_name="Juan", contact_url=holder.url),
     ]
     (fyi,) = rig.texts_to(APPROVER)  # one line, and no buttons
     assert "Juan Dela Cruz" in fyi and "already had this Telegram id" in fyi
@@ -686,7 +687,9 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
     assert rig.notion.notes == ["Created by Sixto /start on 2026-09-18."]
     member = rig.store.member(USER)
     assert member["status"] == "approved" and member["contact_page_id"] == made.page_id
-    assert rig.texts_to(USER)[-1].startswith("You are all set, Juan.")
+    assert rig.texts_to(USER)[-1].endswith(
+        f"Your Contact page: https://www.notion.so/{made.page_id.replace('-', '')}"
+    )
     assert "✅ Approved:" in rig.telegram.edits[-1]["text"]
     assert any(e == "notion_write" and "created" in d for e, _, d in rig.store.audit_events())
 

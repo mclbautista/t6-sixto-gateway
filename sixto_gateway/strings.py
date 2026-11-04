@@ -12,13 +12,16 @@ DEEP_LINK = "https://t.me/sixto_t6bot?start=onboard"
 
 WAITING = (
     "Hi {first_name}! Thanks for pressing Start. Cyril will confirm who you are soon. "
-    "After that, you will get your briefings here."
+    "After that, you will get your messages here."
 )
-ALREADY_ONBOARDED = "You are already set up. Your briefings will come to this chat."
+ALREADY_ONBOARDED = "You are already set up. Your messages will come to this chat."
 PENDING_AGAIN = "Thanks, we already have your request. Cyril will confirm soon."
 REJECTED = "Thanks. There is nothing more you need to do here."
-APPROVED = "You are all set, {first_name}. Your briefings will come to this chat."
-IN_A_GROUP = "Please message me directly to set up your briefings: {deep_link}"
+APPROVED = (
+    "You are all set, {first_name}. Your messages will come to this chat. "
+    "Your Telegram user ID has been logged in the T6 Notion. Your Contact page: {contact_url}"
+)
+IN_A_GROUP = "Please message me directly to set up your messages: {deep_link}"
 
 # --- for /whereami (HTML: values go through html.escape) ----------------------------------
 
