@@ -7,7 +7,7 @@ issue #1.
 
 Status: intake (config, polling, routing, `GET /updates`), sending with pacing and retries
 (`/notify`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
-(`/healthz`, deadman, retention, `set-offset`, deploy, rollback and the cutover runbook).
+(`/healthz`, deadman, retention, `set-offset`, `show-offset`, deploy, rollback and the cutover runbook).
 
 ## Run the tests
 
@@ -153,10 +153,10 @@ link built from the bot's id and the card's message id.
   `audit` rows older than 180 days. Queued sends and the polling cursor are never deleted. Age is
   counted from when the row was created. Each run writes a `retention` audit row with the counts.
 - **Audit log:** the `audit` table records config loads, auth failures, each send attempt and
-  outcome, `set_offset`, `retention` and `deadman`. Read it with
+  outcome, `set_offset`, `delivery_repaired`, `retention` and `deadman`. Read it with
   `docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('select datetime(at,\'unixepoch\'),event,module,detail from audit order by id desc limit 30')]"`.
 - **Logs** (`docker compose logs -f gateway`): one line per update received (id, chat, topic,
-  routed module), per send outcome and per auth failure. Message text is never logged. Every log
+  routed module), per send outcome, per auth failure and per repaired or missing delivery. Message text is never logged. Every log
   line, including tracebacks, goes through a redactor that replaces the bot token, every module
   secret, anything shaped like a bot token and any `Bearer ...` value with `[redacted]`. The same
   scrub is applied to send errors before they are stored in `outbound` or `audit`.
@@ -339,3 +339,18 @@ To go forward again later, repeat the runbook from step 2, so `set-offset` is gi
 `python -m sixto_gateway set-offset N` sets the cursor to exactly `N` (it may also move it
 backwards) and writes a `set_offset` audit row; the next `getUpdates` uses `N + 1`. `N` must be 0
 or more. Run it with `docker compose exec` so it uses the running container's mounted `./data`.
+
+## Inspecting the cursor and repairing dropped updates
+
+`python -m sixto_gateway show-offset` prints the cursor (`last_update_id` and the next
+`getUpdates` offset) and the ids of any updates stored for a module that have no delivery.
+
+A routed update never moves the cursor without its delivery: if the delivery cannot be written,
+the whole save is rolled back, an error is logged and the next poll fetches the update again. When
+a re-fetched update is already stored for a module but its delivery is missing, the gateway adds
+the delivery (a new `seq`), logs a warning and writes a `delivery_repaired` audit row. A re-fetch
+never delivers an update twice, and it always goes to the module it was first stored for.
+
+To recover updates listed by `show-offset` (or lost before this check existed), rewind the cursor
+to just before the first one with `set-offset <first id - 1>`. Telegram only resends updates it
+still holds, which is about 24 hours. Older gaps cannot be recovered this way.

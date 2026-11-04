@@ -105,8 +105,12 @@ class Store:
         A decision's audit row and DM reply are saved in the same transaction, and only the
         first time the update is seen, so a re-fetch never answers twice.
 
+        A re-fetch of a stored update is idempotent: it delivers nothing new unless the update
+        was stored for a module without its delivery, which is then repaired (issue #46). The
+        cursor never moves past a routed update that has no delivery.
+
         Returns the new delivery's ``seq``, or None if nothing new was delivered (unrouted, or
-        the update was already stored, which makes a re-fetch after a crash idempotent).
+        already delivered).
         """
         received_at = self._clock() if received_at is None else received_at
         if not isinstance(decision, Decision):
@@ -129,10 +133,14 @@ class Store:
                     received_at,
                 ),
             ).rowcount
-            if module is not None:
-                seq = self._ensure_delivery(
-                    update, decision.kind, module, received_at, bool(inserted)
-                )
+            if inserted:
+                if module is not None:
+                    seq = self._insert_delivery(update, decision.kind, module, received_at)
+            else:
+                # The module the update was first stored for owns it, even if routes changed.
+                module = self._stored_module(update.update_id)
+                if module is not None and not self._has_delivery(update.update_id, module):
+                    seq = self._repair_delivery(update, decision.kind, module, received_at)
             if inserted and decision.audit is not None:
                 self._insert_audit(*decision.audit)
             if inserted:
@@ -183,9 +191,20 @@ class Store:
             if module is not None and not self._has_delivery(update.update_id, module):
                 # Never acknowledge a routed update to Telegram without its delivery: rolling
                 # back keeps the cursor where it was, so the next poll fetches it again.
+                log.error(
+                    "update %s routed to %s has no delivery: not moving the cursor",
+                    update.update_id,
+                    module,
+                )
                 raise RuntimeError(f"update {update.update_id} routed to {module} has no delivery")
             self._move_cursor(update.update_id)
         return seq
+
+    def _stored_module(self, update_id: int) -> str | None:
+        row = self._db.execute(
+            "SELECT module FROM updates WHERE update_id = ?", (update_id,)
+        ).fetchone()
+        return row[0] if row else None
 
     def _has_delivery(self, update_id: int, module: str) -> bool:
         row = self._db.execute(
@@ -194,52 +213,29 @@ class Store:
         ).fetchone()
         return row is not None
 
-    def _ensure_delivery(
-        self,
-        update: IncomingUpdate,
-        kind: str,
-        module: str,
-        received_at: float,
-        inserted: bool,
+    def _insert_delivery(
+        self, update: IncomingUpdate, kind: str, module: str, received_at: float
     ) -> int | None:
-        """Insert the delivery for a routed update unless it already has one; returns its seq.
-
-        On a re-fetch (``inserted`` false) a missing delivery is repaired, with an audit row and
-        a warning, so an update stored without its delivery still reaches its module.
-        """
-        if not inserted:
-            if self._has_delivery(update.update_id, module):
-                return None
-            self._db.execute(
-                "UPDATE updates SET module = ? WHERE update_id = ? AND module IS NULL",
-                (module, update.update_id),
-            )
         payload = json.dumps(_item_payload(update, kind), ensure_ascii=False)
-        seq = self._db.execute(
+        return self._db.execute(
             "INSERT INTO deliveries (module, kind, update_id, payload, created_at)"
             " VALUES (?, ?, ?, ?, ?)",
             (module, kind, update.update_id, payload, received_at),
         ).lastrowid
-        if not inserted:
-            log.warning(
-                "update %s was stored without a delivery for %s: repaired as seq %s",
-                update.update_id,
-                module,
-                seq,
-            )
-            self._insert_audit(
-                "delivery_repaired", module, f"update_id={update.update_id} seq={seq}"
-            )
-        return seq
 
-    def missing_deliveries(self) -> list[int]:
-        """Update ids stored as routed that have no delivery for their module (gaps)."""
-        rows = self._db.execute(
-            "SELECT u.update_id FROM updates u WHERE u.module IS NOT NULL AND NOT EXISTS"
-            " (SELECT 1 FROM deliveries d WHERE d.update_id = u.update_id"
-            " AND d.module = u.module) ORDER BY u.update_id"
-        ).fetchall()
-        return [r[0] for r in rows]
+    def _repair_delivery(
+        self, update: IncomingUpdate, kind: str, module: str, received_at: float
+    ) -> int | None:
+        """A re-fetched update was stored for ``module`` without its delivery: add it now."""
+        seq = self._insert_delivery(update, kind, module, received_at)
+        log.warning(
+            "update %s was stored without a delivery for %s: repaired as seq %s",
+            update.update_id,
+            module,
+            seq,
+        )
+        self._insert_audit("delivery_repaired", module, f"update_id={update.update_id} seq={seq}")
+        return seq
 
     def _move_cursor(self, update_id: int) -> None:
         self._db.execute(
@@ -770,6 +766,15 @@ class Store:
 
     def count_updates(self) -> int:
         return self._db.execute("SELECT COUNT(*) FROM updates").fetchone()[0]
+
+    def missing_deliveries(self) -> list[int]:
+        """Update ids stored for a module that have no delivery for it (gaps)."""
+        rows = self._db.execute(
+            "SELECT u.update_id FROM updates u WHERE u.module IS NOT NULL AND NOT EXISTS"
+            " (SELECT 1 FROM deliveries d WHERE d.update_id = u.update_id"
+            " AND d.module = u.module) ORDER BY u.update_id"
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def unrouted_update_ids(self) -> list[int]:
         rows = self._db.execute(
