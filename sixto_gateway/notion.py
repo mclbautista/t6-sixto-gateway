@@ -1,6 +1,6 @@
 """The gateway's own small Notion adapter for the Contacts data source.
 
-Matching rules (``normalize_handle``, ``split_aliases``) are ported from ``t6-jo-tg-ntn``
+Matching rules (``normalize_handle``, ``split_aliases``) are ported from ``t6-sixto-watchdog``
 ``jo_watchdog/core/resolve.py``; that repo is deliberately not imported.
 """
 
@@ -92,7 +92,7 @@ def closest_contacts(
 ) -> list[Contact]:
     """Contacts whose name or an alias is closest to ``name``, best first.
 
-    Ranks with the same ``WRatio`` scorer and name normalization as t6-jo-tg-ntn
+    Ranks with the same ``WRatio`` scorer and name normalization as t6-sixto-watchdog
     (``fuzzy_ranking``), but with a low bar: these are suggestions for the approver to
     choose from, never picked automatically.
     """
