@@ -9,6 +9,19 @@ Status: intake (config, polling, routing, `GET /updates`), sending with pacing a
 (`/notify`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
 (`/healthz`, deadman, retention, `set-offset`, `show-offset`, deploy, rollback and the cutover runbook).
 
+## This repo is public
+
+Anyone can read this repository and its full history. Never commit:
+
+- `.env` or any real secret: the Telegram bot token, the Notion API key, module secrets
+- `config.yaml` (it holds the real chat and topic ids; only `config.example.yaml` is tracked)
+- `data/`, `*.db` or any SQLite file (saved Telegram updates and messages)
+- real client, show or person names, in code, tests, fixtures or docs
+
+`.gitignore` covers the files above, and the **Public repo safety** workflow (from t6-core)
+fails any push or pull request that adds a secret, one of those paths or a denied name. If a
+secret ever lands in a commit, rotate it; deleting the commit is not enough.
+
 ## Run the tests
 
 ```sh

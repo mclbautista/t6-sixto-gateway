@@ -2,8 +2,13 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
 config.yaml
 data/
+*.db
+*.sqlite
+*.sqlite3
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

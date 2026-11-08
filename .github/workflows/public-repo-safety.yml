@@ -1,0 +1,28 @@
+# Public repo safety checks from t6-core (mclbautista/t6-core#27): secrets, forbidden paths
+# (.env, config.yaml, data/, *.db) and real client, show or person names.
+# Needs the T6_NAMES_DENYLIST Actions secret; without it the check fails closed.
+# Run it by hand (Actions > Public repo safety > Run workflow) for a full-history scan.
+name: Public repo safety
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full-history:
+        description: Scan every commit for secrets
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    # Pin both `@main` and `t6-core-ref` to the same t6-core tag once one exists.
+    uses: mclbautista/t6-core/.github/workflows/public-repo-safety.yml@main
+    with:
+      t6-core-ref: main
+      full-history: ${{ github.event_name == 'workflow_dispatch' && inputs.full-history }}
+    secrets:
+      T6_NAMES_DENYLIST: ${{ secrets.T6_NAMES_DENYLIST }}
