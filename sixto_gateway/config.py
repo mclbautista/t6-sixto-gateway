@@ -12,7 +12,7 @@ import hmac
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     StrictStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from sixto_gateway.logsafe import Redactor
@@ -54,6 +55,18 @@ class TelegramConfig(_Model):
 
 class ModuleConfig(_Model):
     secret_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
+    # How taps on this module's buttons reach it: "pull" (its /updates feed) or "push" (the
+    # gateway posts each tap to ``push_url`` with the module's secret, retrying until accepted).
+    delivery: Literal["pull", "push"] = "pull"
+    push_url: Annotated[str, Field(pattern=r"^https?://[^\s/]+(/\S*)?$")] | None = None
+
+    @model_validator(mode="after")
+    def _push_url_matches_delivery(self) -> Self:
+        if self.delivery == "push" and self.push_url is None:
+            raise ValueError("delivery: push needs a push_url")
+        if self.delivery == "pull" and self.push_url is not None:
+            raise ValueError("push_url is only for delivery: push")
+        return self
 
 
 BUILTIN_COMMANDS = frozenset({"whereami"})  # answered by the gateway itself, never routed
@@ -130,6 +143,10 @@ class Secrets:
     @property
     def bot_token(self) -> str:
         return self._bot_token
+
+    def secret_for(self, module: str) -> str:
+        """A module's own secret, for calls the gateway makes to it (push delivery)."""
+        return self._module_secrets[module]
 
     def module_for_secret(self, presented: str) -> str | None:
         """Constant-time lookup: every module secret is compared, no early exit."""

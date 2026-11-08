@@ -6,13 +6,13 @@ import logging
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Self
-from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, UrlConstraints, model_validator
 
 from sixto_gateway.config import Config
+from sixto_gateway.decision import module_callback_data
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
@@ -165,7 +165,7 @@ def create_app(
                 for button in row:
                     if isinstance(button, CallbackButton):
                         # Escape module delimiters; payload is always opaque and caller-owned.
-                        data = f"mod:{quote(module, safe='')}:{button.payload}"
+                        data = module_callback_data(module, button.payload)
                         if len(data.encode("utf-8")) > MAX_CALLBACK_BYTES:
                             raise HTTPException(
                                 422,

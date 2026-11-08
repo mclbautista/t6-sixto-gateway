@@ -64,6 +64,7 @@ FYI_AUTO = (
     "Nothing was written to Notion."
 )
 CREATED_NOTE = "Created by Sixto /start on {date}."
+TAP_UNKNOWN_MODULE = "This button is no longer active."
 TAP_NOTION_FAILED = "Notion did not answer. Nothing was changed. Tap again to retry."
 
 # --- for the approver's daily summary (HTML) ---------------------------------------------------

@@ -3,8 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote, unquote
 
 GATEWAY_MODULE = "gateway"  # owner of the gateway's own outbound rows (command refusals)
+MODULE_CALLBACK_PREFIX = "mod"  # callback data of a module's own button: mod:<module>:<payload>
+
+
+def module_callback_data(module: str, payload: str) -> str:
+    """The callback data of a module's button. The module is percent-encoded (colons too)."""
+    return f"{MODULE_CALLBACK_PREFIX}:{quote(module, safe='')}:{payload}"
+
+
+def parse_module_callback(data: str) -> tuple[str, str] | None:
+    """``(module, payload)`` from a module button's callback data, else None.
+
+    The payload is opaque and may itself contain colons.
+    """
+    prefix, _, rest = data.partition(":")
+    module, sep, payload = rest.partition(":")
+    if prefix != MODULE_CALLBACK_PREFIX or not sep or not module or not payload:
+        return None
+    return unquote(module), payload
 
 
 @dataclass(frozen=True)
@@ -43,3 +62,5 @@ class Decision:
         None  # onboarding: a blocked member pressed Start; back to approved
     )
     tap: NewTap | None = None  # onboarding: save a button tap (wakes the worker)
+    push: bool = False  # the delivery is posted to the module's push URL, not read from /updates
+    answer_tap: str | None = None  # a routed tap: the gateway answers it, with this text or ""

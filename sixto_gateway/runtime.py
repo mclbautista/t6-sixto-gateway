@@ -13,6 +13,7 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.notion import ContactsDirectory
 from sixto_gateway.onboarding import OnboardingWorker
 from sixto_gateway.poller import Poller
+from sixto_gateway.push import PushWorker
 from sixto_gateway.retention import run_retention
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
@@ -45,6 +46,7 @@ def start_workers(
         "retention": asyncio.create_task(run_retention(store, config.retention_days, stop))
     }
     if config.telegram.polling:
+        push_wake = Notifier()
         poller = Poller(
             store,
             client,
@@ -53,6 +55,7 @@ def start_workers(
             queue_wake=queue_wake,
             liveness=liveness,
             onboarding_wake=onboarding_wake,
+            push_wake=push_wake,
         )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
         worker = OnboardingWorker(
@@ -65,6 +68,10 @@ def start_workers(
         tasks["sender"] = asyncio.create_task(
             Sender(store, client, queue_wake, scrub=scrub).run(stop)
         )
+        if any(m.delivery == "push" for m in config.modules.values()):
+            tasks["push"] = asyncio.create_task(
+                PushWorker(store, config, push_wake, clock, scrub=scrub).run(stop)
+            )
         tasks["deadman"] = asyncio.create_task(watch_deadman(liveness, stop))
     else:
         log.warning("telegram.polling is false: serving the API only (no polling, no sending)")

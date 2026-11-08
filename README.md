@@ -57,6 +57,30 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
    Items stay readable for the retention period, so re-reading is safe. A wrong or missing
    secret gets `401` and is logged and audited.
 
+## Taps on a module's buttons
+
+A tap on a button that `/notify` put on a message (callback data `mod:<module>:<payload>`) goes
+to that module once, as a `tap` item: `kind: "tap"`, `data` (the module's own payload, prefix
+removed), `from.id` (the tapper's Telegram user id), `chat`, `message_id`, `update_id`. The
+gateway answers the callback query itself so the tapper's spinner stops; the module need not.
+The tap is saved with its delivery before the poll cursor moves, like any other update.
+
+Each module chooses a delivery mode in `config.yaml`:
+
+- **Pull (default).** The module reads the tap from `GET /updates` with its other items.
+- **Push.** `delivery: push` and `push_url: http://host:port/path`. The gateway POSTs the tap
+  to that URL with `Authorization: Bearer <the module's secret>`. The body is the tap item
+  (including `seq`) plus `idempotency_key` (`tap-<update_id>`), also sent as an
+  `Idempotency-Key` header; it is the same on every retry, so the receiver must treat a repeat
+  as the same tap. Any 2xx accepts it. Otherwise the gateway retries after 5 s, 30 s, 2 min and
+  then every 10 min, and never gives up. The schedule is stored, so it survives a restart. A
+  pushed tap is not also served by `/updates`. The gateway calls out; nothing calls into it.
+
+A tap naming a module that is not in `modules` is written to the audit table
+(`tap_unknown_module`), answered with "This button is no longer active." and not delivered.
+Taps with an `ob:` prefix (or any other data without a module prefix) still go to the
+onboarding worker.
+
 ## Sending
 
 - `POST /notify` `{"to": <chat>, "topic": <optional>, "text": "...", "format": "html"|"plain",
