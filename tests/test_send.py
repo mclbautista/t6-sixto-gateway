@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -6,7 +8,8 @@ from sixto_gateway.config import load_config
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
-from sixto_gateway.telegram.errors import PermanentSendError
+from sixto_gateway.telegram.client import AiogramTelegramClient
+from sixto_gateway.telegram.errors import PermanentSendError, TransientSendError
 from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
 
 WATCHDOG = "w" * 40
@@ -64,6 +67,160 @@ async def test_notify_saves_then_202_and_status_is_queued(client, env):
     s = await client.get(f"/notify/{ref}", headers=auth())
     assert s.json() == {"state": "queued", "telegram_message_id": None, "error": None}
     assert env[1].sent == []  # the request does not send; the queue does
+
+
+async def test_notify_sends_callback_and_url_buttons_owned_by_caller(client, env):
+    response = await client.post(
+        "/notify",
+        json={
+            "to": CHAT,
+            "text": "Approve or sign in",
+            "buttons": [
+                [
+                    {"text": "Approve", "payload": "approve:42"},
+                    {"text": "Sign in", "url": "https://example.com/sign-in"},
+                ]
+            ],
+        },
+        headers=auth(),
+    )
+    assert response.status_code == 202
+    await drain(env[2])
+    assert env[1].sent[0]["keyboard"] == [
+        [
+            {"text": "Approve", "callback_data": "mod:watchdog:approve:42"},
+            {"text": "Sign in", "url": "https://example.com/sign-in"},
+        ]
+    ]
+
+
+async def test_notify_buttons_reach_telegram_markup_through_real_adapter(client, env):
+    class RecordingBot:
+        def __init__(self):
+            self.messages = []
+
+        async def send_message(self, **kwargs):
+            self.messages.append(kwargs)
+            return SimpleNamespace(message_id=42)
+
+    bot = RecordingBot()
+    response = await client.post(
+        "/notify",
+        headers=auth(),
+        json={
+            "to": CHAT,
+            "text": "card",
+            "buttons": [
+                [
+                    {"text": "Tap", "payload": "ok"},
+                    {"text": "Open", "url": "https://example.com/path"},
+                ]
+            ],
+        },
+    )
+    assert response.status_code == 202
+    sender = Sender(env[0], AiogramTelegramClient(bot), Notifier(), clock=env[1].clock)
+    await drain(sender)
+    markup = bot.messages[0]["reply_markup"].model_dump(exclude_none=True)
+    assert markup == {
+        "inline_keyboard": [
+            [
+                {"text": "Tap", "callback_data": "mod:watchdog:ok"},
+                {"text": "Open", "url": "https://example.com/path"},
+            ]
+        ]
+    }
+
+
+@pytest.mark.parametrize("payload", ["ob:approve:42", "mod:psr:approve:42"])
+async def test_notify_cannot_claim_another_callback_namespace(client, env, payload):
+    response = await client.post(
+        "/notify",
+        headers=auth(),
+        json={"to": CHAT, "text": "card", "buttons": [[{"text": "Tap", "payload": payload}]]},
+    )
+    assert response.status_code == 202
+    await drain(env[2])
+    assert env[1].sent[0]["keyboard"][0][0]["callback_data"] == f"mod:watchdog:{payload}"
+
+
+@pytest.mark.parametrize("payload", ["x" * 51, "é" * 25 + "x"])
+async def test_notify_accepts_exactly_64_callback_bytes(client, env, payload):
+    response = await client.post(
+        "/notify",
+        headers=auth(),
+        json={"to": CHAT, "text": "card", "buttons": [[{"text": "Tap", "payload": payload}]]},
+    )
+    assert response.status_code == 202
+    await drain(env[2])
+    assert env[1].sent[0]["keyboard"][0][0]["callback_data"] == f"mod:watchdog:{payload}"
+
+
+@pytest.mark.parametrize("payload", ["x" * 52, "é" * 26])
+async def test_notify_rejects_over_64_callback_bytes_without_queueing(client, env, payload):
+    response = await client.post(
+        "/notify",
+        headers=auth(),
+        json={"to": CHAT, "text": "card", "buttons": [[{"text": "Tap", "payload": payload}]]},
+    )
+    assert response.status_code == 422
+    assert "64 bytes" in response.json()["detail"]
+    await drain(env[2])
+    assert env[1].sent == []
+
+
+@pytest.mark.parametrize(
+    "buttons",
+    [
+        [[{"text": "Tap", "payload": "ok", "url": "https://example.com"}]],
+        [[{"text": "Tap"}]],
+        [[{"text": "Tap", "url": "http://example.com"}]],
+        [[{"text": "Tap", "url": "javascript:alert(1)"}]],
+        [[{"text": "Tap", "url": "https://"}]],
+        [[{"text": "", "payload": "ok"}]],
+        [[{"text": "Tap", "payload": ""}]],
+        [[{"text": "Tap", "callback_data": "ob:approve:42"}]],
+        [[]],
+    ],
+)
+async def test_notify_rejects_invalid_buttons_without_queueing(client, env, buttons):
+    response = await client.post(
+        "/notify",
+        headers=auth(),
+        json={"to": CHAT, "text": "card", "buttons": buttons},
+    )
+    assert response.status_code == 422
+    await drain(env[2])
+    assert env[1].sent == []
+
+
+async def test_notify_buttons_survive_idempotent_retry_and_sender_restart(client, env, tmp_path):
+    store, telegram, sender, _ = env
+    body = {
+        "to": CHAT,
+        "text": "card",
+        "idempotency_key": "card-42",
+        "buttons": [[{"text": "Tap", "payload": "approve:42"}]],
+    }
+    first = await client.post("/notify", headers=auth(), json=body)
+    assert first.status_code == 202
+    telegram.fail_with = TransientSendError("temporary outage")
+    assert await sender.send_next()
+    # A repeated request keeps the original message, including its original buttons.
+    again = await client.post("/notify", headers=auth(), json=body | {"buttons": []})
+    assert again.json() == first.json()
+    store.close()
+    clock = telegram.clock
+    clock.advance(30)
+    reopened = Store(tmp_path / "gateway.db", clock=clock)
+    try:
+        await drain(Sender(reopened, telegram, Notifier(), clock=clock))
+    finally:
+        reopened.close()
+    assert len(telegram.sent) == 1
+    assert telegram.sent[0]["keyboard"] == [
+        [{"text": "Tap", "callback_data": "mod:watchdog:approve:42"}]
+    ]
 
 
 async def test_wrong_secret_401_and_invalid_body_422(client):

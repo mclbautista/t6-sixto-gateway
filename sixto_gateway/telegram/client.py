@@ -16,7 +16,7 @@ from sixto_gateway.telegram.errors import (
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 Keyboard = list[list[dict[str, str]]]
-"""Inline buttons: rows of ``{"text": ..., "callback_data": ...}``."""
+"""Inline rows: text and either callback_data or url."""
 
 
 class TelegramClient(Protocol):
@@ -136,7 +136,9 @@ class AiogramTelegramClient:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text=button["text"], callback_data=button["callback_data"]
+                            text=button["text"],
+                            callback_data=button.get("callback_data"),
+                            url=button.get("url"),
                         )
                         for button in row
                     ]
@@ -174,7 +176,9 @@ class AiogramTelegramClient:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text=button["text"], callback_data=button["callback_data"]
+                            text=button["text"],
+                            callback_data=button.get("callback_data"),
+                            url=button.get("url"),
                         )
                         for button in row
                     ]
