@@ -50,6 +50,19 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
   "idempotency_key": "..."}` and `POST /react` `{"chat", "message_id", "emoji"}` save a row in
   `outbound` and answer `202 {"message_ref": N}`. A repeated `idempotency_key` from the same
   module returns the same ref and queues nothing new. Invalid bodies get `422`.
+- **Inline buttons.** `/notify` optionally accepts `buttons`, an array of rows, for example:
+  `"buttons": [[{"text": "Approve", "payload": "approve:42"},
+  {"text": "Sign in", "url": "https://example.com/sign-in"}]]`.
+  Each button has nonempty `text` and exactly one of nonempty `payload` or an HTTPS `url`.
+  Empty rows and extra button fields are rejected (`422`); omitted, null or empty `buttons`
+  send a message without buttons. Callback data is stored and sent as
+  `mod:<module>:<payload>`, where the gateway derives `<module>` from the authenticated caller
+  and percent-encodes it (including any colons). The payload is opaque, so even a payload
+  starting with `ob:` or another module's prefix stays under the caller's namespace.
+  This format cannot collide with onboarding's `ob:` callbacks. The complete callback must
+  fit within **64 UTF-8 bytes**, including the prefix; otherwise `/notify` returns `422`
+  naming the limit and queues nothing. Buttons survive retries and restarts; reusing an
+  idempotency key keeps the original buttons, like the original text.
 - **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id>",
   "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@juandc"}, "text": "..."}`.
   If the Contact has an `approved` member (see /start onboarding), the message is queued to that

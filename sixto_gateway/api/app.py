@@ -6,10 +6,11 @@ import logging
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, UrlConstraints, model_validator
 
 from sixto_gateway.config import Config
 from sixto_gateway.liveness import Liveness
@@ -20,6 +21,7 @@ from sixto_gateway.store.db import SECONDS_PER_DAY
 log = logging.getLogger(__name__)
 MAX_ITEMS = 100
 MAX_TEXT = 4096
+MAX_CALLBACK_BYTES = 64
 INT64_MAX = 2**63 - 1
 BigInt = Annotated[int, Field(ge=-INT64_MAX, le=INT64_MAX)]
 
@@ -37,6 +39,18 @@ class Fallback(BaseModel):
     handle: str = Field(pattern=HANDLE_PATTERN)
 
 
+class CallbackButton(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1)
+    payload: str = Field(min_length=1)
+
+
+class UrlButton(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1)
+    url: Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
+
+
 class NotifyBody(BaseModel):
     """Either ``to`` (a chat id) or ``contact`` with its ``fallback``; never both, never neither."""
 
@@ -48,6 +62,7 @@ class NotifyBody(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT)
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    buttons: list[Annotated[list[CallbackButton | UrlButton], Field(min_length=1)]] | None = None
 
     @model_validator(mode="after")
     def to_or_contact_with_fallback(self) -> Self:
@@ -142,6 +157,25 @@ def create_app(
 
     @app.post("/notify", status_code=202)
     async def post_notify(module: Module, body: NotifyBody) -> dict[str, int]:
+        keyboard: list[list[dict[str, str]]] | None = None
+        if body.buttons:
+            keyboard = []
+            for row in body.buttons:
+                buttons = []
+                for button in row:
+                    if isinstance(button, CallbackButton):
+                        # Escape module delimiters; payload is always opaque and caller-owned.
+                        data = f"mod:{quote(module, safe='')}:{button.payload}"
+                        if len(data.encode("utf-8")) > MAX_CALLBACK_BYTES:
+                            raise HTTPException(
+                                422,
+                                f"callback payload with module prefix exceeds "
+                                f"{MAX_CALLBACK_BYTES} bytes",
+                            )
+                        buttons.append({"text": button.text, "callback_data": data})
+                    else:
+                        buttons.append({"text": button.text, "url": str(button.url)})
+                keyboard.append(buttons)
         chat, topic, text = body.to, body.topic, body.text
         if body.contact is not None:
             assert body.fallback is not None
@@ -160,7 +194,8 @@ def create_app(
             module,
             "message",
             str(chat),
-            {"chat": chat, "topic": topic, "text": text, "format": body.format},
+            {"chat": chat, "topic": topic, "text": text, "format": body.format}
+            | ({"keyboard": keyboard} if keyboard is not None else {}),
             body.idempotency_key,
         )
         queue_wake.notify()

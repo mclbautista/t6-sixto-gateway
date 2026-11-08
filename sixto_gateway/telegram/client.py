@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Protocol
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from sixto_gateway.telegram.errors import (
     BlockedByUserError,
     PermanentSendError,
@@ -16,7 +18,7 @@ from sixto_gateway.telegram.errors import (
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 Keyboard = list[list[dict[str, str]]]
-"""Inline buttons: rows of ``{"text": ..., "callback_data": ...}``."""
+"""Inline rows: text and either callback_data or url."""
 
 
 class TelegramClient(Protocol):
@@ -109,6 +111,24 @@ def _translated_errors() -> Iterator[None]:
         raise translate_send_error(exc) or exc from exc
 
 
+def _keyboard_markup(keyboard: Keyboard | None) -> InlineKeyboardMarkup | None:
+    if not keyboard:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=button["text"],
+                    callback_data=button.get("callback_data"),
+                    url=button.get("url"),
+                )
+                for button in row
+            ]
+            for row in keyboard
+        ]
+    )
+
+
 class AiogramTelegramClient:
     def __init__(self, bot):  # type: ignore[no-untyped-def]
         self._bot = bot
@@ -129,23 +149,7 @@ class AiogramTelegramClient:
         parse_mode: str | None,
         keyboard: Keyboard | None = None,
     ) -> int:
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
-
-        markup = (
-            InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=button["text"], callback_data=button["callback_data"]
-                        )
-                        for button in row
-                    ]
-                    for row in keyboard
-                ]
-            )
-            if keyboard
-            else None
-        )
+        from aiogram.types import LinkPreviewOptions
 
         with _translated_errors():
             message = await self._bot.send_message(
@@ -155,7 +159,7 @@ class AiogramTelegramClient:
                 message_thread_id=None if topic_id == 1 else topic_id,
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
-                reply_markup=markup,
+                reply_markup=_keyboard_markup(keyboard),
             )
         return int(message.message_id)
 
@@ -167,23 +171,8 @@ class AiogramTelegramClient:
         parse_mode: str | None,
         keyboard: Keyboard | None = None,
     ) -> None:
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+        from aiogram.types import LinkPreviewOptions
 
-        markup = (
-            InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=button["text"], callback_data=button["callback_data"]
-                        )
-                        for button in row
-                    ]
-                    for row in keyboard
-                ]
-            )
-            if keyboard
-            else None
-        )
         with _translated_errors():
             await self._bot.edit_message_text(
                 chat_id=chat_id,
@@ -191,7 +180,7 @@ class AiogramTelegramClient:
                 text=text,
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
-                reply_markup=markup,
+                reply_markup=_keyboard_markup(keyboard),
             )
 
     async def answer_callback_query(
