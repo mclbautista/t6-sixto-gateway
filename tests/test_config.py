@@ -50,8 +50,9 @@ def test_example_config_is_valid_with_secrets(tmp_path):
     from pathlib import Path
 
     example = Path(__file__).parent.parent / "config.example.yaml"
-    config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40})
+    config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40, "T6CORE_SECRET": "t" * 40})
     assert "watchdog" in config.modules
+    assert config.modules["t6core"].delivery == "push"
     assert config.groups["cyril"] == [274983989]
 
 

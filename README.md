@@ -118,6 +118,102 @@ onboarding worker.
   blocked) fails at once. Reactions follow the same rules. Each attempt and outcome goes to the
   audit log.
 
+## Messages from t6-core (webhooks contracts)
+
+The t6-core webhooks server and its Frame.io worker send three messages through `/notify`.
+They authenticate as the module **`t6core`** (`modules.t6core` in `config.yaml`, secret in
+`T6CORE_SECRET`), so their callback buttons arrive as `mod:t6core:<payload>` and their taps are
+pushed to t6-core's tap endpoint (see "Taps on a module's buttons"). The gateway does not know
+these message types: each one is an ordinary `/notify` body, and the requests below are the
+contract t6-core builds against. Every example here is posted as written by
+`tests/test_t6core_contracts.py`, which checks the text and buttons that reach Telegram, so a
+change to this section that the gateway would send differently fails the tests.
+
+Names, ids and links in the examples are placeholders (`Example Show`, page ids, links); the
+shape, the payload formats and the idempotency keys are the contract. Text uses `format:
+"html"`, so t6-core must HTML-escape anything it puts into `text` (`&`, `<`, `>`).
+
+### 1. Review-done DM to the show's coordinator
+
+Sent when a Frame.io review has been quiet for 15 minutes. Addressed by the coordinator's Notion
+Contact, so it reaches their DM once they are approved and the show's group topic with an
+`@handle` mention until then. The Frame.io link is a URL button.
+
+<!-- contract: review-done -->
+```json
+{
+  "contact": "0a1b2c3d-1111-2222-3333-444455556666",
+  "fallback": {"to": -1001234567890, "topic": 77, "handle": "coordinator_handle"},
+  "text": "<b>Review done:</b> Example Show\n12 new comments on Episode 3 rough cut.",
+  "format": "html",
+  "idempotency_key": "review-done:3f9a1c2e-0000-4000-8000-00000000abcd:12",
+  "buttons": [[{"text": "Open in Frame.io", "url": "https://next.frame.io/share/00000000-0000-4000-8000-000000000000"}]]
+}
+```
+
+- `contact`: the coordinator's Contact page id; `fallback`: the show's group chat and topic and
+  the coordinator's handle.
+- `idempotency_key`: `review-done:<Frame.io asset or review id>:<comment count>`, so a retried
+  request never sends twice but a later review of the same asset does.
+
+### 2. Project Start approval card to Cyril
+
+Sent when a Project reaches the Project Start status. `to` is Cyril's Telegram user id (the
+`cyril` group). The Approve button's payload is `approve:<Project page id>`, with the page id
+written as 32 hex characters without dashes.
+
+<!-- contract: approval-card -->
+```json
+{
+  "to": 274983989,
+  "text": "<b>Project Start:</b> Example Show\nClient: Example Client\nCoordinator: coordinator_handle\nApprove to create the folders, Frame.io project, Instagantt and Notion pages.",
+  "format": "html",
+  "idempotency_key": "project-start:0a1b2c3d111122223333444455556666",
+  "buttons": [[{"text": "Approve", "payload": "approve:0a1b2c3d111122223333444455556666"}]]
+}
+```
+
+When a setup step fails, t6-core sends a second card that names the step and carries a Retry
+button. Its payload is `retry:<Project page id>:<step>`, where `<step>` is one of t6-core's step
+keys (`folders`, `frameio`, `instagantt`, `notion_pages`).
+
+<!-- contract: retry-card -->
+```json
+{
+  "to": 274983989,
+  "text": "<b>Project Start failed:</b> Example Show\nStep: Frame.io project\nThe earlier steps are done and are not repeated. Retry runs this step and the ones after it.",
+  "format": "html",
+  "idempotency_key": "project-start-retry:0a1b2c3d111122223333444455556666:frameio:1",
+  "buttons": [[{"text": "Retry Frame.io project", "payload": "retry:0a1b2c3d111122223333444455556666:frameio"}]]
+}
+```
+
+Payload budget: Telegram allows 64 bytes of callback data and the gateway adds `mod:t6core:`
+(11 bytes), leaving **53 bytes** for the payload. `approve:<32 hex>` is 40 bytes. `retry:<32
+hex>:` is 39, so a step key may be at most **14 bytes**; a longer one gets `422` and nothing is
+queued. When Cyril taps, t6-core receives a `tap` item whose `data` is the payload exactly as
+sent (`approve:…` or `retry:…:<step>`), with `from.id`, `chat` and `message_id` of the card.
+The retry key ends with an attempt number so each new failure of the same step sends a new card.
+
+### 3. Frame.io re-sign-in alert to Cyril
+
+Sent by the t6-core Frame.io worker when the token refresh fails. The sign-in link is a URL
+button (HTTPS only); t6-core builds the link.
+
+<!-- contract: frameio-sign-in -->
+```json
+{
+  "to": 274983989,
+  "text": "<b>Frame.io sign-in needed.</b>\nThe token refresh failed. Sign in again so t6-core can keep reading Frame.io.",
+  "format": "html",
+  "idempotency_key": "frameio-sign-in:2026-11-09T08",
+  "buttons": [[{"text": "Sign in to Frame.io", "url": "https://hooks.example.com/frameio/sign-in?state=example-state"}]]
+}
+```
+
+- `idempotency_key`: `frameio-sign-in:<UTC date and hour>`, so the worker can retry freely and
+  sends at most one alert an hour.
+
 ## Commands and the allow-list
 
 ```yaml
