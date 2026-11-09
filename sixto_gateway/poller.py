@@ -12,8 +12,9 @@ from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.onboarding import decide_start, decide_tap
+from sixto_gateway.onboarding import decide_start
 from sixto_gateway.store import Store
+from sixto_gateway.taps import decide_tap
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
@@ -32,6 +33,7 @@ class Poller:
         queue_wake: Notifier | None = None,
         liveness: Liveness | None = None,
         onboarding_wake: Notifier | None = None,
+        push_wake: Notifier | None = None,
     ):
         self._store = store
         self._client = client
@@ -40,13 +42,14 @@ class Poller:
         self._clock = clock
         self._queue_wake = queue_wake or Notifier()  # poked when a reply is queued
         self._onboarding_wake = onboarding_wake or Notifier()  # poked when a member is saved
+        self._push_wake = push_wake or Notifier()  # poked when a tap is saved for a push module
         self.liveness = liveness or Liveness(clock)
 
     def decide(self, update: IncomingUpdate) -> Decision:
         """``/start`` is onboarding. Another command in a private chat is checked against the
         allow-list; the rest is routed."""
         if update.callback_id is not None:
-            return decide_tap(update)
+            return decide_tap(self._config, update)
         if update.command == "start":
             return decide_start(self._store, update)
         if update.command is not None and is_builtin(self._config, update):
@@ -79,7 +82,7 @@ class Poller:
             self._store.next_offset(), telegram.poll_timeout, telegram.allowed_updates
         )
         self.liveness.record_poll()
-        delivered = queued = onboarding = False
+        delivered = queued = onboarding = pushed = False
         for update in updates:
             decision = self.decide(update)
             module = decision.module
@@ -94,13 +97,26 @@ class Poller:
                 module or "-",
             )
             delivered = delivered or seq is not None
+            pushed = pushed or (seq is not None and decision.push)
+            if decision.answer_tap is not None:  # after the commit: a lost answer loses no tap
+                await self._answer_tap(update, decision.answer_tap)
         if delivered:
             self._notifier.notify()
         if queued:
             self._queue_wake.notify()
         if onboarding:
             self._onboarding_wake.notify()
+        if pushed:
+            self._push_wake.notify()
         return len(updates)
+
+    async def _answer_tap(self, update: IncomingUpdate, text: str) -> None:
+        """Stop the tapper's spinner. Best effort: an old query id may have expired."""
+        assert update.callback_id is not None
+        try:
+            await self._client.answer_callback_query(update.callback_id, text or None, bool(text))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("answering tap %s failed: %s", update.callback_id, exc)
 
     async def run(self, stop: asyncio.Event) -> None:
         backoff = 1.0

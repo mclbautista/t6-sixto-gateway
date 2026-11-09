@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sixto_gateway.config import normalize_handle
-from sixto_gateway.decision import GATEWAY_MODULE, Decision
+from sixto_gateway.decision import GATEWAY_MODULE, Decision, parse_module_callback
 from sixto_gateway.store.migrations import MIGRATIONS
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
@@ -141,6 +141,12 @@ class Store:
                 module = self._stored_module(update.update_id)
                 if module is not None and not self._has_delivery(update.update_id, module):
                     seq = self._repair_delivery(update, decision.kind, module, received_at)
+            if seq is not None and decision.push:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO tap_pushes (seq, module, next_attempt_at, created_at)"
+                    " VALUES (?,?,?,?)",
+                    (seq, module, received_at, received_at),
+                )
             if inserted and decision.audit is not None:
                 self._insert_audit(*decision.audit)
             if inserted:
@@ -258,7 +264,9 @@ class Store:
 
     def deliveries_after(self, module: str, after: int, limit: int = 100) -> list[dict[str, Any]]:
         rows = self._db.execute(
-            "SELECT seq, payload FROM deliveries WHERE module = ? AND seq > ? ORDER BY seq LIMIT ?",
+            "SELECT seq, payload FROM deliveries WHERE module = ? AND seq > ?"
+            " AND seq NOT IN (SELECT seq FROM tap_pushes)"  # pushed taps are not pulled
+            " ORDER BY seq LIMIT ?",
             (module, after, limit),
         ).fetchall()
         return [{"seq": r["seq"], **json.loads(r["payload"])} for r in rows]
@@ -614,6 +622,52 @@ class Store:
         with self._transaction():
             self._db.execute("UPDATE taps SET done = 1 WHERE update_id = ?", (update_id,))
 
+    # --- taps pushed to a module (ticket #50) --------------------------------------------------
+
+    def due_pushes(self, now: float, limit: int = 50) -> list[dict[str, Any]]:
+        """Pending tap pushes that are due, oldest first, each with its delivery item."""
+        rows = self._db.execute(
+            "SELECT p.seq, p.module, p.attempts, d.payload FROM tap_pushes p"
+            " JOIN deliveries d ON d.seq = p.seq"
+            " WHERE p.state = 'pending' AND p.next_attempt_at <= ? ORDER BY p.seq LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [
+            {
+                "seq": r["seq"],
+                "module": r["module"],
+                "attempts": r["attempts"],
+                "item": {"seq": r["seq"], **json.loads(r["payload"])},
+            }
+            for r in rows
+        ]
+
+    def next_push_at(self) -> float | None:
+        row = self._db.execute(
+            "SELECT MIN(next_attempt_at) FROM tap_pushes WHERE state = 'pending'"
+        ).fetchone()
+        return row[0]
+
+    def mark_push_done(self, seq: int) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE tap_pushes SET state = 'done', attempts = attempts + 1, last_error = NULL"
+                " WHERE seq = ?",
+                (seq,),
+            )
+
+    def schedule_push_retry(self, seq: int, next_attempt_at: float, error: str) -> None:
+        with self._transaction():
+            self._db.execute(
+                "UPDATE tap_pushes SET attempts = attempts + 1, next_attempt_at = ?,"
+                " last_error = ? WHERE seq = ?",
+                (next_attempt_at, error, seq),
+            )
+
+    def push_status(self, seq: int) -> dict[str, Any] | None:
+        row = self._db.execute("SELECT * FROM tap_pushes WHERE seq = ?", (seq,)).fetchone()
+        return None if row is None else dict(row)
+
     def mark_outbound_failed(self, ref: int, error: str) -> None:
         with self._transaction():
             self._db.execute(
@@ -680,9 +734,15 @@ class Store:
         cutoff = now - retention_days * SECONDS_PER_DAY
         audit_cutoff = now - audit_retention_days * SECONDS_PER_DAY
         with self._transaction():
-            # deliveries first: they reference updates
+            # finished pushes first (they reference deliveries); a pending push keeps its delivery
+            self._db.execute(
+                "DELETE FROM tap_pushes WHERE state = 'done' AND created_at < ?", (cutoff,)
+            )
+            # deliveries next: they reference updates
             deliveries = self._db.execute(
-                "DELETE FROM deliveries WHERE created_at < ?", (cutoff,)
+                "DELETE FROM deliveries WHERE created_at < ?"
+                " AND seq NOT IN (SELECT seq FROM tap_pushes)",
+                (cutoff,),
             ).rowcount
             updates = self._db.execute(
                 "DELETE FROM updates WHERE received_at < ?"
@@ -795,9 +855,15 @@ class Store:
 def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any]:
     """The delivery item as served by ``GET /updates`` (everything except ``seq``).
 
-    A ``command`` item adds ``command`` and ``args``.
+    A ``command`` item adds ``command`` and ``args``. A ``tap`` item adds ``data``: the button's
+    payload without the module prefix (``text`` is empty).
     """
-    extra = {"command": update.command, "args": update.command_args} if kind == "command" else {}
+    extra: dict[str, Any] = {}
+    if kind == "command":
+        extra = {"command": update.command, "args": update.command_args}
+    elif kind == "tap":
+        parsed = parse_module_callback(update.callback_data)
+        extra = {"data": parsed[1] if parsed else ""}
     return {
         **extra,
         "kind": kind,

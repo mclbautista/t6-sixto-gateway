@@ -112,4 +112,19 @@ MIGRATIONS: list[str] = [
     ALTER TABLE members ADD COLUMN lookup_attempts INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE members ADD COLUMN lookup_failed_at REAL;
     """,
+    # 8: taps for a module in push mode (ticket #50). One row per tap delivery, kept until the
+    # module's URL has accepted it; the retry schedule is stored so it survives a restart.
+    # Rows here are not served by ``GET /updates``.
+    """
+    CREATE TABLE tap_pushes (
+        seq INTEGER PRIMARY KEY REFERENCES deliveries (seq),
+        module TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'done')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL,
+        last_error TEXT,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX tap_pushes_due ON tap_pushes (state, next_attempt_at);
+    """,
 ]
