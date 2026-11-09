@@ -41,7 +41,7 @@ def test_valid_config_loads(tmp_path):
     assert isinstance(config, Config)
     assert config.listen.port == 8780
     assert config.routes[0].module == "watchdog"
-    assert config.groups["cyril"] == [274983989]
+    assert config.groups["approvers"] == [100000001]
     assert config.module_for_secret(SECRET) == "watchdog"
     assert config.module_for_secret("nope" * 10) is None
 
@@ -53,7 +53,7 @@ def test_example_config_is_valid_with_secrets(tmp_path):
     config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40, "T6CORE_SECRET": "t" * 40})
     assert "watchdog" in config.modules
     assert config.modules["t6core"].delivery == "push"
-    assert config.groups["cyril"] == [274983989]
+    assert config.groups["approvers"] == [100000001]
 
 
 def test_rejects_route_to_unknown_module(tmp_path):
