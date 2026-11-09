@@ -41,7 +41,7 @@ def test_valid_config_loads(tmp_path):
     assert isinstance(config, Config)
     assert config.listen.port == 8780
     assert config.routes[0].module == "watchdog"
-    assert config.groups["approvers"] == [100000001]
+    assert config.groups["cyril"] == [274983989]
     assert config.module_for_secret(SECRET) == "watchdog"
     assert config.module_for_secret("nope" * 10) is None
 
