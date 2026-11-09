@@ -131,7 +131,8 @@ class FakeTelegram:
         self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
         self.fail_always: Exception | None = None  # raised by every send/react until cleared
         self.calls: list[dict] = []
-        self.edits: list[dict] = []  # edit_message calls
+        self.edits: list[dict] = []  # edit_message calls that Telegram accepted
+        self.edit_fail_with: Exception | None = None  # raised by the next edit, then cleared
         self.answers: list[dict] = []  # answer_callback_query calls
         self.sent: list[dict] = []  # outbound calls in order: messages and reactions
         self.fail_with: Exception | None = None  # raised by the next send/react, then cleared
@@ -172,6 +173,9 @@ class FakeTelegram:
         parse_mode: str | None,
         keyboard: list[list[dict[str, str]]] | None = None,
     ) -> None:
+        if self.edit_fail_with is not None:
+            exc, self.edit_fail_with = self.edit_fail_with, None
+            raise exc
         self.edits.append(
             {
                 "chat_id": chat_id,

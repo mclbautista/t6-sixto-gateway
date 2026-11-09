@@ -27,6 +27,7 @@ from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.errors import (
     BlockedByUserError,
+    MessageNotModifiedError,
     PermanentSendError,
     RetryAfterError,
 )
@@ -71,6 +72,15 @@ class Sender:
             return False
         telegram_id: int | None
         ref, module, body = row["id"], row["module"], row["body"]
+        edit_target: int | None = None
+        if row["kind"] == "edit":
+            original = self._store.outbound_row(body["edit_of"])
+            if original is None or original["state"] != "sent":  # failed, or purged
+                error = f"message_ref {body['edit_of']} was not sent, so it cannot be edited"
+                self._store.mark_outbound_failed(ref, error)
+                self._store.audit("send_failed", module, f"ref={ref} {error}")
+                return True
+            edit_target = original["telegram_message_id"]
         # stored before the request: Telegram may accept it even if this process never hears
         self._store.record_send_attempt(body["chat"], now, LONGEST_WINDOW_SECONDS)
         self._pacer.record(body["chat"], now)
@@ -79,6 +89,18 @@ class Sender:
             if row["kind"] == "react":
                 await self._client.set_reaction(body["chat"], body["message_id"], body["emoji"])
                 telegram_id = None
+            elif edit_target is not None:
+                try:
+                    await self._client.edit_message(
+                        body["chat"],
+                        edit_target,
+                        body["text"],
+                        PARSE_MODES[body["format"]],
+                        body.get("keyboard"),
+                    )
+                except MessageNotModifiedError:  # it already shows exactly this: done
+                    pass
+                telegram_id = edit_target
             else:
                 telegram_id = await self._client.send_message(
                     body["chat"],
@@ -101,6 +123,8 @@ class Sender:
             waits.append(self._paused_until - now)
         else:
             for row in self._store.due_outbound(now):
+                if row["kind"] == "edit" and self._waits_for_original(row):
+                    continue  # the original's own row decides when the queue looks again
                 wait = self._pacer.wait(row["body"]["chat"], now)
                 if wait <= 0:
                     return row
@@ -110,6 +134,11 @@ class Sender:
             waits.append(later - now)
         self.next_wake_in = max(min(waits), 0.0) if waits else None
         return None
+
+    def _waits_for_original(self, row: dict) -> bool:
+        """An edit whose message is still queued waits for that message to be sent."""
+        original = self._store.outbound_row(row["body"]["edit_of"])
+        return original is not None and original["state"] == "queued"
 
     def _handle_failure(self, row: dict, exc: Exception) -> None:
         ref, module = row["id"], row["module"]
