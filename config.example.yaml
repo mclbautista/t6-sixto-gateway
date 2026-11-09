@@ -14,13 +14,13 @@ onboarding:
   approver: 274983989                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
   expected:                                     # handles that should be approved; the rest show as "still missing"
-    - mclb22
+    - user_seven
     - eyadane
     - jamagne
-    - hmmkayy
-    - alecgaba
+    - user_eight
+    - user_nine
     - dentiamson
-    - leizette
+    - priya
     - replace_with_pios_handle                  # FILL IN: Pio's Telegram handle
 retention_days: 30
 database_path: ./data/gateway.db
@@ -45,7 +45,7 @@ groups:
   cyril: [274983989]                            # Telegram user ids
   chat_ids:                                     # who may ask /whereami
     - 274983989                                 # Cyril
-    - 7926844592                                # Leizette
+    - 7926844592                                # Priya
     # FILL IN at deploy: Pio's Telegram user id
 routes:
   # FILL IN: copy the intake chat and topic ids from the watchdog's config.yaml
