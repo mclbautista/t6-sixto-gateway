@@ -35,7 +35,7 @@ def make_config(tmp_path, onboarding="", name="config.yaml"):
 
 @pytest.fixture
 def config(tmp_path):
-    expected = ", expected: ['@MCLB22', juandc, leizette]"
+    expected = ", expected: ['@ALICE_DEMO', juandc, carol_demo]"
     return load_config(make_config(tmp_path, expected), ENV)
 
 
@@ -66,7 +66,7 @@ async def test_at_nine_manila_one_summary_is_queued_with_counts_pending_failures
     assert "failed in the last 24 hours: 1" in text  # the 3-day-old one is out of the window
     assert "gateway: ref=10 attempts=1 Forbidden: blocked" in text
     assert "ref=9" not in text
-    assert "Still missing, no approved member yet: @mclb22, @juandc, @leizette" in text
+    assert "Still missing, no approved member yet: @alice_demo, @juandc, @carol_demo" in text
 
 
 async def test_nothing_is_queued_before_the_time(config):
@@ -90,7 +90,7 @@ async def test_an_empty_day_says_so_and_approved_members_are_not_missing(config)
     assert "Approved: 1 · Pending: 0" in text
     assert "No one is waiting for you." in text
     assert "No messages failed in the last 24 hours." in text
-    assert "@juandc" not in text and "@mclb22, @leizette" in text
+    assert "@juandc" not in text and "@alice_demo, @carol_demo" in text
 
 
 async def test_without_an_expected_list_there_is_no_missing_section(tmp_path):
@@ -182,8 +182,8 @@ def test_summary_time_must_be_text(tmp_path):
         "[abc]",
         "['not a handle']",
         "[12345678]",
-        "[mclb22, MCLB22]",
-        "[mclb22, '@mclb22']",
+        "[alice_demo, ALICE_DEMO]",
+        "[alice_demo, '@alice_demo']",
         "[null]",
     ],
 )
@@ -193,7 +193,7 @@ def test_a_bad_expected_list_fails_boot_naming_the_key(tmp_path, bad):
 
 
 def test_a_bad_expected_entry_is_reported_by_position_not_value(tmp_path):
-    path = make_config(tmp_path, ", expected: [mclb22, 'leaky secret']")
+    path = make_config(tmp_path, ", expected: [alice_demo, 'leaky secret']")
     with pytest.raises(ConfigError) as caught:
         load_config(path, ENV)
     assert "entry 2" in str(caught.value) and "leaky secret" not in str(caught.value)
@@ -206,13 +206,13 @@ def test_the_example_config_lists_the_psr_handles_and_a_placeholder_for_pio():
     config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40, "T6CORE_SECRET": "t" * 40})
     assert config.onboarding.summary_time == "09:00"
     assert config.onboarding.expected[:7] == [
-        "mclb22",
+        "alice_demo",
         "eyadane",
         "jamagne",
-        "hmmkayy",
-        "alecgaba",
+        "dave_demo",
+        "erin_demo",
         "dentiamson",
-        "leizette",
+        "carol_demo",
     ]
     assert len(config.onboarding.expected) == 8
 
