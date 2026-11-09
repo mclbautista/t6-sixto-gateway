@@ -676,6 +676,14 @@ class Store:
                 (error, ref),
             )
 
+    def outbound_row(self, ref: int) -> dict[str, Any] | None:
+        """One outbound row (any module), with its body decoded, or None."""
+        row = self._db.execute(
+            "SELECT id, module, kind, state, body, telegram_message_id FROM outbound WHERE id = ?",
+            (ref,),
+        ).fetchone()
+        return None if row is None else {**dict(row), "body": json.loads(row["body"])}
+
     def outbound_status(self, ref: int, module: str) -> dict[str, Any] | None:
         """State of a module's own outbound row, or None (unknown, or another module's)."""
         row = self._db.execute(

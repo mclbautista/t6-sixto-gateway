@@ -51,6 +51,9 @@ class UrlButton(BaseModel):
     url: Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["https"])]
 
 
+Buttons = list[Annotated[list[CallbackButton | UrlButton], Field(min_length=1)]]
+
+
 class NotifyBody(BaseModel):
     """Either ``to`` (a chat id) or ``contact`` with its ``fallback``; never both, never neither."""
 
@@ -62,7 +65,7 @@ class NotifyBody(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT)
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
-    buttons: list[Annotated[list[CallbackButton | UrlButton], Field(min_length=1)]] | None = None
+    buttons: Buttons | None = None
 
     @model_validator(mode="after")
     def to_or_contact_with_fallback(self) -> Self:
@@ -78,12 +81,49 @@ class NotifyBody(BaseModel):
         return self
 
 
+class EditBody(BaseModel):
+    """New text and buttons for a message the caller sent with ``/notify``.
+
+    Omitted, null or empty ``buttons`` removes the message's buttons.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    message_ref: Annotated[int, Field(ge=1, le=INT64_MAX)]
+    text: str = Field(min_length=1, max_length=MAX_TEXT)
+    format: Literal["html", "plain"] = "html"
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    buttons: Buttons | None = None
+
+
 class ReactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     chat: BigInt
     message_id: BigInt
     emoji: str = Field(min_length=1, max_length=32)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+def _keyboard(module: str, rows: Buttons | None) -> list[list[dict[str, str]]] | None:
+    """Telegram inline rows for a module's buttons (None: no buttons); 422 if one is too long."""
+    if not rows:
+        return None
+    keyboard = []
+    for row in rows:
+        buttons = []
+        for button in row:
+            if isinstance(button, CallbackButton):
+                # Escape module delimiters; payload is always opaque and caller-owned.
+                data = module_callback_data(module, button.payload)
+                if len(data.encode("utf-8")) > MAX_CALLBACK_BYTES:
+                    raise HTTPException(
+                        422,
+                        f"callback payload with module prefix exceeds {MAX_CALLBACK_BYTES} bytes",
+                    )
+                buttons.append({"text": button.text, "callback_data": data})
+            else:
+                buttons.append({"text": button.text, "url": str(button.url)})
+        keyboard.append(buttons)
+    return keyboard
 
 
 def create_app(
@@ -157,25 +197,7 @@ def create_app(
 
     @app.post("/notify", status_code=202)
     async def post_notify(module: Module, body: NotifyBody) -> dict[str, int]:
-        keyboard: list[list[dict[str, str]]] | None = None
-        if body.buttons:
-            keyboard = []
-            for row in body.buttons:
-                buttons = []
-                for button in row:
-                    if isinstance(button, CallbackButton):
-                        # Escape module delimiters; payload is always opaque and caller-owned.
-                        data = module_callback_data(module, button.payload)
-                        if len(data.encode("utf-8")) > MAX_CALLBACK_BYTES:
-                            raise HTTPException(
-                                422,
-                                f"callback payload with module prefix exceeds "
-                                f"{MAX_CALLBACK_BYTES} bytes",
-                            )
-                        buttons.append({"text": button.text, "callback_data": data})
-                    else:
-                        buttons.append({"text": button.text, "url": str(button.url)})
-                keyboard.append(buttons)
+        keyboard = _keyboard(module, body.buttons)
         chat, topic, text = body.to, body.topic, body.text
         if body.contact is not None:
             assert body.fallback is not None
@@ -195,6 +217,38 @@ def create_app(
             "message",
             str(chat),
             {"chat": chat, "topic": topic, "text": text, "format": body.format}
+            | ({"keyboard": keyboard} if keyboard is not None else {}),
+            body.idempotency_key,
+        )
+        queue_wake.notify()
+        return {"message_ref": ref}
+
+    @app.post("/edit", status_code=202)
+    async def post_edit(module: Module, body: EditBody) -> dict[str, int]:
+        """Queue new text and buttons for a message this module sent with ``/notify``.
+
+        An edit of a message that is still queued waits for it to be sent; if that send fails,
+        the edit fails too.
+        """
+        keyboard = _keyboard(module, body.buttons)
+        original = store.outbound_row(body.message_ref)
+        if original is None or original["module"] != module:
+            raise HTTPException(404, "unknown message_ref")  # another module's ref looks unknown
+        if original["kind"] != "message":
+            raise HTTPException(422, "message_ref must be a message sent with /notify")
+        if original["state"] == "failed":
+            raise HTTPException(409, "that message failed to send, so it cannot be edited")
+        chat = original["body"]["chat"]
+        ref = store.enqueue_outbound(
+            module,
+            "edit",
+            str(chat),
+            {
+                "chat": chat,
+                "edit_of": body.message_ref,
+                "text": body.text,
+                "format": body.format,
+            }
             | ({"keyboard": keyboard} if keyboard is not None else {}),
             body.idempotency_key,
         )

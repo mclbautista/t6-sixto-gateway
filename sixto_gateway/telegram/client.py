@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from sixto_gateway.telegram.errors import (
     BlockedByUserError,
+    MessageNotModifiedError,
     PermanentSendError,
     RetryAfterError,
     SendError,
@@ -97,6 +98,8 @@ def translate_send_error(exc: Exception) -> SendError | None:
         return TransientSendError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramForbiddenError):  # 403: the person blocked the bot
         return BlockedByUserError(f"{type(exc).__name__}: {exc.message}")
+    if isinstance(exc, TelegramAPIError) and "message is not modified" in exc.message.lower():
+        return MessageNotModifiedError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError):  # every other 4xx can never succeed on a retry
         return PermanentSendError(f"{type(exc).__name__}: {exc.message}")
     return None

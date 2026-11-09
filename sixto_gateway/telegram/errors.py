@@ -29,3 +29,10 @@ class PermanentSendError(SendError):
 
 class BlockedByUserError(PermanentSendError):
     """Telegram 403: the person blocked the bot (or never allowed it to write to them)."""
+
+
+class MessageNotModifiedError(PermanentSendError):
+    """Telegram refused an edit because the text and buttons are already exactly that.
+
+    For an edit this means the message already shows what was asked, so it counts as success.
+    """

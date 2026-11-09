@@ -6,7 +6,7 @@ items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; pha
 issue #1.
 
 Status: intake (config, polling, routing, `GET /updates`), sending with pacing and retries
-(`/notify`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
+(`/notify`, `/edit`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
 (`/healthz`, deadman, retention, `set-offset`, `show-offset`, deploy, rollback and the cutover runbook).
 
 ## This repo is public
@@ -100,6 +100,18 @@ onboarding worker.
   fit within **64 UTF-8 bytes**, including the prefix; otherwise `/notify` returns `422`
   naming the limit and queues nothing. Buttons survive retries and restarts; reusing an
   idempotency key keeps the original buttons, like the original text.
+- **Editing a sent message.** `POST /edit` `{"message_ref": N, "text": "...", "format":
+  "html"|"plain", "buttons": [...], "idempotency_key": "..."}` replaces the text and buttons
+  of a message the calling module sent with `/notify` (`N` is the ref `/notify` returned). For
+  example, after Approve is tapped: `{"message_ref": 17, "text": "Approved by Alex"}`.
+  `buttons` follow the `/notify` rules; omitted, null or empty `buttons` remove the buttons, so
+  nobody can tap twice. It answers `202 {"message_ref": M}`, and `GET /notify/M` reports the
+  edit (`telegram_message_id` is the edited message). A ref from another module, or from the
+  gateway itself, gets `404`, like an unknown ref; a `/react` or `/edit` ref gets `422`; a message
+  whose send already `failed` gets `409`. Edits go through the same queue, pacing, retries and
+  idempotency keys as `/notify`. **An edit of a message that is still queued waits for it to be
+  sent**, then edits it; if that send fails, the edit fails too with an error naming the ref.
+  Telegram's "message is not modified" (the message already shows exactly this) counts as sent.
 - **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id>",
   "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@juandc"}, "text": "..."}`.
   If the Contact has an `approved` member (see /start onboarding), the message is queued to that

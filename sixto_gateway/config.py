@@ -26,6 +26,7 @@ from pydantic import (
     model_validator,
 )
 
+from sixto_gateway.decision import GATEWAY_MODULE
 from sixto_gateway.logsafe import Redactor
 
 MIN_SECRET_LENGTH = 32
@@ -207,6 +208,8 @@ class _StrictLoader(yaml.SafeLoader):
 
 def _check_references(config: Config) -> list[str]:
     problems: list[str] = []
+    if GATEWAY_MODULE in config.modules:  # the gateway's own messages must stay its own
+        problems.append(f"module name {GATEWAY_MODULE!r} is reserved for the gateway")
     for i, route in enumerate(config.routes):
         if route.module not in config.modules:
             problems.append(f"routes[{i}] names unknown module {route.module!r}")
