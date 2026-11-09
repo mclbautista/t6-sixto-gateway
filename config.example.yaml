@@ -29,9 +29,13 @@ modules:                                        # each module authenticates with
   shift: { secret_env: SHIFT_SECRET }           # JO shift reports (https://github.com/mclbautista/t6-sixto-gateway/issues/41)
   # Taps on a module's buttons: delivery "pull" (default) = the module reads them from /updates;
   # "push" = the gateway posts each tap to push_url with the module's secret, retrying until it
-  # is accepted. First push target: the t6-core webhooks server's tailnet-only tap endpoint
-  # (mclbautista/t6-core#21, allowed by mclbautista/t6-netops#3). Uncomment and fill in:
-  # t6core: { secret_env: T6CORE_SECRET, delivery: push, push_url: "http://<vps tailnet ip>:<port>/tap" }
+  # is accepted. t6core is the t6-core webhooks server and Frame.io worker (README: "Messages
+  # from t6-core"); its taps go to the server's tailnet-only tap endpoint
+  # (mclbautista/t6-core#21, allowed by mclbautista/t6-netops#3).
+  t6core:
+    secret_env: T6CORE_SECRET
+    delivery: push
+    push_url: "http://vps.tailnet.example:8790/tap"   # FILL IN: the VPS tailnet address, port and path
 commands:                                       # /jo arrives in phase 5
   whereami:                                     # built-in: answered by the gateway, no module
     builtin: true

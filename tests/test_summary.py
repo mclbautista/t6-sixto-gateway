@@ -203,7 +203,7 @@ def test_the_example_config_lists_the_psr_handles_and_a_placeholder_for_pio():
     from pathlib import Path
 
     example = Path(__file__).parent.parent / "config.example.yaml"
-    config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40})
+    config = load_config(example, {**ENV, "SHIFT_SECRET": "s" * 40, "T6CORE_SECRET": "t" * 40})
     assert config.onboarding.summary_time == "09:00"
     assert config.onboarding.expected[:7] == [
         "mclb22",
