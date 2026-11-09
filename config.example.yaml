@@ -11,17 +11,17 @@ notion:
   contacts_data_source_id: 77b2a701-71db-4e88-a694-37f07303e77e   # the Contacts data source
   version: "2026-03-11"                         # Notion-Version header, pinned
 onboarding:
-  approver: 274983989                           # Telegram user id that gets the /start cards
+  approver: 100000001                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
   expected:                                     # handles that should be approved; the rest show as "still missing"
-    - user_seven
-    - eyadane
-    - jamagne
-    - user_eight
-    - user_nine
-    - dentiamson
-    - priya
-    - replace_with_pios_handle                  # FILL IN: Pio's Telegram handle
+    - starling42
+    - silverotter
+    - amberfinch
+    - cloudbadger
+    - mistyheron
+    - cedarfox
+    - moonfern
+    - replace_with_member_handle               # FILL IN: another member’s Telegram handle
 retention_days: 30
 database_path: ./data/gateway.db
 modules:                                        # each module authenticates with its own secret
@@ -42,13 +42,13 @@ commands:                                       # /jo arrives in phase 5
     allow: [chat_ids]
     description: Show this chat's id and topic id
 groups:
-  cyril: [274983989]                            # Telegram user ids
+  approvers: [100000001]                       # Telegram user ids
   chat_ids:                                     # who may ask /whereami
-    - 274983989                                 # Cyril
-    - 7926844592                                # Priya
-    # FILL IN at deploy: Pio's Telegram user id
+    - 100000001                                 # Example approver
+    - 100000002                                 # Moonfern
+    # FILL IN at deploy: another member’s Telegram user id
 routes:
   # FILL IN: copy the intake chat and topic ids from the watchdog's config.yaml
-  # (intake_chat_id / intake_topic_id). Cyril approved copying them as they are; they are not
+  # (intake_chat_id / intake_topic_id). The operator supplies the deployed values; they are not
   # stored in any repo, so the real values go into the deployed config.yaml.
   - { chat: -1000000000000, topic: 1, module: watchdog }
