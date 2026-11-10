@@ -353,6 +353,65 @@ Plain `git pull && docker compose up -d --build` also works, but it rebuilds `si
 in place and leaves no image to roll back to. The `GATEWAY_TAG` form keeps one image per commit.
 A restart keeps the data: the SQLite file lives in `./data`, and migrations run at boot.
 
+## Optional Tailscale gateway node
+
+The default deployment above is unchanged and does not start Tailscale. To enable it,
+use the opt-in overlay with Docker Compose 2.24.4 or newer (`!reset` support), a
+working `/dev/net/tun` in the Colima VM, and the existing external Docker network
+`sixto`. The gateway shares the sidecar's network namespace; the sidecar owns the
+port and `gateway` / `sixto-gateway` DNS aliases. It uses kernel networking and a
+pinned image, advertises `tag:t6-gateway`, and keeps node identity in the named
+`tailscale_state` volume. Do not delete that volume on restart, update, or rollback.
+
+Before switching, back up the existing untracked `compose.override.yaml` and check
+its actual network aliases and port binding. Add any additional aliases to the
+sidecar in a local overlay; they do not transfer automatically. In `.env`, set
+`TS_AUTHKEY` to a non-ephemeral key authorized for `tag:t6-gateway`, and set
+`GATEWAY_BIND_IP` to the existing host-side bind address (the current Colima setup
+uses `127.0.0.1`; if publishing directly to a LAN interface, use its specific IP).
+Never bind to all interfaces or expose the port to the internet. The auth key is
+needed for initial enrollment, not subsequent starts with intact state. Treat `.env`
+and `docker compose config` output as secret; the gateway's existing `env_file`
+also supplies this key to the gateway container. Set the t6core `push_url` in
+`config.yaml` to the VPS tailnet IPv4 and tap port 8791; MagicDNS is not assumed
+to work in the gateway container. Confirm the deployed server's tap path and port.
+
+For a checkout with an existing `compose.override.yaml`, select the files explicitly,
+in this order, for **every** Compose command while the overlay is enabled:
+
+```sh
+export COMPOSE_FILE=compose.yaml:compose.override.yaml:compose.tailscale.yaml
+export COMPOSE_PROFILES=tailscale
+GATEWAY_TAG=$(git rev-parse --short HEAD) docker compose up -d --build
+```
+
+If there is no override, omit `:compose.override.yaml` from `COMPOSE_FILE`. Inspect
+the resolved config privately before starting: gateway must have neither ports nor
+networks, and the sidecar must own the intended host binding and all shared-network
+aliases. Check the LAN health URL from another app, and check both shared-network
+clients can still resolve and reach the gateway. With the VPS listening on both
+ports, check TCP from *inside the gateway* (substitute its tailnet IPv4):
+
+```sh
+docker compose exec -T gateway python -c 'import socket; s=socket.create_connection(("<VPS_TAILNET_IPV4>", 8791), 5); s.close(); print("tap reachable")'
+docker compose exec -T gateway python -c 'import socket; s=socket.create_connection(("<VPS_TAILNET_IPV4>", 8790), 5); s.close(); print("ERROR: queue reachable")'
+```
+
+The first must succeed and the second must fail; a failure alone does not prove an
+ACL denial if the queue is down. Confirm queue availability from an authorized
+worker and confirm the applied netops ACLs. Check the sidecar's tailnet identity
+before and after restart/reboot without printing the auth key. Compose's dependency
+restart propagation covers explicit Compose restarts; after an unexpected sidecar
+recreation, verify gateway connectivity and recreate the gateway if needed.
+
+**Rollback the networking change:** stop the gateway and sidecar using the same
+file/profile selection, then unset both variables and start the original Compose
+configuration (including the backed-up override) with the previous gateway image.
+Expect an interruption while the port and network namespace move. Remove only the
+old sidecar container if it remains; never remove its state volume. Verify host/LAN
+health and both clients' DNS/connectivity again. The image rollback below also works
+without changing networking if you keep `COMPOSE_FILE` and `COMPOSE_PROFILES` set.
+
 ## Rollback (a bad deploy)
 
 ```sh

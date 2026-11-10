@@ -36,7 +36,7 @@ modules:                                        # each module authenticates with
   t6core:
     secret_env: T6CORE_SECRET
     delivery: push
-    push_url: "http://vps.tailnet.example:8790/tap"   # FILL IN: the VPS tailnet address, port and path
+    push_url: "http://100.64.0.1:8791/tap"   # FILL IN: the VPS tailnet IPv4, port and path
 commands:                                       # /jo arrives in phase 5
   whereami:                                     # built-in: answered by the gateway, no module
     builtin: true
