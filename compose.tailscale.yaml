@@ -1,0 +1,23 @@
+# Opt-in overlay. Put this last after any existing compose.override.yaml.
+# The namespace owner must carry ports and shared-network aliases, not gateway.
+services:
+  gateway:
+    network_mode: service:tailscale
+    ports: !reset []
+    networks: !reset {}
+    depends_on:
+      tailscale:
+        condition: service_healthy
+        restart: true
+  tailscale:
+    ports:
+      - "${GATEWAY_BIND_IP:-127.0.0.1}:8780:8780"
+    networks:
+      sixto:
+        aliases:
+          - gateway
+          - sixto-gateway
+
+networks:
+  sixto:
+    external: true
