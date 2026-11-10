@@ -27,6 +27,7 @@ database_path: ./data/gateway.db
 modules:                                        # each module authenticates with its own secret
   watchdog: { secret_env: WATCHDOG_SECRET }
   shift: { secret_env: SHIFT_SECRET }           # JO shift reports (https://github.com/mclbautista/t6-sixto-gateway/issues/41)
+  netops: { secret_env: NETOPS_SECRET }         # t6-netops notifications; its own secret, never the Telegram bot token
   # Taps on a module's buttons: delivery "pull" (default) = the module reads them from /updates;
   # "push" = the gateway posts each tap to push_url with the module's secret, retrying until it
   # is accepted. t6core is the t6-core webhooks server and Frame.io worker (README: "Messages
