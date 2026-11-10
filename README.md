@@ -130,6 +130,13 @@ onboarding worker.
   blocked) fails at once. Reactions follow the same rules. Each attempt and outcome goes to the
   audit log.
 
+## Messages from t6-netops
+
+t6-netops sends its notifications through `/notify` as the module **`netops`**
+(`modules.netops` in `config.yaml`, secret in `NETOPS_SECRET`). It has its own secret and never
+holds the Telegram bot token. Pacing, audit and `idempotency_key` retries work as for every
+other module; netops should send a stable key per event so a retried request queues nothing new.
+
 ## Messages from t6-core (webhooks contracts)
 
 The t6-core webhooks server and its Frame.io worker send three messages through `/notify`.
