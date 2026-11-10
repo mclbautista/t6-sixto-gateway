@@ -340,6 +340,10 @@ sending, no deadman; `/notify` rows are saved and stay `queued`). Changing confi
 
 ## Deploy
 
+These default commands do **not** enable or preserve the optional Tailscale overlay
+unless the file and profile selection described below is present in this shell.
+Always use that selection for every deploy, restart, and rollback of an enabled overlay.
+
 Run on the Mac mini (Hermes does this over SSH):
 
 ```sh
@@ -363,16 +367,28 @@ port and `gateway` / `sixto-gateway` DNS aliases. It uses kernel networking and 
 pinned image, advertises `tag:t6-gateway`, and keeps node identity in the named
 `tailscale_state` volume. Do not delete that volume on restart, update, or rollback.
 
+**Operational blocker — do not enable for unattended production use yet.** The gateway
+shares the sidecar's network namespace. An unexpected sidecar crash/restart or
+recreation can leave the gateway attached to a stale or unavailable namespace;
+Docker restart policies and Compose startup health dependencies do not establish
+automatic namespace recovery. Daemon/host reboot ordering and recovery have not been
+validated. An unhealthy sidecar is not automatically restarted by its health check.
+Arrange monitoring and an operator, and validate crash, recreation and reboot recovery
+in an isolated environment before cutover. Otherwise keep the default deployment.
+
 Before switching, back up the existing untracked `compose.override.yaml` and check
 its actual network aliases and port binding. Add any additional aliases to the
-sidecar in a local overlay; they do not transfer automatically. In `.env`, set
-`TS_AUTHKEY` to a non-ephemeral key authorized for `tag:t6-gateway`, and set
+sidecar in a local overlay; they do not transfer automatically. Create a separate
+`.env.tailscale` (mode 0600), containing `TS_AUTHKEY` set to a non-ephemeral key
+authorized for `tag:t6-gateway`. This file is passed only to the sidecar, excluded
+from Git and the build context, and must remain present even after enrollment (it may
+then be empty). Remove `TS_AUTHKEY` from the gateway's `.env`; if it was previously
+there, treat it as exposed to the gateway and rotate/revoke it as appropriate. In `.env`, set
 `GATEWAY_BIND_IP` to the existing host-side bind address (the current Colima setup
 uses `127.0.0.1`; if publishing directly to a LAN interface, use its specific IP).
 Never bind to all interfaces or expose the port to the internet. The auth key is
-needed for initial enrollment, not subsequent starts with intact state. Treat `.env`
-and `docker compose config` output as secret; the gateway's existing `env_file`
-also supplies this key to the gateway container. Set the t6core `push_url` in
+needed for initial enrollment, not subsequent starts with intact state. Treat both env
+files and `docker compose config` output as secret. Set the t6core `push_url` in
 `config.yaml` to the VPS tailnet IPv4 and tap port 8791; MagicDNS is not assumed
 to work in the gateway container. Confirm the deployed server's tap path and port.
 
@@ -401,8 +417,12 @@ The first must succeed and the second must fail; a failure alone does not prove 
 ACL denial if the queue is down. Confirm queue availability from an authorized
 worker and confirm the applied netops ACLs. Check the sidecar's tailnet identity
 before and after restart/reboot without printing the auth key. Compose's dependency
-restart propagation covers explicit Compose restarts; after an unexpected sidecar
-recreation, verify gateway connectivity and recreate the gateway if needed.
+restart propagation covers explicit Compose restarts, not automatic runtime restarts.
+After a crash, sidecar recreation, or host reboot, check sidecar health, gateway health,
+LAN and shared-network access, and tailnet access; if connectivity is broken, restore
+sidecar health first and then run `docker compose up -d --force-recreate gateway` with
+the same overlay/profile selection and image tag. Repeat all checks; roll back if they
+fail. This is a manual recovery procedure, not a tested automatic recovery guarantee.
 
 **Rollback the networking change:** stop the gateway and sidecar using the same
 file/profile selection, then unset both variables and start the original Compose
