@@ -6,7 +6,8 @@ items over HTTP with their own secret. Design: the "Sixto gateway plan" doc; pha
 issue #1.
 
 Status: intake (config, polling, routing, `GET /updates`), sending with pacing and retries
-(`/notify`, `/edit`, `/react`, `GET /notify/{ref}`), commands with the allow-list, and operations
+(`/notify` with inline buttons, `/edit`, `/react`, `GET /notify/{ref}`), button taps (pull or
+push), commands with the allow-list, `/start` onboarding with its daily summary, and operations
 (`/healthz`, deadman, retention, `set-offset`, `show-offset`, deploy, rollback and the cutover runbook).
 
 ## This repo is public
@@ -36,7 +37,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as t6-sixto-watchdog) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,
@@ -455,8 +456,8 @@ WATCHDOG_SECRET='<value from .env>'      # the same value in the gateway and wat
 ```
 Prerequisites: the gateway `.env` has `TELEGRAM_BOT_TOKEN` and `WATCHDOG_SECRET`; the gateway
 `config.yaml` has the real intake `chat` and `topic` copied from the watchdog's `config.yaml`.
-The watchdog's gateway mode (`telegram_mode: gateway`, `gateway_url`, `reset-offset`) is the
-watchdog repo's ticket and must be merged first.
+The watchdog's gateway mode (`telegram_mode: gateway`, `gateway_url`, `reset-offset`) is merged
+in t6-jo-watchdog; see "Gateway mode" in its README.
 
 1. **Deploy the gateway with polling off.** In `config.yaml` set `telegram.polling: false`, then
    follow Deploy above. Check:
