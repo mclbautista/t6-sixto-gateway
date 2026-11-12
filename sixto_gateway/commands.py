@@ -47,7 +47,8 @@ def decide_command(config: Config, update: IncomingUpdate) -> Decision:
     if update.command in allowed:  # only names from config.commands can be in the list
         module = config.commands[update.command].module
         assert module is not None  # built-ins are answered by decide_builtin, never here
-        return Decision(module, "command", ("command_routed", module, detail))
+        push = config.modules[module].delivery == "push"
+        return Decision(module, "command", ("command_routed", module, detail), push=push)
     return Decision(None, audit=("command_refused", None, detail), reply=REFUSAL)
 
 

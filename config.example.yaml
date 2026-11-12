@@ -28,9 +28,9 @@ modules:                                        # each module authenticates with
   watchdog: { secret_env: WATCHDOG_SECRET }
   shift: { secret_env: SHIFT_SECRET }           # JO shift reports (https://github.com/mclbautista/t6-sixto-gateway/issues/41)
   netops: { secret_env: NETOPS_SECRET }         # t6-netops notifications; its own secret, never the Telegram bot token
-  # Taps on a module's buttons: delivery "pull" (default) = the module reads them from /updates;
-  # "push" = the gateway posts each tap to push_url with the module's secret, retrying until it
-  # is accepted. t6core is the t6-core webhooks server and Frame.io worker (README: "Messages
+  # Taps on a module's buttons and its commands: delivery "pull" (default) = the module reads
+  # them from /updates; "push" = the gateway posts each one to push_url with the module's
+  # secret, retrying until it is accepted. t6core is the t6-core webhooks server and Frame.io worker (README: "Messages
   # from t6-core"); its taps go to the server's tailnet-only tap endpoint
   # (mclbautista/t6-core#21, allowed by mclbautista/t6-netops#3).
   t6core:
@@ -42,8 +42,13 @@ commands:                                       # /jo arrives in phase 5
     builtin: true
     allow: [chat_ids]
     description: Show this chat's id and topic id
+  project:                                      # pushed to t6core (README: "Project Codes and rotation")
+    module: t6core
+    allow: [operators]
+    description: Project Codes and rotation
 groups:
   approvers: [100000001]                       # Telegram user ids
+  operators: [100000001]                       # who may send /project; the same ids as t6-core's T6_OPERATOR_IDS
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver
     - 100000002                                 # Moonfern

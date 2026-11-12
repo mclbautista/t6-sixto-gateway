@@ -56,8 +56,9 @@ class TelegramConfig(_Model):
 
 class ModuleConfig(_Model):
     secret_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
-    # How taps on this module's buttons reach it: "pull" (its /updates feed) or "push" (the
-    # gateway posts each tap to ``push_url`` with the module's secret, retrying until accepted).
+    # How taps on this module's buttons and its commands reach it: "pull" (its /updates feed) or
+    # "push" (the gateway posts each one to ``push_url`` with the module's secret, retrying
+    # until accepted).
     delivery: Literal["pull", "push"] = "pull"
     push_url: Annotated[str, Field(pattern=r"^https?://[^\s/]+(/\S*)?$")] | None = None
 

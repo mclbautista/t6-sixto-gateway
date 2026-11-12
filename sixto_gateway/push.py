@@ -4,6 +4,7 @@ A module in ``delivery: push`` mode gets every tap on its buttons as an HTTP POS
 ``push_url`` with ``Authorization: Bearer <its secret>``. The body is the tap item (the same
 shape ``GET /updates`` serves) plus ``idempotency_key``, which is also sent as an
 ``Idempotency-Key`` header and is the same on every retry, so the receiver can drop a repeat.
+The module's commands (ticket #72) travel the same way, as ``command`` items.
 
 Any 2xx answer accepts the tap. Anything else (an error status, a timeout, no connection) is
 retried with a growing wait that stops growing at ten minutes; the tap is never given up on.
@@ -30,8 +31,8 @@ RETRY_SCHEDULE_SECONDS = (5.0, 30.0, 120.0, 600.0)  # the last step repeats
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 
-def idempotency_key(update_id: int) -> str:
-    return f"tap-{update_id}"
+def idempotency_key(item: dict) -> str:
+    return f"{'cmd' if item['kind'] == 'command' else 'tap'}-{item['update_id']}"
 
 
 class PushWorker:
@@ -60,7 +61,7 @@ class PushWorker:
 
     async def _push(self, row: dict) -> None:
         seq, module, item = row["seq"], row["module"], row["item"]
-        key = idempotency_key(item["update_id"])
+        key = idempotency_key(item)
         module_config = self._config.modules[module]
         assert module_config.push_url is not None  # validated at boot
         try:
