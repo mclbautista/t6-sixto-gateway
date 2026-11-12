@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Dedicated non-root user. UID 1000 so the host's ./data (chmod 0700) can be owned by the same
-# id: `sudo chown 1000:1000 data`.
+# Dedicated non-root user (uid 1000). /app/data below is owned by it, and the named volume
+# mounted there takes that ownership and mode on first use.
 RUN groupadd --system --gid 1000 gateway \
     && useradd --system --uid 1000 --gid gateway --home-dir /app --shell /usr/sbin/nologin gateway
 

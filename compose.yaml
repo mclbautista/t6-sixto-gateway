@@ -38,8 +38,17 @@ services:
     ports:
       - "8780:8780"                 # LAN only; never expose to the internet
     volumes:
-      - ./data:/app/data            # host dir 0700, db 0600, owned by uid 1000
+      # A named volume, inside the Docker VM. Never bind-mount a host folder here: SQLite's
+      # locks do not hold across a macOS bind mount (t6-jo-watchdog#131; README "Database
+      # storage and backups").
+      - gateway_data:/app/data
       - ./config.yaml:/app/config.yaml:ro
 
 volumes:
   tailscale_state:
+  # External on purpose: `docker compose up` fails until the volume exists, so a deploy can
+  # never start on a silently empty database, and `docker compose down -v` cannot delete it.
+  # Create it once: `docker volume create sixto-gateway-data`.
+  gateway_data:
+    external: true
+    name: sixto-gateway-data
