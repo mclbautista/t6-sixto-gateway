@@ -10,7 +10,14 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.poller import Poller
 from sixto_gateway.push import RETRY_SCHEDULE_SECONDS, PushWorker
 from sixto_gateway.store import Store
-from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram, button_tap
+from tests.fakes import (
+    NOTION_ENV,
+    NOTION_YAML,
+    FakeClock,
+    FakeTelegram,
+    button_tap,
+    dm_message,
+)
 
 CARDS_SECRET = "c" * 40
 SHIFT_SECRET = "s" * 40
@@ -25,12 +32,18 @@ USER, CHAT = 555, 555
 
 
 def write_config(tmp_path, modules=None):
-    modules = modules or (
-        "{cards: {secret_env: CARDS_SECRET, delivery: push, push_url: " + PUSH_URL + "},"
-        " shift: {secret_env: SHIFT_SECRET}}"
-    )
+    commands = "{}"
+    if modules is None:
+        modules = (
+            "{cards: {secret_env: CARDS_SECRET, delivery: push, push_url: " + PUSH_URL + "},"
+            " shift: {secret_env: SHIFT_SECRET}}"
+        )
+        commands = "{project: {module: cards, allow: [555]}, report: {module: shift, allow: [555]}}"
     path = tmp_path / "config.yaml"
-    path.write_text(f"modules: {modules}\ndatabase_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML)
+    path.write_text(
+        f"modules: {modules}\ncommands: {commands}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+    )
     return path
 
 
@@ -315,3 +328,49 @@ def test_bad_push_config_fails_the_boot(tmp_path, modules, message):
 def test_delivery_defaults_to_pull(tmp_path):
     config = load_config(write_config(tmp_path, "{shift: {secret_env: SHIFT_SECRET}}"), ENV)
     assert config.modules["shift"].delivery == "pull"
+
+
+# --- commands of a push module (ticket #72) --------------------------------------------------
+
+
+async def test_a_push_modules_command_is_posted_like_a_tap_with_its_own_key(rig):
+    rig.telegram.push(dm_message(9, USER, "/project  ABC 1 "))
+    await rig.poller.poll_once()
+    assert await rig.pull("cards", CARDS_SECRET) == []  # pushed, not pulled
+
+    assert await rig.pusher.push_due() == 1
+
+    (request,) = rig.posts
+    assert str(request.url) == PUSH_URL
+    assert request.headers["authorization"] == f"Bearer {CARDS_SECRET}"
+    assert request.headers["idempotency-key"] == "cmd-9"
+    body = httpx.Response(200, content=request.content).json()
+    assert body["idempotency_key"] == "cmd-9"
+    assert (body["kind"], body["command"], body["args"]) == ("command", "project", "ABC 1")
+    assert (body["from"]["id"], body["chat"], body["message_id"]) == (USER, USER, 9)
+    assert await rig.pusher.push_due() == 0  # accepted: not posted again
+
+
+async def test_a_pushed_command_is_retried_under_the_same_key(rig):
+    rig.status = 503
+    rig.telegram.push(dm_message(9, USER, "/project"))
+    await rig.poller.poll_once()
+    await rig.pusher.push_due()
+    rig.clock.advance(RETRY_SCHEDULE_SECONDS[0])
+    rig.status = 200
+    assert await rig.pusher.push_due() == 1
+    assert [r.headers["idempotency-key"] for r in rig.posts] == ["cmd-9"] * 2
+
+
+async def test_a_refused_command_is_never_pushed(rig):
+    rig.telegram.push(dm_message(9, 999, "/project"))
+    await rig.poller.poll_once()
+    assert await rig.pusher.push_due() == 0
+    assert rig.posts == []
+
+
+async def test_a_pull_modules_command_is_still_read_from_updates(rig):
+    rig.telegram.push(dm_message(9, USER, "/report"))
+    await rig.poller.poll_once()
+    assert await rig.pusher.push_due() == 0
+    assert [i["command"] for i in await rig.pull("shift", SHIFT_SECRET)] == ["report"]

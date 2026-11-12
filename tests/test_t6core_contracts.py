@@ -15,9 +15,11 @@ import pytest
 from sixto_gateway.api import create_app
 from sixto_gateway.config import load_config
 from sixto_gateway.notifier import Notifier
+from sixto_gateway.poller import Poller
+from sixto_gateway.push import PushWorker
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
-from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
+from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram, dm_message
 
 README = Path(__file__).parent.parent / "README.md"
 T6CORE = "t" * 40
@@ -25,7 +27,7 @@ CYRIL = 274983989
 COORDINATOR = 123456789
 CONTACT = "0a1b2c3d-1111-2222-3333-444455556666"
 PAGE = "0a1b2c3d111122223333444455556666"
-CONTRACTS = ("review-done", "approval-card", "retry-card", "frameio-sign-in")
+CONTRACTS = ("review-done", "approval-card", "retry-card", "frameio-sign-in", "project-card")
 
 
 def readme_contracts() -> dict[str, dict]:
@@ -166,3 +168,91 @@ async def test_a_repeated_contract_request_sends_once(client, env):
     while await env[2].send_next():
         pass
     assert len(env[1].sent) == 1
+
+
+# --- Project Codes and rotation (ticket #72) -------------------------------------------------
+
+TOKEN = "AbCdEfGhIjKlMnOpQrStUv"
+
+
+async def test_project_card_reaches_the_operator_with_core_callbacks(client, env):
+    sent = await send(client, env, readme_contracts()["project-card"])
+    assert sent["chat_id"] == CYRIL and sent["parse_mode"] == "HTML"
+    assert "Nothing changed" in sent["text"]
+    assert [row[0]["callback_data"] for row in sent["keyboard"]] == [
+        f"mod:t6core:op:{TOKEN}:{choice}" for choice in ("cclr", "chg", "bout", "skip")
+    ]
+
+
+@pytest.mark.parametrize(("choice", "accepted"), [("c" * 27, True), ("c" * 28, False)])
+async def test_project_card_payload_budget_is_a_27_byte_choice(client, env, choice, accepted):
+    body = readme_contracts()["project-card"]
+    body["buttons"] = [[{"text": "Choice", "payload": f"op:{TOKEN}:{choice}"}]]
+    r = await client.post("/notify", json=body, headers={"Authorization": f"Bearer {T6CORE}"})
+    assert r.status_code == (202 if accepted else 422)
+
+
+async def test_project_card_edit_replaces_text_and_removes_the_buttons(client, env):
+    headers = {"Authorization": f"Bearer {T6CORE}"}
+    card = readme_contracts()["project-card"]
+    ref = (await client.post("/notify", json=card, headers=headers)).json()["message_ref"]
+    done = {
+        "message_ref": ref,
+        "text": "<b>Now in rotation.</b>\nNotion update pending.",
+        "format": "html",
+        "buttons": [],
+        "idempotency_key": f"op-edit:{TOKEN}:5",
+    }
+    first = await client.post("/edit", json=done, headers=headers)
+    again = await client.post("/edit", json=done, headers=headers)
+    assert first.status_code == 202 and first.json() == again.json()
+    while await env[2].send_next():
+        pass
+    env[1].clock.advance(2)  # a private chat takes one message a second
+    while await env[2].send_next():
+        pass
+    (edit,) = env[1].edits
+    assert edit["text"] == done["text"] and not edit.get("keyboard")
+
+
+async def test_the_pushed_project_command_matches_the_readme(tmp_path):
+    """The body t6-core receives for ``/project ABD`` carries every field the README shows."""
+    pattern = re.compile(r"<!-- pushed: project-command -->\n```json\n(.*?)\n```", re.DOTALL)
+    documented = json.loads(pattern.search(README.read_text()).group(1))
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "modules:\n"
+        "  t6core: {secret_env: T6CORE_SECRET, delivery: push, push_url: 'http://vps:8791/tap'}\n"
+        f"commands: {{project: {{module: t6core, allow: [{CYRIL}]}}}}\n"
+        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+    )
+    config = load_config(
+        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "T6CORE_SECRET": T6CORE, **NOTION_ENV}
+    )
+    clock = FakeClock()
+    store = Store(config.database_path, clock=clock)
+    update = dm_message(9001, CYRIL, "/project ABD")
+    update["message"]["message_id"] = 77
+    telegram = FakeTelegram([update], clock)
+    wake = Notifier()
+    await Poller(store, telegram, config, Notifier(), clock=clock, push_wake=wake).poll_once()
+    posts: list[httpx.Request] = []
+
+    def endpoint(request: httpx.Request) -> httpx.Response:
+        posts.append(request)
+        return httpx.Response(200, json={"outcome": "code_set"})
+
+    pusher = PushWorker(
+        store,
+        config,
+        wake,
+        clock,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(endpoint)),
+    )
+    assert await pusher.push_due() == 1
+    (request,) = posts
+    assert request.headers["authorization"] == f"Bearer {T6CORE}"
+    assert request.headers["idempotency-key"] == documented["idempotency_key"]
+    body = json.loads(request.content)
+    documented["from"] = {**body["from"], **documented["from"]}
+    assert {name: body[name] for name in documented} == documented

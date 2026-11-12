@@ -76,6 +76,8 @@ Each module chooses a delivery mode in `config.yaml`:
   as the same tap. Any 2xx accepts it. Otherwise the gateway retries after 5 s, 30 s, 2 min and
   then every 10 min, and never gives up. The schedule is stored, so it survives a restart. A
   pushed tap is not also served by `/updates`. The gateway calls out; nothing calls into it.
+  A push module's **commands** (see "Commands and the allow-list") are posted to the same URL
+  in the same way, as `command` items with the key `cmd-<update_id>`.
 
 A tap naming a module that is not in `modules` is written to the audit table
 (`tap_unknown_module`), answered with "This button is no longer active." and not delivered.
@@ -234,6 +236,81 @@ button (HTTPS only); t6-core builds the link.
 - `idempotency_key`: `frameio-sign-in:<UTC date and hour>`, so the worker can retry freely and
   sends at most one alert an hour.
 
+### 4. Project Codes and rotation (`/project`)
+
+An operator changes or clears a Project Code, moves a Project in or out of rotation, and
+resolves a reused-code conflict from cards t6-core sends (mclbautista/t6-core
+`docs/operator-actions.md`). The gateway carries three things and decides nothing: it never
+reads the Project registry, never writes to Notion and does not know what the buttons mean.
+
+**The command, pushed.** `/project` is a command owned by `t6core`:
+
+```yaml
+commands:
+  project: { module: t6core, allow: [operators], description: "Project Codes and rotation" }
+```
+
+In the operator's DM the gateway posts it to t6-core's tap URL, like a tap, with
+`Idempotency-Key: cmd-<update_id>`:
+
+<!-- pushed: project-command -->
+```json
+{
+  "idempotency_key": "cmd-9001",
+  "kind": "command",
+  "command": "project",
+  "args": "ABD",
+  "from": {"id": 274983989},
+  "chat": 274983989,
+  "message_id": 77,
+  "update_id": 9001
+}
+```
+
+(The item also carries `seq`, `topic`, `text`, `edited`, `edit_date` and `raw`, like every
+item.) `args` is empty for the list and is the new code after **Change code**. Anyone not on
+the gateway's allow-list gets the standard refusal and nothing is pushed. t6-core checks the
+sender against its own operator list as well and is the authority.
+
+**The card.** An ordinary `/notify`, then `/edit` each time the card moves on, with the
+keys `op-card:<token>` and `op-edit:<token>:<version>`:
+
+<!-- contract: project-card -->
+```json
+{
+  "to": 274983989,
+  "text": "<b>Project</b> <b>ABC</b> <code>t6p_0123456789abcdef01234567</code>\n<b>Cannot enter rotation.</b> Code ABC is held by <b>abc</b> <code>t6p_89abcdef0123456789abcdef</code> (in rotation).\nNothing changed. How should this be resolved?",
+  "format": "html",
+  "idempotency_key": "op-card:AbCdEfGhIjKlMnOpQrStUv",
+  "buttons": [
+    [{"text": "Clear this Project's code and enter", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:cclr"}],
+    [{"text": "Change this Project's code", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:chg"}],
+    [{"text": "Take abc · abcdef out of rotation", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:bout"}],
+    [{"text": "Cancel", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:skip"}]
+  ]
+}
+```
+
+The payload is `op:<22-character token>:<choice>`. The token is opaque; what the card is
+about lives in t6-core. A choice may be at most **27 bytes** (53 minus `op:`, the token and
+a colon).
+
+**The tap, pushed** to the same URL with `Idempotency-Key: tap-<update_id>`, as for every
+`t6core` button. t6-core answers 200 once it has decided (accepted, stale, repeated or not
+allowed) and 503 when it has not, which the gateway retries on its usual schedule.
+
+The card's last edit shows what the registry accepted and, on a separate line, whether Notion
+shows it yet (pending, updated, or failed after retries). The gateway sends that text as it is.
+
+**Rollout.** Deploy t6-core with `/project` support first; this gateway version can go out
+before or after it, because nothing is pushed until the command is in `config.yaml`. Then add
+the `project` command and the `operators` group (the same Telegram ids as t6-core's
+`T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
+those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
+gets the refusal. The push goes to the tailnet-only tap URL the taps already use (see
+"Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the
+command from `config.yaml` and restart; cards already sent keep working.
+
 ## Commands and the allow-list
 
 ```yaml
@@ -260,7 +337,8 @@ commands:
   later boot does not know to remove.
 - **In a DM**, a message that starts with `/name` is checked against the allow-list before any
   module sees it. Allowed: a `command` item (with `command` and `args`) is delivered to the
-  owning module through `GET /updates`. Refused or unknown: the update is stored unrouted and
+  owning module through `GET /updates`, or posted to its `push_url` when the module uses
+  `delivery: push`. Refused or unknown: the update is stored unrouted and
   the gateway queues one DM reply, "That command isn't available to you." The reply is saved in
   the same transaction as the update, so a re-fetched update is never answered twice.
 - **In a group**, commands get no reply and are routed like any other message. An edited
