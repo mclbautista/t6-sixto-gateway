@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -21,6 +22,33 @@ SECONDS_PER_DAY = 86400.0
 AUDIT_RETENTION_DAYS = 180
 
 
+class StoreCorrupt(RuntimeError):
+    """The database file failed SQLite's integrity check at startup (t6-jo-watchdog#131)."""
+
+
+def backup(source: str | Path, dest: str | Path) -> str:
+    """Copy a database, live or not, to a new file ``dest`` and return its ``integrity_check``.
+
+    Uses SQLite's online backup API, so the copy is consistent while the gateway keeps writing.
+    Run it where the gateway runs (inside its container): SQLite's locks do not hold across a
+    macOS bind mount (t6-jo-watchdog#131). ``dest`` must not exist; it ends up as a single file,
+    with no ``-wal`` or ``-shm`` next to it, that is safe to copy anywhere.
+    """
+    source = Path(source)
+    if not source.is_file():
+        raise FileNotFoundError(f"no database at {source}")
+    os.close(os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    src = sqlite3.connect(source)
+    dst = sqlite3.connect(dest)
+    try:
+        src.backup(dst)
+        dst.execute("PRAGMA journal_mode=DELETE")
+        return dst.execute("PRAGMA integrity_check").fetchone()[0]
+    finally:
+        dst.close()
+        src.close()
+
+
 class Store:
     def __init__(self, path: str | Path, clock: Callable[[], float] = time.time):
         self._clock = clock
@@ -29,6 +57,18 @@ class Store:
         self._db = sqlite3.connect(path, isolation_level=None)  # explicit transactions
         self._db.row_factory = sqlite3.Row
         path.chmod(0o600)
+        # Before anything is written or migrated: a damaged file must not be opened.
+        try:
+            problem = self._db.execute("PRAGMA quick_check(1)").fetchone()[0]
+        except sqlite3.DatabaseError as exc:
+            problem = str(exc)
+        if problem != "ok":
+            self._db.close()
+            raise StoreCorrupt(
+                f"the database at {path} failed its startup integrity check ({problem}); "
+                "nothing was changed. Keep the gateway stopped, keep the file, and restore the "
+                'last good backup: see "Database storage and backups" in the README'
+            )
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.execute("PRAGMA foreign_keys=ON")

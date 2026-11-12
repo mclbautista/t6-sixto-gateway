@@ -330,7 +330,7 @@ link built from the bot's id and the card's message id.
 ## Run
 
 ```sh
-mkdir -p data && chmod 700 data && sudo chown 1000:1000 data
+docker volume create sixto-gateway-data   # once per host; compose refuses to start without it
 cp config.example.yaml config.yaml && cp .env.example .env   # then fill both in (see above)
 GATEWAY_TAG=$(git rev-parse --short HEAD) docker compose up -d --build   # Intel linux/amd64
 ```
@@ -356,7 +356,8 @@ curl -fsS http://127.0.0.1:8780/healthz              # expect HTTP 200 and "stat
 
 Plain `git pull && docker compose up -d --build` also works, but it rebuilds `sixto-gateway:latest`
 in place and leaves no image to roll back to. The `GATEWAY_TAG` form keeps one image per commit.
-A restart keeps the data: the SQLite file lives in `./data`, and migrations run at boot.
+A restart keeps the data: the SQLite file lives in the `sixto-gateway-data` volume, and
+migrations run at boot.
 
 ## Optional Tailscale gateway node
 
@@ -433,6 +434,95 @@ old sidecar container if it remains; never remove its state volume. Verify host/
 health and both clients' DNS/connectivity again. The image rollback below also works
 without changing networking if you keep `COMPOSE_FILE` and `COMPOSE_PROFILES` set.
 
+## Database storage and backups
+
+The database must stay inside the Docker VM. On 2026-11-12 the watchdog's ledger was found
+corrupt after living on a bind mount from macOS into the Colima VM, where SQLite's file locks and
+WAL index do not hold (mclbautista/t6-jo-watchdog#131). `gateway.db` sat on the same kind of mount
+and showed the same warning sign (a second connection failed with `disk I/O error`).
+
+- `/app/data` is the named volume `sixto-gateway-data`. It is declared `external`, so
+  `docker compose up` fails until it exists (a deploy cannot start on an empty database by
+  accident) and `docker compose down -v` cannot delete it. Do not change it back to a host path.
+- Nothing on macOS opens the live database: no `sqlite3`, no DB browser, no `cp` of a running
+  database, no sync or backup tool pointed at it. Read it with `docker compose exec gateway ...`,
+  or read a backup.
+- **Back up** while the gateway runs. `backup` uses SQLite's online backup API in the gateway's
+  container, refuses to overwrite a file, checks the copy with `integrity_check` (exit 1 if it is
+  damaged) and leaves one file with no `-wal` or `-shm`:
+
+  ```sh
+  docker compose exec gateway python -m sixto_gateway backup /tmp/gateway-backup.db
+  docker compose cp gateway:/tmp/gateway-backup.db "./gateway-backup-$(date +%F).db"
+  docker compose exec gateway rm /tmp/gateway-backup.db
+  chmod 600 gateway-backup-*.db    # saved Telegram messages: keep it private, never commit it
+  ```
+
+- **Startup check.** Every start runs `PRAGMA quick_check` before any migration. A damaged file
+  stops the boot with one line, `database: the database at /app/data/gateway.db failed its startup
+  integrity check (...)`, exit code 1, and nothing is written to the file. The container restarts
+  and repeats the line; run `docker compose stop gateway`, keep the file and restore a backup.
+- **Restore a backup.** A helper container mounts the backup read-only and installs it; the
+  damaged files are moved aside in the volume, never deleted:
+
+  ```sh
+  docker compose stop gateway
+  docker compose run --rm --no-deps --user root --entrypoint sh \
+    -v "$PWD/gateway-backup-YYYY-MM-DD.db:/restore.db:ro" gateway -c '
+    set -e
+    cd /app/data
+    aside="damaged-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir "$aside"
+    for f in gateway.db gateway.db-wal gateway.db-shm; do
+      if [ -e "$f" ]; then mv "$f" "$aside/"; fi
+    done
+    cp /restore.db gateway.db
+    chown -R 1000:1000 gateway.db "$aside"
+    chmod 600 gateway.db
+  '
+  docker compose up -d
+  ```
+
+  A restored database is older than what the modules have seen. The Telegram cursor goes back,
+  so the gateway fetches again what Telegram still holds (24 hours), and delivery `seq` numbers
+  continue from the backup's last one. A module whose own cursor is ahead of that would skip new
+  items, so before starting the modules compare `show-offset` and each module's cursor, as in
+  "Rollback after cutover".
+
+### Move an existing `./data` into the volume (once per host)
+
+For a host that still has `gateway.db` in the bind-mounted `./data`. This changes production
+data, so it needs the owner's approval and a quiet moment. Until it is done, the new
+`compose.yaml` refuses to start (`external volume "sixto-gateway-data" not found`), which is the
+intended guard. With the Tailscale overlay, use the same file and profile selection as for a
+deploy on every command.
+
+```sh
+docker compose stop gateway               # nothing may write during the copy
+git pull                                  # brings the compose.yaml with the named volume
+docker volume create sixto-gateway-data
+docker compose run --rm --no-deps --user root --entrypoint sh \
+  -v "$PWD/data:/from:ro" gateway -c '
+  set -e
+  test ! -e /app/data/gateway.db          # never overwrite a database already in the volume
+  cp -a /from/. /app/data/
+  chown -R 1000:1000 /app/data
+  chmod 700 /app/data
+  find /app/data -type f -exec chmod 600 {} +
+'
+docker compose run --rm --no-deps --entrypoint python gateway -c "
+import sqlite3
+print(sqlite3.connect('/app/data/gateway.db').execute('PRAGMA integrity_check').fetchone()[0])
+"                                         # must print: ok
+GATEWAY_TAG=$(git rev-parse --short HEAD) docker compose up -d --build
+curl -fsS http://127.0.0.1:8780/healthz
+```
+
+The copy reads the old folder with the gateway stopped, so no lock is involved. If the check
+does not print `ok`, do not start the gateway: the file was already damaged on the mount. Keep
+the old `./data` untouched until the gateway has run healthy for a day, then move it somewhere
+private.
+
 ## Rollback (a bad deploy)
 
 ```sh
@@ -479,8 +569,9 @@ in t6-jo-watchdog; see "Gateway mode" in its README.
    `config.yaml` and `docker compose restart gateway`. Telegram keeps unread updates for 24 hours,
    so nothing sent while nobody polled is lost. Check `curl -fsS http://$MINI:8780/healthz` shows
    `"polling": true`, `"status": "ok"` and a recent `last_poll_at` within a minute.
-4. **Start the watchdog against the gateway.** Copy the watchdog's `data/` to the mini while it
-   is stopped, run `python -m jo_watchdog.app reset-offset --to 0` (the cursor now counts gateway
+4. **Start the watchdog against the gateway.** Move the watchdog's ledger to the mini while it
+   is stopped (a `backup` file, installed into its volume; see the watchdog's
+   `docs/runbooks/ledger-storage.md`), run `python -m jo_watchdog.app reset-offset --to 0` (the cursor now counts gateway
    `seq`, not Telegram ids), set `telegram_mode: gateway` and `gateway_url: http://$MINI:8780`, put
    `WATCHDOG_SECRET` in its `.env` in place of `TELEGRAM_BOT_TOKEN`, and start it. Redelivered
    items are skipped by the ledger.
@@ -505,9 +596,8 @@ has consumed, and Telegram does not send again what the gateway already acknowle
 watchdog must drain the gateway first. Never delete either database.
 
 Run this on the mini with `MINI` and `WATCHDOG_SECRET` set as for the cutover, plus the two
-checkouts. `LEDGER` is the watchdog's `ledger_path` as seen inside its container; the files in
-`data/` belong to the container user, so they are read through `docker compose exec`, not from the
-host:
+checkouts. `LEDGER` is the watchdog's `ledger_path` as seen inside its container; both databases
+live in named volumes, so they are read through `docker compose exec`, never from the host:
 
 ```sh
 GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
@@ -544,7 +634,8 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
    which has gateway mode; images from before gateway mode have no `reset-offset`.
    ```sh
    cd "$WD" && CURRENT=$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q watchdog)" | cut -d: -f2) && echo "CURRENT=$CURRENT"
-   cd "$WD" && docker compose stop && cp -Rp data "data-backup-$(date +%F)" && \
+   cd "$WD" && docker compose stop && \
+     JO_WATCHDOG_TAG="$CURRENT" docker compose run --rm --no-deps watchdog backup "/app/data/ledger-backup-$(date +%F).db" && \
      JO_WATCHDOG_TAG="$CURRENT" docker compose run --rm watchdog python -m jo_watchdog.app reset-offset --to "$T"
    ```
    It prints the old offset. The next poll will be `T + 1`: the first update the gateway never
@@ -556,7 +647,11 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
    cd "$GW" && docker compose exec -T gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('SELECT id, module, kind, target, body, datetime(created_at, \'unixepoch\') FROM outbound WHERE state = \'queued\' ORDER BY id')]"
    ```
    They are not sent after the rollback: set those reactions by hand and read the ops posts.
-   Then `docker compose stop gateway && cp -Rp data "data-backup-$(date +%F)"`.
+   Then stop the gateway and keep a copy (it stays in the volume, next to the database):
+   ```sh
+   cd "$GW" && docker compose stop gateway && \
+     docker compose run --rm --no-deps gateway backup "/app/data/gateway-backup-$(date +%F).db"
+   ```
 6. **Start the watchdog in direct mode.** Put `TELEGRAM_BOT_TOKEN` back in `$WD/.env`, choose the
    tag `TAG` to run, and edit `$WD/config.yaml` in place (it is a single-file mount too) to match
    that image:
@@ -583,7 +678,7 @@ To go forward again later, repeat the runbook from step 2, so `set-offset` is gi
 
 `python -m sixto_gateway set-offset N` sets the cursor to exactly `N` (it may also move it
 backwards) and writes a `set_offset` audit row; the next `getUpdates` uses `N + 1`. `N` must be 0
-or more. Run it with `docker compose exec` so it uses the running container's mounted `./data`.
+or more. Run it with `docker compose exec` so it uses the running container's database.
 
 ## Inspecting the cursor and repairing dropped updates
 

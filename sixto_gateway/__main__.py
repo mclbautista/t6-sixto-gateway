@@ -2,6 +2,7 @@
 
 ``python -m sixto_gateway [--config PATH]`` serves; ``set-offset N`` sets (or rewinds) the Telegram
 cursor, and ``show-offset`` prints it with any routed updates that are missing a delivery.
+``backup DEST`` writes a consistent copy of the database to a new file while the gateway runs.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.notion import ContactsDirectory, NotionContacts
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
+from sixto_gateway.store.db import StoreCorrupt, backup
 from sixto_gateway.telegram.client import AiogramTelegramClient, TelegramClient
 
 log = logging.getLogger("sixto_gateway")
@@ -195,6 +197,22 @@ def show_offset(config: Config) -> int:
     return 0
 
 
+def run_backup(config: Config, dest: str) -> int:
+    try:
+        result = backup(config.database_path, dest)
+    except FileExistsError:
+        print(f"backup: {dest} already exists; nothing written", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"backup: {exc}", file=sys.stderr)
+        return 2
+    if result != "ok":
+        print(f"backup: {dest} was written but failed integrity_check: {result}", file=sys.stderr)
+        return 1
+    print(f"backup written to {dest} (integrity_check ok)")
+    return 0
+
+
 def _non_negative(text: str) -> int:
     value = int(text)
     if value < 0:
@@ -215,6 +233,11 @@ def main(argv: list[str] | None = None) -> int:
         "show-offset",
         help="print the Telegram cursor and any routed updates missing a delivery",
     )
+    copy = commands.add_parser(
+        "backup",
+        help="write a consistent copy of the database to the new file DEST (safe while serving)",
+    )
+    copy.add_argument("dest", metavar="DEST")
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config, os.environ)
@@ -222,11 +245,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
     configure_logging(redactor_for(config))
-    if args.command == "set-offset":
-        return set_offset(config, args.n)
-    if args.command == "show-offset":
-        return show_offset(config)
-    return run_serving(serve(config))
+    if args.command == "backup":
+        return run_backup(config, args.dest)
+    try:
+        if args.command == "set-offset":
+            return set_offset(config, args.n)
+        if args.command == "show-offset":
+            return show_offset(config)
+        return run_serving(serve(config))
+    except StoreCorrupt as exc:
+        # Still non-zero: the container restarts and repeats this line until someone acts.
+        print(f"database: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
