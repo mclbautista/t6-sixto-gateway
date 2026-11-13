@@ -649,6 +649,7 @@ in t6-jo-watchdog; see "Gateway mode" in its README.
    `"polling": true`, `"status": "ok"` and a recent `last_poll_at` within a minute.
 4. **Start the watchdog against the gateway.** Move the watchdog's ledger to the mini while it
    is stopped (a `backup` file, installed into its volume; see the watchdog's
+   `docs/runbooks/ledger-storage.md`), run `python -m t6_sixto_watchdog.app reset-offset --to 0` (the cursor now counts gateway
    `docs/runbooks/ledger-storage.md`), run `python -m jo_watchdog.app reset-offset --to 0` (the cursor now counts gateway
    `seq`, not Telegram ids), set `telegram_mode: gateway` and `gateway_url: http://$MINI:8780`, put
    `WATCHDOG_SECRET` in its `.env` in place of `TELEGRAM_BOT_TOKEN`, and start it. Redelivered
@@ -713,8 +714,8 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
    ```sh
    cd "$WD" && CURRENT=$(docker inspect --format '{{.Config.Image}}' "$(docker compose ps -q watchdog)" | cut -d: -f2) && echo "CURRENT=$CURRENT"
    cd "$WD" && docker compose stop && \
-     JO_WATCHDOG_TAG="$CURRENT" docker compose run --rm --no-deps watchdog backup "/app/data/ledger-backup-$(date +%F).db" && \
-     JO_WATCHDOG_TAG="$CURRENT" docker compose run --rm watchdog python -m jo_watchdog.app reset-offset --to "$T"
+     T6_SIXTO_WATCHDOG_TAG="$CURRENT" docker compose run --rm --no-deps watchdog backup "/app/data/ledger-backup-$(date +%F).db" && \
+     T6_SIXTO_WATCHDOG_TAG="$CURRENT" docker compose run --rm watchdog python -m t6_sixto_watchdog.app reset-offset --to "$T"
    ```
    It prints the old offset. The next poll will be `T + 1`: the first update the gateway never
    fetched.
@@ -736,16 +737,16 @@ GW=<gateway checkout>; WD=<watchdog checkout>; LEDGER=/app/data/ledger.db
    - **Current image, or any image with gateway mode** (usually the right choice when the gateway
      was the problem): set `telegram_mode: direct` and remove `gateway_url`.
    - **An image from before gateway mode** (only if the watchdog itself must go back; anything
-     older than `$CURRENT` that `docker compose run --rm watchdog python -m jo_watchdog.app --help`
+     older than `$CURRENT` that `docker compose run --rm watchdog python -m t6_sixto_watchdog.app --help`
      shows without `reset-offset`): it refuses unknown config keys, so delete the
      `telegram_mode` and `gateway_url` lines altogether.
 
    Check the config against that image before starting it, then start it:
    ```sh
-   cd "$WD" && JO_WATCHDOG_TAG="$TAG" docker compose run --rm watchdog python -m jo_watchdog.app healthcheck
+   cd "$WD" && T6_SIXTO_WATCHDOG_TAG="$TAG" docker compose run --rm watchdog python -m t6_sixto_watchdog.app healthcheck
    ```
    Any output other than `bad config: ...` is fine here (a stale poll reads as unhealthy).
-   Then `cd "$WD" && JO_WATCHDOG_TAG="$TAG" docker compose up -d --no-build` and check
+   Then `cd "$WD" && T6_SIXTO_WATCHDOG_TAG="$TAG" docker compose up -d --no-build` and check
    `docker compose logs --tail 20` shows it polling.
 7. Run the watchdog live check (one intake JO captured with its reaction), and reconcile the
    stranded rows from step 2 if there were any. Leave the gateway stopped.
