@@ -177,6 +177,8 @@ onboarding worker.
 - One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,
   error}` for the calling module's own refs (`404` otherwise).
+  If Telegram reports `message thread not found` for a send, edit or forward, the request fails
+  immediately and `error` is `thread_not_found`.
 - Sends and reactions are paced under Telegram's limits (1/s per private chat, 20/min per group,
   25/s overall); attempt times are stored, so a restart does not reset the windows. Network
   errors and 5xx are retried after 30 s, 2 min, 5 min and 10 min, then the row is `failed`; a 429
