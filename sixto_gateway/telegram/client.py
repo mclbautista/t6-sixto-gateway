@@ -14,6 +14,7 @@ from sixto_gateway.telegram.errors import (
     PermanentSendError,
     RetryAfterError,
     SendError,
+    ThreadNotFoundError,
     TransientSendError,
 )
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
@@ -92,6 +93,7 @@ def translate_send_error(exc: Exception) -> SendError | None:
     """Map an aiogram exception to the sender's vocabulary (None: not an aiogram error)."""
     from aiogram.exceptions import (
         TelegramAPIError,
+        TelegramBadRequest,
         TelegramForbiddenError,
         TelegramNetworkError,
         TelegramRetryAfter,
@@ -104,6 +106,8 @@ def translate_send_error(exc: Exception) -> SendError | None:
         return TransientSendError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramForbiddenError):  # 403: the person blocked the bot
         return BlockedByUserError(f"{type(exc).__name__}: {exc.message}")
+    if isinstance(exc, TelegramBadRequest) and "message thread not found" in exc.message.lower():
+        return ThreadNotFoundError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError) and "message is not modified" in exc.message.lower():
         return MessageNotModifiedError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError):  # every other 4xx can never succeed on a retry

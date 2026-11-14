@@ -31,6 +31,10 @@ class BlockedByUserError(PermanentSendError):
     """Telegram 403: the person blocked the bot (or never allowed it to write to them)."""
 
 
+class ThreadNotFoundError(PermanentSendError):
+    """Telegram refused the request because the message thread was not found."""
+
+
 class MessageNotModifiedError(PermanentSendError):
     """Telegram refused an edit because the text and buttons are already exactly that.
 
