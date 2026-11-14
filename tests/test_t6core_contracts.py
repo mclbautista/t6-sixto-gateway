@@ -23,7 +23,7 @@ from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram, dm_mes
 
 README = Path(__file__).parent.parent / "README.md"
 T6CORE = "t" * 40
-CYRIL = 274983989
+OPERATOR = 123456789
 COORDINATOR = 123456789
 CONTACT = "0a1b2c3d-1111-2222-3333-444455556666"
 PAGE = "0a1b2c3d111122223333444455556666"
@@ -117,9 +117,9 @@ async def test_review_done_dm_falls_back_to_the_show_topic_with_a_mention(client
     assert sent["keyboard"][0][0]["text"] == "Open in Frame.io"
 
 
-async def test_approval_card_reaches_cyril_with_an_approve_callback(client, env):
+async def test_approval_card_reaches_operator_with_an_approve_callback(client, env):
     sent = await send(client, env, readme_contracts()["approval-card"])
-    assert sent["chat_id"] == CYRIL
+    assert sent["chat_id"] == OPERATOR
     assert sent["text"].startswith("<b>Project Start:</b> Example Show\n")
     assert sent["keyboard"] == [
         [{"text": "Approve", "callback_data": f"mod:t6core:approve:{PAGE}"}]
@@ -128,16 +128,16 @@ async def test_approval_card_reaches_cyril_with_an_approve_callback(client, env)
 
 async def test_retry_card_names_the_failed_step_and_carries_a_retry_callback(client, env):
     sent = await send(client, env, readme_contracts()["retry-card"])
-    assert sent["chat_id"] == CYRIL
+    assert sent["chat_id"] == OPERATOR
     assert "Step: Frame.io project" in sent["text"]
     assert sent["keyboard"] == [
         [{"text": "Retry Frame.io project", "callback_data": f"mod:t6core:retry:{PAGE}:frameio"}]
     ]
 
 
-async def test_frameio_sign_in_alert_reaches_cyril_with_a_url_button(client, env):
+async def test_frameio_sign_in_alert_reaches_operator_with_a_url_button(client, env):
     sent = await send(client, env, readme_contracts()["frameio-sign-in"])
-    assert sent["chat_id"] == CYRIL
+    assert sent["chat_id"] == OPERATOR
     assert sent["text"].startswith("<b>Frame.io sign-in needed.</b>\n")
     assert sent["keyboard"] == [
         [
@@ -177,7 +177,7 @@ TOKEN = "AbCdEfGhIjKlMnOpQrStUv"
 
 async def test_project_card_reaches_the_operator_with_core_callbacks(client, env):
     sent = await send(client, env, readme_contracts()["project-card"])
-    assert sent["chat_id"] == CYRIL and sent["parse_mode"] == "HTML"
+    assert sent["chat_id"] == OPERATOR and sent["parse_mode"] == "HTML"
     assert "Nothing changed" in sent["text"]
     assert [row[0]["callback_data"] for row in sent["keyboard"]] == [
         f"mod:t6core:op:{TOKEN}:{choice}" for choice in ("cclr", "chg", "bout", "skip")
@@ -223,7 +223,7 @@ async def test_the_pushed_project_command_matches_the_readme(tmp_path):
     path.write_text(
         "modules:\n"
         "  t6core: {secret_env: T6CORE_SECRET, delivery: push, push_url: 'http://vps:8791/tap'}\n"
-        f"commands: {{project: {{module: t6core, allow: [{CYRIL}]}}}}\n"
+        f"commands: {{project: {{module: t6core, allow: [{OPERATOR}]}}}}\n"
         f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
     )
     config = load_config(
@@ -231,7 +231,7 @@ async def test_the_pushed_project_command_matches_the_readme(tmp_path):
     )
     clock = FakeClock()
     store = Store(config.database_path, clock=clock)
-    update = dm_message(9001, CYRIL, "/project ABD")
+    update = dm_message(9001, OPERATOR, "/project ABD")
     update["message"]["message_id"] = 77
     telegram = FakeTelegram([update], clock)
     wake = Notifier()

@@ -71,6 +71,38 @@ Subscribed modules receive `event` items for topic creation and renaming and mem
 and departures in the chat. Each item has an `event` name and a topic `name` or Telegram
 `user` object. Sixto must be an administrator in the chat to receive `chat_member` updates.
 
+## t6-core transport
+
+The gateway holds no Project or Chat link data and makes no Project or relay decisions. t6-core,
+as module `t6core`, owns those decisions; see [its operator actions](https://github.com/mclbautista/t6-core/blob/main/docs/operator-actions.md)
+for the `/project` pattern.
+
+### Group commands
+
+The example config routes `/abang`, `/link` and `/unlink` to `t6core` for coordinators and
+approvers. The operator manages those groups in gateway config. Allowed group commands carry the
+chat, topic, sender, message and reply context to t6-core; refusals are silent and audited without
+arguments. See "Commands and the allow-list" below for delivery and menu details.
+
+### Subscriptions
+
+t6-core can replace its own chat and topic subscriptions using `PUT /subscriptions` and inspect
+them with `GET /subscriptions`, as described above. Fixed routes still apply; each matching module
+receives an update at most once, and edits follow the original deliveries.
+
+### Forwarding
+
+`POST /forward` accepts `from_chat`, `message_id`, `to`, optional `topic`, and a required
+`idempotency_key`. It queues a Telegram forward with the same pacing and retry rules as
+`/notify`; `GET /notify/{ref}` reports its state and sent message id. Forwards cannot be replies.
+See "Sending" below for idempotency and recovery details.
+
+### Chat events
+
+Subscribed modules receive topic creation and renaming and member join and departure events,
+as described above. The example config includes `chat_member` in `telegram.allowed_updates`;
+the bot must also be an administrator in the chat to receive those updates.
+
 ## Taps on a module's buttons
 
 A tap on a button that `/notify` put on a message (callback data `mod:<module>:<payload>`) goes
@@ -198,16 +230,16 @@ Contact, so it reaches their DM once they are approved and the show's group topi
 - `idempotency_key`: `review-done:<Frame.io asset or review id>:<comment count>`, so a retried
   request never sends twice but a later review of the same asset does.
 
-### 2. Project Start approval card to Cyril
+### 2. Project Start approval card to an operator
 
-Sent when a Project reaches the Project Start status. `to` is Cyril's Telegram user id (the
-`cyril` group). The Approve button's payload is `approve:<Project page id>`, with the page id
-written as 32 hex characters without dashes.
+Sent when a Project reaches the Project Start status. `to` is the operator's Telegram user id.
+The Approve button's payload is `approve:<Project page id>`, with the page id written as 32 hex
+characters without dashes.
 
 <!-- contract: approval-card -->
 ```json
 {
-  "to": 274983989,
+  "to": 123456789,
   "text": "<b>Project Start:</b> Example Show\nClient: Example Client\nCoordinator: coordinator_handle\nApprove to create the folders, Frame.io project, Instagantt and Notion pages.",
   "format": "html",
   "idempotency_key": "project-start:0a1b2c3d111122223333444455556666",
@@ -222,7 +254,7 @@ keys (`folders`, `frameio`, `instagantt`, `notion_pages`).
 <!-- contract: retry-card -->
 ```json
 {
-  "to": 274983989,
+  "to": 123456789,
   "text": "<b>Project Start failed:</b> Example Show\nStep: Frame.io project\nThe earlier steps are done and are not repeated. Retry runs this step and the ones after it.",
   "format": "html",
   "idempotency_key": "project-start-retry:0a1b2c3d111122223333444455556666:frameio:1",
@@ -233,11 +265,11 @@ keys (`folders`, `frameio`, `instagantt`, `notion_pages`).
 Payload budget: Telegram allows 64 bytes of callback data and the gateway adds `mod:t6core:`
 (11 bytes), leaving **53 bytes** for the payload. `approve:<32 hex>` is 40 bytes. `retry:<32
 hex>:` is 39, so a step key may be at most **14 bytes**; a longer one gets `422` and nothing is
-queued. When Cyril taps, t6-core receives a `tap` item whose `data` is the payload exactly as
-sent (`approve:…` or `retry:…:<step>`), with `from.id`, `chat` and `message_id` of the card.
+queued. When the operator taps, t6-core receives a `tap` item whose `data` is the payload exactly
+as sent (`approve:…` or `retry:…:<step>`), with `from.id`, `chat` and `message_id` of the card.
 The retry key ends with an attempt number so each new failure of the same step sends a new card.
 
-### 3. Frame.io re-sign-in alert to Cyril
+### 3. Frame.io re-sign-in alert to an operator
 
 Sent by the t6-core Frame.io worker when the token refresh fails. The sign-in link is a URL
 button (HTTPS only); t6-core builds the link.
@@ -245,7 +277,7 @@ button (HTTPS only); t6-core builds the link.
 <!-- contract: frameio-sign-in -->
 ```json
 {
-  "to": 274983989,
+  "to": 123456789,
   "text": "<b>Frame.io sign-in needed.</b>\nThe token refresh failed. Sign in again so t6-core can keep reading Frame.io.",
   "format": "html",
   "idempotency_key": "frameio-sign-in:2026-11-09T08",
@@ -280,8 +312,8 @@ In the operator's DM the gateway posts it to t6-core's tap URL, like a tap, with
   "kind": "command",
   "command": "project",
   "args": "ABD",
-  "from": {"id": 274983989},
-  "chat": 274983989,
+  "from": {"id": 123456789},
+  "chat": 123456789,
   "message_id": 77,
   "update_id": 9001
 }
@@ -298,7 +330,7 @@ keys `op-card:<token>` and `op-edit:<token>:<version>`:
 <!-- contract: project-card -->
 ```json
 {
-  "to": 274983989,
+  "to": 123456789,
   "text": "<b>Project</b> <b>ABC</b> <code>t6p_0123456789abcdef01234567</code>\n<b>Cannot enter rotation.</b> Code ABC is held by <b>abc</b> <code>t6p_89abcdef0123456789abcdef</code> (in rotation).\nNothing changed. How should this be resolved?",
   "format": "html",
   "idempotency_key": "op-card:AbCdEfGhIjKlMnOpQrStUv",
@@ -335,7 +367,7 @@ command from `config.yaml` and restart; cards already sent keep working.
 
 ```yaml
 commands:
-  jo: { module: jo, allow: [psr, 274983989], description: "Job orders" }   # group names or user ids
+  jo: { module: jo, allow: [psr, 123456789], description: "Job orders" }   # group names or user ids
 ```
 
 - **Built-in commands** (`builtin: true`, no `module`) are answered by the gateway itself and
@@ -656,7 +688,7 @@ in t6-jo-watchdog; see "Gateway mode" in its README.
      prints `401`;
    - `curl -fsS -H "Authorization: Bearer $WATCHDOG_SECRET" "http://$MINI:8780/updates?timeout=0"`
      prints `{"items":[]}`.
-2. **Stop the old watchdog** (on Cyril's machine: `docker compose stop`). Read its last committed
+2. **Stop the old watchdog** (`docker compose stop`). Read its last committed
    offset `N`:
    `sqlite3 <watchdog ledger file> 'SELECT COALESCE((SELECT last_committed_offset FROM offsets WHERE id = 1), 0);'`
    (the ledger file is `ledger_path` in the watchdog's `config.yaml`; a ledger that never

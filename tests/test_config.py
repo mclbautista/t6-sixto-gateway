@@ -57,6 +57,9 @@ def test_example_config_is_valid_with_secrets(tmp_path):
     assert "watchdog" in config.modules
     assert config.modules["t6core"].delivery == "push"
     assert config.groups["approvers"] == [100000001]
+    for name in ("abang", "link", "unlink"):
+        assert config.commands[name].module == "t6core"
+        assert config.commands[name].allow == ["coordinators", "approvers"]
 
 
 def test_rejects_route_to_unknown_module(tmp_path):

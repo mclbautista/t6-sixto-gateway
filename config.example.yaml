@@ -46,8 +46,21 @@ commands:                                       # /jo arrives in phase 5
     module: t6core
     allow: [operators]
     description: Project Codes and rotation
+  abang:
+    module: t6core
+    allow: [coordinators, approvers]
+    description: Manage a relay request
+  link:
+    module: t6core
+    allow: [coordinators, approvers]
+    description: Link this chat to a Project
+  unlink:
+    module: t6core
+    allow: [coordinators, approvers]
+    description: Unlink this chat from a Project
 groups:
   approvers: [100000001]                       # Telegram user ids
+  coordinators: [100000002]                    # FILL IN: coordinator Telegram user ids
   operators: [100000001]                       # who may send /project; the same ids as t6-core's T6_OPERATOR_IDS
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver

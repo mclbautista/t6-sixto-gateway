@@ -2,11 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
+import tests.test_send as send_fixtures
 from sixto_gateway.telegram.client import AiogramTelegramClient
 from sixto_gateway.telegram.errors import RetryAfterError, TransientSendError
 from tests.test_send import CHAT, auth, drain
 
-pytest_plugins = ["tests.test_send"]
+env = send_fixtures.env
+client = send_fixtures.client
 
 
 async def test_forward_is_idempotent_and_audited(client, env):
