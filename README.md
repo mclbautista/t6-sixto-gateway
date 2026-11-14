@@ -341,8 +341,10 @@ commands:
   `delivery: push`. Refused or unknown: the update is stored unrouted and
   the gateway queues one DM reply, "That command isn't available to you." The reply is saved in
   the same transaction as the update, so a re-fetched update is never answered twice.
-- **In a group**, commands get no reply and are routed like any other message. An edited
-  command is never delivered or answered.
+- **In a group**, configured commands are checked against the same allow-list and delivered to
+  their owning module. Refusals are silent. Command items include `reply_to_message_id` (or
+  null). Other messages follow the normal chat and topic routes. An edited command is never
+  delivered or answered.
 - Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
   (command name and sender id, never the arguments).
 

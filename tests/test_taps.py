@@ -17,6 +17,8 @@ from tests.fakes import (
     FakeTelegram,
     button_tap,
     dm_message,
+    fixture_updates,
+    group_command,
 )
 
 CARDS_SECRET = "c" * 40
@@ -374,3 +376,46 @@ async def test_a_pull_modules_command_is_still_read_from_updates(rig):
     await rig.poller.poll_once()
     assert await rig.pusher.push_due() == 0
     assert [i["command"] for i in await rig.pull("shift", SHIFT_SECRET)] == ["report"]
+
+
+async def test_group_topic_command_is_pushed_with_reply_context(rig):
+    rig.telegram.push(fixture_updates()["group_command_topic"])
+    await rig.poller.poll_once()
+    assert await rig.pull("cards", CARDS_SECRET) == []
+    assert await rig.pusher.push_due() == 1
+    (request,) = rig.posts
+    body = httpx.Response(200, content=request.content).json()
+    assert request.headers["idempotency-key"] == "cmd-9013"
+    assert (body["chat"], body["topic"], body["from"]["id"]) == (-1001234567890, 77, USER)
+    assert (body["message_id"], body["reply_to_message_id"]) == (510, 509)
+    assert (body["kind"], body["command"], body["args"]) == (
+        "command",
+        "project",
+        "private arguments",
+    )
+    assert ("command_routed", "cards", f"command=project from={USER}") in rig.store.audit_events()
+    assert all(
+        "private arguments" not in (detail or "") for _, _, detail in rig.store.audit_events()
+    )
+
+
+async def test_group_command_refusal_and_edit_are_silent(rig):
+    refused = group_command(10, 999, "/project secret", -1001234567890, 77)
+    original = group_command(11, USER, "/project secret", -1001234567890, 77)
+    edited = {"update_id": 12, "edited_message": {**original["message"], "edit_date": 1789700100}}
+    rig.telegram.push(refused)
+    rig.telegram.push(edited)
+    await rig.poller.poll_once()
+    assert await rig.pull("cards", CARDS_SECRET) == []
+    assert await rig.pusher.push_due() == 0
+    assert rig.posts == [] and rig.telegram.sent == []
+    assert ("command_refused", None, "command=project from=999") in rig.store.audit_events()
+    assert all("secret" not in (detail or "") for _, _, detail in rig.store.audit_events())
+
+
+async def test_group_command_for_pull_module_reaches_http_updates(rig):
+    rig.telegram.push(group_command(13, USER, "/report details", -1001234567890, 77))
+    await rig.poller.poll_once()
+    (item,) = await rig.pull("shift", SHIFT_SECRET)
+    assert (item["kind"], item["command"], item["args"]) == ("command", "report", "details")
+    assert (item["chat"], item["topic"], item["reply_to_message_id"]) == (-1001234567890, 77, None)

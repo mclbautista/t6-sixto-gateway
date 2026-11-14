@@ -908,7 +908,13 @@ def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any
     """
     extra: dict[str, Any] = {}
     if kind == "command":
-        extra = {"command": update.command, "args": update.command_args}
+        message = update.raw.get("message") or update.raw.get("edited_message") or {}
+        reply = message.get("reply_to_message") or {}
+        extra = {
+            "command": update.command,
+            "args": update.command_args,
+            "reply_to_message_id": reply.get("message_id"),
+        }
     elif kind == "tap":
         parsed = parse_module_callback(update.callback_data)
         extra = {"data": parsed[1] if parsed else ""}
