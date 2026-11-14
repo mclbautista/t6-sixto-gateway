@@ -51,12 +51,21 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
 2. Each update is stored, routed and its cursor moved **in one SQLite transaction** (save before
    advance). A crash before the commit just re-fetches the update; the unique `update_id` keeps
    that idempotent.
-3. Routing: the first `routes` entry matching the chat and topic wins. Edits follow the original
-   message's route. Unrouted updates are kept in `updates` and never delivered.
+3. Routing: every matching `routes` entry and subscription receives the item, once per module.
+   Edits follow the original message's deliveries. Unrouted updates are kept in `updates` and
+   never delivered.
 4. A module calls `GET /updates?after=<seq>&timeout=<0..50>` with `Authorization: Bearer
    <its secret>`. It stores `seq` as its cursor only after it has saved the items itself.
    Items stay readable for the retention period, so re-reading is safe. A wrong or missing
    secret gets `401` and is logged and audited.
+
+## Chat subscriptions
+
+A module can replace its own subscriptions with `PUT /subscriptions`, using its bearer secret
+and a JSON array such as `[{"chat": -1001234567890, "topic": null}]`. A null topic matches
+the whole chat; an integer matches that topic. An empty array removes all subscriptions.
+`GET /subscriptions` returns the caller's current array. Subscriptions persist across restarts
+and share the same delivery cursor and retention rules as fixed routes.
 
 ## Taps on a module's buttons
 

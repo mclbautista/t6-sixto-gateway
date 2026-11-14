@@ -131,6 +131,46 @@ class Store:
             )
             self._insert_audit("set_offset", None, f"last_update_id={last_update_id}")
 
+    # --- module subscriptions -------------------------------------------------------------
+
+    def replace_subscriptions(
+        self, module: str, subscriptions: list[tuple[int, int | None]]
+    ) -> None:
+        with self._transaction():
+            self._db.execute("DELETE FROM subscriptions WHERE module = ?", (module,))
+            self._db.executemany(
+                "INSERT INTO subscriptions (module, chat, topic) VALUES (?, ?, ?)",
+                [(module, chat, topic) for chat, topic in dict.fromkeys(subscriptions)],
+            )
+
+    def subscriptions(self, module: str) -> list[dict[str, int | None]]:
+        rows = self._db.execute(
+            "SELECT chat, topic FROM subscriptions WHERE module = ? ORDER BY chat, topic", (module,)
+        ).fetchall()
+        return [{"chat": row["chat"], "topic": row["topic"]} for row in rows]
+
+    def subscription_modules(self, chat: int, topic: int | None) -> list[str]:
+        rows = self._db.execute(
+            "SELECT DISTINCT module FROM subscriptions WHERE chat = ?"
+            " AND (topic IS NULL OR topic = ?)"
+            " ORDER BY module",
+            (chat, topic),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def original_modules(self, chat: int, message_id: int) -> tuple[bool, list[str]]:
+        row = self._db.execute(
+            "SELECT update_id FROM updates WHERE chat_id = ? AND message_id = ? AND edited = 0"
+            " ORDER BY update_id LIMIT 1",
+            (chat, message_id),
+        ).fetchone()
+        if row is None:
+            return False, []
+        deliveries = self._db.execute(
+            "SELECT DISTINCT module FROM deliveries WHERE update_id = ? ORDER BY module", (row[0],)
+        ).fetchall()
+        return True, [delivery[0] for delivery in deliveries]
+
     # --- updates and deliveries -----------------------------------------------------------
 
     def save_update(
@@ -174,8 +214,17 @@ class Store:
                 ),
             ).rowcount
             if inserted:
-                if module is not None:
-                    seq = self._insert_delivery(update, decision.kind, module, received_at)
+                modules = dict.fromkeys(
+                    ([module] if module is not None else []) + list(decision.additional_modules)
+                )
+                for recipient in modules:
+                    new_seq = self._insert_delivery(update, decision.kind, recipient, received_at)
+                    if seq is None:
+                        seq = new_seq
+                    if not self._has_delivery(update.update_id, recipient):
+                        raise RuntimeError(
+                            f"update {update.update_id} routed to {recipient} has no delivery"
+                        )
             else:
                 # The module the update was first stored for owns it, even if routes changed.
                 module = self._stored_module(update.update_id)
