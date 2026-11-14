@@ -67,6 +67,37 @@ the whole chat; an integer matches that topic. An empty array removes all subscr
 `GET /subscriptions` returns the caller's current array. Subscriptions persist across restarts
 and share the same delivery cursor and retention rules as fixed routes.
 
+## t6-core transport
+
+The gateway holds no Project or Chat link data and makes no Project or relay decisions. t6-core,
+as module `t6core`, owns those decisions; see [its operator actions](https://github.com/mclbautista/t6-core/blob/main/docs/operator-actions.md)
+for the `/project` pattern.
+
+### Group commands
+
+The example config routes `/abang`, `/link` and `/unlink` to `t6core` for coordinators and
+approvers. The operator manages those groups in gateway config. Allowed group commands carry the
+chat, topic, sender, message and reply context to t6-core; refusals are silent and audited without
+arguments. See "Commands and the allow-list" below for delivery and menu details.
+
+### Subscriptions
+
+t6-core can replace its own chat and topic subscriptions using `PUT /subscriptions` and inspect
+them with `GET /subscriptions`, as described above. Fixed routes still apply; each matching module
+receives an update at most once, and edits follow the original deliveries.
+
+### Forwarding (planned, issue #92)
+
+`POST /forward` is planned to accept `from_chat`, `message_id`, `to`, optional `topic` and
+`reply_to`, and `idempotency_key`. It will queue a Telegram forward with the same pacing and retry
+rules as `/notify`; `GET /notify/{ref}` will report its state and sent message id.
+
+### Chat events (planned, issue #93)
+
+Subscribed modules are to receive chat migration, topic creation and rename, and member join and
+leave events. Subscriptions will follow a migrated chat. Receiving `chat_member` updates requires
+adding it to `telegram.allowed_updates` and making the bot an administrator of the chat.
+
 ## Taps on a module's buttons
 
 A tap on a button that `/notify` put on a message (callback data `mod:<module>:<payload>`) goes
