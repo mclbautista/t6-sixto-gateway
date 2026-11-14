@@ -95,6 +95,12 @@ class EditBody(BaseModel):
     buttons: Buttons | None = None
 
 
+class Subscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    chat: BigInt
+    topic: BigInt | None
+
+
 class ReactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     chat: BigInt
@@ -175,6 +181,17 @@ def create_app(
 
     # async so the SQLite connection is only touched on the event-loop thread
     Module = Annotated[str, Depends(calling_module)]
+
+    @app.get("/subscriptions")
+    async def get_subscriptions(module: Module) -> list[dict[str, int | None]]:
+        return store.subscriptions(module)
+
+    @app.put("/subscriptions")
+    async def put_subscriptions(
+        module: Module, body: list[Subscription]
+    ) -> list[dict[str, int | None]]:
+        store.replace_subscriptions(module, [(item.chat, item.topic) for item in body])
+        return store.subscriptions(module)
 
     @app.get("/updates")
     async def get_updates(

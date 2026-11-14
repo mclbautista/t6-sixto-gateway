@@ -127,4 +127,9 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX tap_pushes_due ON tap_pushes (state, next_attempt_at);
     """,
+    # 9: module-owned chat and topic subscriptions.
+    """
+    CREATE TABLE subscriptions (module TEXT NOT NULL, chat INTEGER NOT NULL, topic INTEGER);
+    CREATE INDEX subscriptions_chat ON subscriptions (chat);
+    """,
 ]
