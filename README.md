@@ -466,14 +466,13 @@ port and `gateway` / `sixto-gateway` DNS aliases. It uses kernel networking and 
 pinned image, advertises `tag:t6-gateway`, and keeps node identity in the named
 `tailscale_state` volume. Do not delete that volume on restart, update, or rollback.
 
-**Operational blocker — do not enable for unattended production use yet.** The gateway
-shares the sidecar's network namespace. An unexpected sidecar crash/restart or
-recreation can leave the gateway attached to a stale or unavailable namespace;
-Docker restart policies and Compose startup health dependencies do not establish
-automatic namespace recovery. Daemon/host reboot ordering and recovery have not been
-validated. An unhealthy sidecar is not automatically restarted by its health check.
-Arrange monitoring and an operator, and validate crash, recreation and reboot recovery
-in an isolated environment before cutover. Otherwise keep the default deployment.
+**Known limitation (accepted 2026-11-14).** The gateway shares the sidecar's network
+namespace. An unexpected sidecar crash, recreation or host reboot can leave the gateway attached
+to a stale namespace, and neither Docker restart policies nor Compose health dependencies recover
+that on their own. The recovery is manual and short (see "Recover after a sidecar restart" in
+`docs/tailscale-sidecar-runbook.md`), so someone has to be watching: the post-deploy check in
+t6-netops reports the gateway node as offline. The step-by-step enable, check and rollback
+procedure is in `docs/tailscale-sidecar-runbook.md`; the details below are the reference.
 
 Before switching, back up the existing untracked `compose.override.yaml` and check
 its actual network aliases and port binding. Add any additional aliases to the
