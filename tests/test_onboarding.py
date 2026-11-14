@@ -1,23 +1,21 @@
 """/start onboarding, first slice (#20): a Start becomes a pending member and an approval card."""
 
 import asyncio
-import json
 from dataclasses import replace
 
-import httpx
 import pytest
 
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
+from sixto_gateway.contacts import ContactsError
+from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import NotionContacts, NotionError, closest_contacts, matches_handle
-from sixto_gateway.onboarding import OnboardingWorker, callback_data
+from sixto_gateway.onboarding import OnboardingWorker, callback_data, contact_url
 from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from tests.fakes import (
     APPROVER,
-    CONTACTS_SOURCE,
     INTAKE_CHAT,
     INTAKE_TOPIC,
     NOTION_ENV,
@@ -132,7 +130,7 @@ async def test_start_from_a_matching_handle_gives_a_waiting_reply_and_a_card(con
     card = rig.card()
     assert card["parse_mode"] == "HTML"
     assert "Telegram: Juan Dela Cruz · @juandc · id 6001" in card["text"]
-    assert f'<a href="{JUAN.url}">Juan Dela Cruz</a>' in card["text"]
+    assert f'<a href="{contact_url(JUAN.page_id)}">Juan Dela Cruz</a>' in card["text"]
     assert [b["text"] for b in buttons(card)] == [
         "Approve Juan Dela Cruz",
         "Create new Contact",
@@ -331,7 +329,7 @@ async def test_approve_writes_notion_then_marks_the_row_approved_and_replies(con
     assert rig.texts_to(USER)[-1] == (
         "You are all set, Juan. Your messages will come to this chat. "
         "Your Telegram user ID has been logged in the T6 Notion. "
-        f"Your Contact page: {JUAN.url}"
+        f"Your Contact page: {contact_url(JUAN.page_id)}"
     )
     (edit,) = rig.telegram.edits
     assert edit["message_id"] == rig.card()["message_id"] and not edit["keyboard"]
@@ -393,11 +391,11 @@ async def test_a_write_that_works_on_a_retry_needs_no_retry_button(config):
     real = rig.notion.set_telegram_user_id
     calls = []
 
-    async def flaky(contact, user_id):
+    async def flaky(page_id, user_id):
         calls.append(1)
         if len(calls) < 3:
-            raise NotionError("Notion answered 503 (service_unavailable)")
-        await real(contact, user_id)
+            raise ContactsError("Notion answered 503 (service_unavailable)")
+        return await real(page_id, user_id)
 
     rig.notion.set_telegram_user_id = flaky
     tap(rig, 2, approve_data(rig))
@@ -444,7 +442,7 @@ async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
 async def test_replace_id_refuses_when_the_id_changed_since_the_card_was_sent(config):
     rig = await approved_rig(config, contacts=(TAKEN,))
     replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
-    rig.notion.contacts = [replace_id(TAKEN, "555")]  # someone edited Notion meanwhile
+    rig.notion.contacts = [replace_id(TAKEN, 555)]  # someone edited Notion meanwhile
     tap(rig, 2, replace["callback_data"])
     await rig.settle()
     assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
@@ -497,7 +495,7 @@ async def test_a_contact_that_already_has_this_id_is_approved_with_no_card_and_n
     assert rig.notion.writes == [] and rig.notion.created == []
     assert rig.texts_to(USER) == [
         strings.WAITING.format(first_name="Juan"),
-        strings.APPROVED.format(first_name="Juan", contact_url=holder.url),
+        strings.APPROVED.format(first_name="Juan", contact_url=contact_url(holder.page_id)),
     ]
     (fyi,) = rig.texts_to(APPROVER)  # one line, and no buttons
     assert "Juan Dela Cruz" in fyi and "already had this Telegram id" in fyi
@@ -522,7 +520,7 @@ async def test_a_contact_with_this_id_that_belongs_to_another_member_is_left_to_
     await rig.settle()
     rig.telegram.push(start_from(3, user=6002, username="juandc", first="Other"))
     rig.notion.contacts = [
-        replace(c, telegram_user_id="6002") if c.page_id == JUAN.page_id else c
+        replace(c, telegram_user_id=6002) if c.page_id == JUAN.page_id else c
         for c in rig.notion.contacts
     ]
     await rig.settle()
@@ -557,27 +555,6 @@ async def test_a_tap_with_a_foreign_payload_is_still_answered(config):
 
 async def test_callback_query_is_polled_by_default(config):
     assert "callback_query" in config.telegram.allowed_updates
-
-
-async def test_the_adapter_writes_a_number_or_text_property_as_the_contact_has_it():
-    seen = []
-
-    def handler(request):
-        seen.append((request.method, request.url.path, request.read()))
-        return httpx.Response(200, json=page("p-1", "Juan"))
-
-    notion = notion_with(handler)
-    await notion.set_telegram_user_id(contact("p-1", "Juan"), 42)
-    await notion.set_telegram_user_id(replace(contact("p-2", "Mia"), user_id_kind="rich_text"), 7)
-    await notion.close()
-
-    assert seen[0][:2] == ("PATCH", "/v1/pages/p-1")
-    assert json.loads(seen[0][2]) == {"properties": {"TelegramUserID": {"number": 42}}}
-    assert json.loads(seen[1][2]) == {
-        "properties": {
-            "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "7"}}]}
-        }
-    }
 
 
 # --- rejecting, undoing and creating (#22) --------------------------------------------------
@@ -681,7 +658,7 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
     assert (made.name, made.telegram_handle, made.telegram_user_id) == (
         "Juan Dela Cruz",
         "juandc",
-        str(USER),
+        USER,
     )
     assert rig.notion.writes == []
     assert rig.notion.notes == ["Created by Sixto /start on 2026-09-18."]
@@ -751,41 +728,6 @@ async def test_a_stale_reject_tap_after_approval_changes_nothing(config):
     assert rig.texts_to(USER).count(strings.REJECTED) == 0
 
 
-async def test_the_adapter_creates_a_contact_page_in_the_data_source():
-    seen = []
-
-    def handler(request):
-        seen.append((request.method, request.url.path, request.read()))
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json={
-                    "properties": {
-                        "TelegramUserID": {"type": "rich_text"},
-                        "TelegramHandle": {"type": "rich_text"},
-                    }
-                },
-            )
-        return httpx.Response(200, json=page("p-9", "Juan", "juandc", user_id="42"))
-
-    notion = notion_with(handler)
-    made = await notion.create_contact("Juan", "juandc", 42, "Created by Sixto /start on X.")
-    await notion.close()
-
-    assert made.page_id == "p-9"
-    assert seen[0][:2] == ("GET", f"/v1/data_sources/{CONTACTS_SOURCE}")
-    assert seen[1][:2] == ("POST", "/v1/pages")
-    body = json.loads(seen[1][2])
-    assert body["parent"] == {"type": "data_source_id", "data_source_id": CONTACTS_SOURCE}
-    assert body["properties"] == {
-        "Name": {"title": [{"type": "text", "text": {"content": "Juan"}}]},
-        "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "42"}}]},
-        "TelegramHandle": {"rich_text": [{"type": "text", "text": {"content": "juandc"}}]},
-    }
-    (block,) = body["children"]
-    assert block["paragraph"]["rich_text"][0]["text"]["content"] == "Created by Sixto /start on X."
-
-
 # --- config ---------------------------------------------------------------------------------
 
 
@@ -816,83 +758,6 @@ def test_a_bad_notion_value_is_reported_without_echoing_it(config, tmp_path):
 def test_the_notion_key_is_scrubbed_from_redaction_and_never_shown(config):
     assert NOTION_ENV["NOTION_API_KEY"] in config.secrets.redaction_values()
     assert NOTION_ENV["NOTION_API_KEY"] not in repr(config.secrets)
-
-
-# --- the Notion adapter ---------------------------------------------------------------------
-
-
-def page(page_id, name, handle="", aliases="", user_id=None):
-    def rich(text):
-        return {"type": "rich_text", "rich_text": [{"plain_text": text}] if text else []}
-
-    return {
-        "id": page_id,
-        "url": f"https://www.notion.so/{page_id.replace('-', '')}",
-        "properties": {
-            "Name": {"type": "title", "title": [{"plain_text": name}]},
-            "TelegramHandle": rich(handle),
-            "Aliases": rich(aliases),
-            "TelegramUserID": {"type": "number", "number": user_id},
-        },
-    }
-
-
-def notion_with(handler):
-    transport = httpx.MockTransport(handler)
-    return NotionContacts("ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=transport)
-
-
-async def test_the_adapter_reads_every_page_of_contacts_with_the_pinned_version():
-    seen = []
-
-    def handler(request):
-        seen.append(request)
-        body = request.read()
-        if b"start_cursor" not in body:
-            return httpx.Response(
-                200,
-                json={
-                    "results": [page("p-1", "Juan", "@juandc", user_id=42)],
-                    "has_more": True,
-                    "next_cursor": "c2",
-                },
-            )
-        return httpx.Response(
-            200, json={"results": [page("p-2", "Maria", aliases="mia")], "has_more": False}
-        )
-
-    notion = NotionContacts(
-        "ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=httpx.MockTransport(handler)
-    )
-    contacts = await notion.list_contacts()
-    await notion.close()
-
-    assert [(c.name, c.telegram_handle, c.aliases, c.telegram_user_id) for c in contacts] == [
-        ("Juan", "@juandc", "", "42"),
-        ("Maria", "", "mia", ""),
-    ]
-    assert seen[0].url.path == f"/v1/data_sources/{CONTACTS_SOURCE}/query"
-    assert seen[0].headers["Notion-Version"] == "2026-03-11"
-    assert seen[0].headers["Authorization"] == "Bearer ntn_secret"
-
-
-@pytest.mark.parametrize(
-    "response",
-    [httpx.Response(503, json={"code": "service_unavailable"}), httpx.ConnectError("boom")],
-)
-async def test_adapter_errors_never_carry_the_key(response):
-    def handler(request):
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-    notion = NotionContacts(
-        "ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=httpx.MockTransport(handler)
-    )
-    with pytest.raises(NotionError) as caught:
-        await notion.list_contacts()
-    assert "ntn_secret" not in str(caught.value)
-    await notion.close()
 
 
 # --- repeat presses and blocked users (#26) ---------------------------------------------------

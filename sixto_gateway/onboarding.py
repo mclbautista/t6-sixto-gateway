@@ -17,17 +17,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from t6.domain import Contact
+
 from sixto_gateway import strings
 from sixto_gateway.config import Config
+from sixto_gateway.contacts import ContactsDirectory, ContactsError
 from sixto_gateway.decision import Decision, NewMember, NewTap
+from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import (
-    Contact,
-    ContactsDirectory,
-    NotionError,
-    closest_contacts,
-    matches_handle,
-)
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
@@ -143,8 +140,8 @@ def find_candidates_for(contacts: list[Contact], member: dict[str, Any]) -> list
 
 
 def holders_of_id(contacts: list[Contact], user_id: int) -> list[Contact]:
-    """Contacts whose ``TelegramUserID`` is already this user's id."""
-    return [c for c in contacts if c.telegram_user_id == str(user_id)]
+    """Contacts whose Telegram user id is already this user's id."""
+    return [c for c in contacts if c.telegram_user_id == user_id]
 
 
 def callback_data(action: str, user_id: int, page_id: str = "", seen: str = "") -> str:
@@ -236,17 +233,15 @@ def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, 
     for contact in candidates:
         if not single:
             lines.append(f"• {_link(contact)}")
-        conflict = contact.telegram_user_id not in ("", str(user_id))
-        if conflict:
-            lines.append(
-                strings.CARD_CONFLICT.format(other_id=html.escape(contact.telegram_user_id))
-            )
+        other_id = "" if contact.telegram_user_id is None else str(contact.telegram_user_id)
+        if other_id not in ("", str(user_id)):
+            lines.append(strings.CARD_CONFLICT.format(other_id=html.escape(other_id)))
             label = (
                 strings.BUTTON_REPLACE
                 if len(candidates) == 1
                 else strings.BUTTON_REPLACE_NAMED.format(name=contact.name)
             )
-            action, seen = "rep", id_fingerprint(contact.telegram_user_id)
+            action, seen = "rep", id_fingerprint(other_id)
         else:
             template = strings.BUTTON_APPROVE if single else strings.BUTTON_PICK
             label = template.format(name=contact.name)
@@ -273,7 +268,8 @@ def contact_url(page_id: str) -> str:
 
 
 def _link(contact: Contact) -> str:
-    return f'<a href="{html.escape(contact.url, quote=True)}">{html.escape(contact.name)}</a>'
+    url = html.escape(contact_url(contact.page_id), quote=True)
+    return f'<a href="{url}">{html.escape(contact.name)}</a>'
 
 
 class OnboardingWorker:
@@ -314,7 +310,7 @@ class OnboardingWorker:
                 continue
             try:
                 contacts = await self._contacts.list_contacts()
-            except NotionError as exc:
+            except ContactsError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
                 if failures > len(LOOKUP_RETRY_AFTER_SECONDS):  # same test as _retry_lookup
@@ -368,7 +364,7 @@ class OnboardingWorker:
             "topic": None,
             "text": strings.APPROVED.format(
                 first_name=strings.first_name_or_there(member["first_name"]),
-                contact_url=holder.url,
+                contact_url=contact_url(holder.page_id),
             ),
             "format": "plain",
         }
@@ -444,7 +440,7 @@ class OnboardingWorker:
         user = member["telegram_user_id"]
         try:
             known = {c.page_id.replace("-", ""): c for c in await self._contacts.list_contacts()}
-        except NotionError as exc:
+        except ContactsError as exc:
             self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
@@ -466,12 +462,12 @@ class OnboardingWorker:
     async def _retrying(self, what: str, user: int, operation: Callable[[], Awaitable[Any]]) -> Any:
         """Run a Notion call, repeating it after each wait in ``WRITE_RETRY_WAITS_SECONDS``.
 
-        Raises the last ``NotionError`` when every try failed.
+        Raises the last ``ContactsError`` when every try failed.
         """
         for wait in (*WRITE_RETRY_WAITS_SECONDS, None):
             try:
                 return await operation()
-            except NotionError as exc:
+            except ContactsError as exc:
                 self._store.audit("notion_write", None, f"user={user} {what} failed: {exc}"[:300])
                 log.warning("%s for user %s failed: %s", what, user, exc)
                 if wait is None:
@@ -494,7 +490,7 @@ class OnboardingWorker:
             return
         try:
             contacts = await self._contacts.list_contacts()
-        except NotionError as exc:
+        except ContactsError as exc:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
@@ -531,7 +527,7 @@ class OnboardingWorker:
 
         try:
             created, new = await self._retrying("create", user, make)
-        except NotionError:
+        except ContactsError:
             await self._write_failed(tap, member)
             return
         verb = "created" if new else "reused"
@@ -557,19 +553,19 @@ class OnboardingWorker:
 
         async def write() -> tuple[Contact, str, bool, bool]:
             contact = await self._contacts.get_contact(page_id)
-            old_id = contact.telegram_user_id
+            old_id = "" if contact.telegram_user_id is None else str(contact.telegram_user_id)
             if old_id not in ("", str(user)) and (not replace or id_fingerprint(old_id) != seen):
                 # only the Replace ID button overwrites another person's id, and only the id
                 # its card warned about: if Notion changed since, the approver looks again
                 return contact, old_id, False, True
             wrote = old_id != str(user)
             if wrote:
-                await self._contacts.set_telegram_user_id(contact, user)
+                await self._contacts.set_telegram_user_id(page_id, user)
             return contact, old_id, wrote, False
 
         try:
             contact, old_id, wrote, refused = await self._retrying("write", user, write)
-        except NotionError:
+        except ContactsError:
             await self._write_failed(tap, member)
             return
         if refused:

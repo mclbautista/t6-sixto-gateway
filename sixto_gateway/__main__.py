@@ -20,10 +20,10 @@ from aiogram import Bot
 from sixto_gateway.api import create_app
 from sixto_gateway.commands import register_menus
 from sixto_gateway.config import Config, ConfigError, load_config
+from sixto_gateway.contacts import ContactsDirectory, CoreContacts
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.logsafe import Redactor, configure_logging
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import ContactsDirectory, NotionContacts
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
 from sixto_gateway.store.db import StoreCorrupt, backup
@@ -64,7 +64,7 @@ async def serve(
     client = client or AiogramTelegramClient(bot)
     notion = None
     if contacts is None:
-        notion = NotionContacts(
+        notion = CoreContacts(
             config.secrets.notion_api_key,
             config.notion.contacts_data_source_id,
             config.notion.version,

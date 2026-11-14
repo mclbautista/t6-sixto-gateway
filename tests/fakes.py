@@ -9,8 +9,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from aiogram.types import Update
+from t6.domain import Contact
 
-from sixto_gateway.notion import Contact, NotionError
+from sixto_gateway.contacts import ContactsError
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 FIXTURES = Path(__file__).parent / "fixtures" / "telegram_updates.json"
@@ -243,10 +244,9 @@ def contact(
     return Contact(
         page_id=page_id,
         name=name,
-        url=f"https://www.notion.so/{page_id.replace('-', '')}",
-        telegram_handle=handle,
-        aliases=aliases,
-        telegram_user_id=user_id,
+        telegram_handle=handle or None,
+        aliases=tuple(a.strip() for a in aliases.split(",") if a.strip()),
+        telegram_user_id=int(user_id) if user_id else None,
     )
 
 
@@ -266,21 +266,22 @@ class FakeNotion:
 
     async def get_contact(self, page_id: str) -> Contact:
         if self.fail:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise ContactsError("Notion answered 503 (service_unavailable)")
         return next(c for c in self.contacts if c.page_id == page_id)
 
-    async def set_telegram_user_id(self, contact: Contact, user_id: int) -> None:
+    async def set_telegram_user_id(self, page_id: str, user_id: int) -> Contact:
         if self.fail_write:
-            raise NotionError("Notion answered 503 (service_unavailable)")
-        self.writes.append((contact.page_id, user_id))
+            raise ContactsError("Notion answered 503 (service_unavailable)")
+        self.writes.append((page_id, user_id))
         self.contacts = [
-            replace(c, telegram_user_id=str(user_id)) if c.page_id == contact.page_id else c
+            replace(c, telegram_user_id=user_id) if c.page_id == page_id else c
             for c in self.contacts
         ]
+        return next(c for c in self.contacts if c.page_id == page_id)
 
     async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
         if self.fail_create:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise ContactsError("Notion answered 503 (service_unavailable)")
         page_id = f"cccccccc-0000-0000-0000-{len(self.created) + 1:012d}"
         made = contact(page_id, name, handle=handle, user_id=str(user_id))
         self.created.append(made)
@@ -293,5 +294,5 @@ class FakeNotion:
         if self.block is not None:
             await self.block.wait()
         if self.fail:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise ContactsError("Notion answered 503 (service_unavailable)")
         return list(self.contacts)

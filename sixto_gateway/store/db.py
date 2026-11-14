@@ -524,7 +524,7 @@ class Store:
     ) -> bool:
         """Mark a pending member approved and queue their "approved" reply, in one transaction.
 
-        Call this only after the Contact's ``TelegramUserID`` is written. False (nothing
+        Call this only after the Contact's Telegram user id is written. False (nothing
         changed) when the member is no longer pending or the Contact belongs to someone else.
         """
         try:
