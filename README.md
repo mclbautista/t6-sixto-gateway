@@ -350,11 +350,30 @@ commands:
 
 `/start` in a private chat is onboarding, never checked against the command allow-list. The poller
 saves a `pending` row in `members` and queues the "waiting" reply in the same transaction as the
-update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`),
-matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
-`Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
+update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`)
+through t6-core (the gateway has no Notion client or property names of its own), finds the
+candidates (see "Matching" below), and queues an approval card for `onboarding.approver` with inline buttons. A slow or
 down Notion never holds up polling. `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
+
+### Matching
+
+`onboarding.matching` picks who finds the candidate Contacts:
+
+- `shadow` (the default): the gateway's own matching from before t6-core decides (handle or alias,
+  else the closest names at WRatio 60, up to 3). t6-core's matching runs beside it, and each
+  lookup writes one `matching` row to the `audit` table: `user=<id> same=<bool> same_set=<bool>
+  legacy=<n> core=<n> method=<how core decided>`. No names. Read them with the audit query under
+  "Health, deadman, retention, logs" and look for `same_set=False`.
+- `core`: t6-core's matching decides: Telegram id, handle, alias, then fuzzy names (WRatio 90 with
+  a lead of 8), with up to 3 suggestions at WRatio 60 or more when no one is confident. The
+  approval rules do not change: the approver still presses a button, and a Contact that already
+  holds the person's id is the only auto-approval.
+
+One known difference: t6-core ranks a handle above an alias, so a Contact that has the person's
+handle as an *alias* is no longer listed beside the Contact that has it as the handle. After the
+audit rows look right, set `matching: core` and restart; a later change removes the legacy code
+and this option. Roll back by setting it to `shadow`.
 
 ### When Notion or Telegram fail
 

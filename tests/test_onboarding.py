@@ -8,7 +8,12 @@ import pytest
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.contacts import ContactsError
-from sixto_gateway.matching import closest_contacts, matches_handle
+from sixto_gateway.matching import (
+    Matcher,
+    core_candidates,
+    legacy_closest_contacts,
+    legacy_matches_handle,
+)
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker, callback_data, contact_url
 from sixto_gateway.poller import Poller
@@ -146,9 +151,9 @@ async def test_start_from_a_matching_handle_gives_a_waiting_reply_and_a_card(con
 
 
 async def test_handle_matching_ignores_case_and_at_sign_and_reads_aliases(config):
-    assert matches_handle(JUAN, "JUANDC") and matches_handle(JUAN, "@juandc")
-    assert not matches_handle(JUAN, "juan") and not matches_handle(JUAN, "")
-    assert matches_handle(MARIA, "MariaSan") and matches_handle(MARIA, "mia")
+    assert legacy_matches_handle(JUAN, "JUANDC") and legacy_matches_handle(JUAN, "@juandc")
+    assert not legacy_matches_handle(JUAN, "juan") and not legacy_matches_handle(JUAN, "")
+    assert legacy_matches_handle(MARIA, "MariaSan") and legacy_matches_handle(MARIA, "mia")
 
     rig = Rig(config, [start_from(1, username="MariaSAN")], [JUAN, MARIA])
     await rig.settle()
@@ -199,12 +204,12 @@ async def test_picking_a_closest_name_links_that_contact(config):
 
 def test_closest_contacts_ranks_names_and_aliases_and_ignores_honorifics():
     kuya = contact("aaaaaaaa-0000-0000-0000-000000000004", "Pio Reyes", aliases="Kuya Pio")
-    ranked = closest_contacts([JUAN, MARIA, kuya], "ate mia")
+    ranked = legacy_closest_contacts([JUAN, MARIA, kuya], "ate mia")
     assert [c.name for c in ranked] == ["Maria Santos"]
-    assert [c.name for c in closest_contacts([JUAN, MARIA, kuya], "Pio")] == ["Pio Reyes"]
-    assert closest_contacts([JUAN, MARIA], "") == []
+    assert [c.name for c in legacy_closest_contacts([JUAN, MARIA, kuya], "Pio")] == ["Pio Reyes"]
+    assert legacy_closest_contacts([JUAN, MARIA], "") == []
     many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(10)]
-    assert len(closest_contacts(many, "Juan")) == 3
+    assert len(legacy_closest_contacts(many, "Juan")) == 3
 
 
 async def test_several_matches_get_one_button_each_and_no_single_approve(config):
@@ -979,3 +984,83 @@ async def test_a_card_that_cannot_be_sent_leaves_the_row_pending_and_is_audited(
     assert rig.store.member(USER)["status"] == "pending"
     failures = rig.store.send_failures_since(0)
     assert any("network down" in f for f in failures)
+
+
+# --- matching through t6-core, shadow first (#82) ----------------------------------------------
+
+KUYA = contact("aaaaaaaa-0000-0000-0000-000000000004", "Pio Reyes", aliases="Kuya Pio")
+ROSTER = [JUAN, MARIA, KUYA]
+
+
+def member_of(handle, first, last="", user=USER):
+    return {"telegram_user_id": user, "handle": handle, "first_name": first, "last_name": last}
+
+
+@pytest.mark.parametrize(
+    ("handle", "first", "last", "expected"),
+    [
+        ("juandc", "Juan", "Dela Cruz", [JUAN]),  # handle
+        ("MariaSAN", "M", "", [MARIA]),  # handle held as an alias
+        ("whoever", "Ate", "Mia", [MARIA]),  # name through an alias
+        ("whoever", "Pio", "Reyes", [KUYA]),  # exact name
+        (None, "Zed", "Quill", []),  # nobody close
+    ],
+)
+def test_core_and_legacy_matching_agree_on_the_existing_onboarding_cases(
+    handle, first, last, expected
+):
+    member = member_of(handle, first, last)
+    core = Matcher("core").candidates(ROSTER, member)
+    shadow = Matcher("shadow").candidates(ROSTER, member)
+    assert core == expected and shadow == expected
+
+
+def test_core_matching_keeps_up_to_three_suggestions_for_a_loose_name():
+    many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(10)]
+    found, method = core_candidates(many, USER, None, "Juan")
+    assert len(found) == 3 and method == "suggest"
+
+
+def test_core_matching_leaves_a_handle_tie_to_the_approver():
+    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", handle="@juandc")
+    found = Matcher("core").candidates([JUAN, twin], member_of("juandc", "Juan", "Dela Cruz"))
+    assert found == [JUAN, twin]
+
+
+def test_shadow_mode_shows_where_core_ranks_a_handle_above_an_alias():
+    """The one known difference: legacy lists a Contact whose alias is the handle beside the
+    Contact that has it as a handle; t6-core's policy (handle, then alias) picks the handle."""
+    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", aliases="juandc")
+    lines = []
+    matcher = Matcher("shadow", lambda event, detail: lines.append(detail))
+    found = matcher.candidates([JUAN, twin], member_of("juandc", "Juan", "Dela Cruz"))
+    assert found == [JUAN, twin]  # shadow mode still answers with the old result
+    assert "same_set=False legacy=2 core=1" in lines[0]
+
+
+def test_shadow_mode_writes_one_audit_line_without_names_and_uses_the_old_answer():
+    lines = []
+    matcher = Matcher("shadow", lambda event, detail: lines.append((event, detail)))
+    found = matcher.candidates(ROSTER, member_of("juandc", "Juan", "Dela Cruz"))
+    assert found == [JUAN]
+    assert lines == [
+        ("matching", f"user={USER} same=True same_set=True legacy=1 core=1 method=normalized")
+    ]
+    assert "Juan" not in lines[0][1]
+
+
+async def test_a_lookup_in_shadow_mode_leaves_a_matching_audit_row(config):
+    rig = Rig(config, [start_from(1)], [MARIA, JUAN])
+    await rig.settle()
+    rows = [d for e, _, d in rig.store.audit_events() if e == "matching"]
+    assert rows == [f"user={USER} same=True same_set=True legacy=1 core=1 method=normalized"]
+
+
+async def test_core_mode_onboarding_shows_the_same_card(config, tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(path.read_text().replace("onboarding: {", "onboarding: {matching: core, "))
+    rig = Rig(load_config(path, ENV), [start_from(1)], [MARIA, JUAN])
+    await rig.settle()
+    assert rig.store.member(USER)["candidates"] == [JUAN.page_id]
+    assert "Approve Juan Dela Cruz" in [b["text"] for b in buttons(rig.card())]
+    assert not any(e == "matching" for e, _, _ in rig.store.audit_events())

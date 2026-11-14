@@ -24,7 +24,7 @@ from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.contacts import ContactsDirectory, ContactsError
 from sixto_gateway.decision import Decision, NewMember, NewTap
-from sixto_gateway.matching import closest_contacts, matches_handle
+from sixto_gateway.matching import Matcher, holds_handle
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
@@ -124,21 +124,6 @@ def id_fingerprint(telegram_id: str) -> str:
     return hashlib.sha256(telegram_id.encode()).hexdigest()[:6]
 
 
-def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact]:
-    """Contacts whose handle or an alias equals ``handle``. No handle, no candidates."""
-    if not handle:
-        return []
-    return [c for c in contacts if matches_handle(c, handle)]
-
-
-def find_candidates_for(contacts: list[Contact], member: dict[str, Any]) -> list[Contact]:
-    """Handle or alias matches; with none, the Contacts closest by name. Never picks one."""
-    exact = find_candidates(contacts, member["handle"])
-    if exact:
-        return exact
-    return closest_contacts(contacts, full_name(member))
-
-
 def holders_of_id(contacts: list[Contact], user_id: int) -> list[Contact]:
     """Contacts whose Telegram user id is already this user's id."""
     return [c for c in contacts if c.telegram_user_id == user_id]
@@ -220,7 +205,7 @@ def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, 
     lines = _card_header(member)
     handle = member["handle"]
     by_handle = (
-        bool(handle) and bool(candidates) and all(matches_handle(c, handle) for c in candidates)
+        bool(handle) and bool(candidates) and all(holds_handle(c, handle) for c in candidates)
     )
     single = len(candidates) == 1 and by_handle
     if not candidates:
@@ -292,6 +277,9 @@ class OnboardingWorker:
         self._store = store
         self._contacts = contacts
         self._approver = config.onboarding.approver
+        self._matcher = Matcher(
+            config.onboarding.matching, lambda event, detail: store.audit(event, None, detail)
+        )
         self._wake = wake
         self._queue_wake = queue_wake
         self._clock = clock
@@ -327,7 +315,7 @@ class OnboardingWorker:
             if self._auto_approve(member, contacts):
                 self._queue_wake.notify()
                 return True
-            found = find_candidates_for(contacts, member)
+            found = self._matcher.candidates(contacts, member)
             self._store.queue_approval_card(
                 user,
                 [c.page_id for c in found],
@@ -494,7 +482,7 @@ class OnboardingWorker:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        found = find_candidates_for(contacts, member)
+        found = self._matcher.candidates(contacts, member)
         stored = self._store.set_candidates(
             user, [c.page_id for c in found], f"matches={len(found)}"
         )

@@ -107,6 +107,9 @@ class OnboardingConfig(_Model):
     approver: StrictInt  # Telegram user id of the person whose DM gets the approval cards
     summary_time: StrictStr = "09:00"  # HH:MM, Asia/Manila: the daily summary DM to the approver
     expected: list[StrictStr] = []  # handles that should end up approved ("Still missing")
+    # "shadow": the gateway's own matching decides and each lookup is compared with t6-core's in
+    # the audit log; "core": t6-core's matching decides (switch after reviewing the comparison).
+    matching: Literal["shadow", "core"] = "shadow"
 
     @field_validator("summary_time")
     @classmethod

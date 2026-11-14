@@ -12,6 +12,7 @@ notion:
   version: "2026-03-11"                         # Notion-Version header, pinned
 onboarding:
   approver: 100000001                           # Telegram user id that gets the /start cards
+  matching: shadow                              # shadow: own matching decides, t6-core's is compared in the audit log; core: t6-core decides
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
   expected:                                     # handles that should be approved; the rest show as "still missing"
     - starling42
