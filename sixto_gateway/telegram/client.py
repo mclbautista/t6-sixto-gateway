@@ -43,6 +43,12 @@ class TelegramClient(Protocol):
         """
         ...
 
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        """Forward an existing message and return its new Telegram message id."""
+        ...
+
     async def edit_message(
         self,
         chat_id: int,
@@ -163,6 +169,18 @@ class AiogramTelegramClient:
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 reply_markup=_keyboard_markup(keyboard),
+            )
+        return int(message.message_id)
+
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        with _translated_errors():
+            message = await self._bot.forward_message(
+                chat_id=chat_id,
+                message_thread_id=None if topic_id == 1 else topic_id,
+                from_chat_id=from_chat,
+                message_id=message_id,
             )
         return int(message.message_id)
 

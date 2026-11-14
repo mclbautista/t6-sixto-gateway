@@ -89,6 +89,10 @@ class Sender:
             if row["kind"] == "react":
                 await self._client.set_reaction(body["chat"], body["message_id"], body["emoji"])
                 telegram_id = None
+            elif row["kind"] == "forward":
+                telegram_id = await self._client.forward_message(
+                    body["chat"], body.get("topic"), body["from_chat"], body["message_id"]
+                )
             elif edit_target is not None:
                 try:
                     await self._client.edit_message(

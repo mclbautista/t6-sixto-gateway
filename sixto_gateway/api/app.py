@@ -109,6 +109,15 @@ class ReactBody(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class ForwardBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    from_chat: BigInt
+    message_id: BigInt
+    to: BigInt
+    topic: BigInt | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
 def _keyboard(module: str, rows: Buttons | None) -> list[list[dict[str, str]]] | None:
     """Telegram inline rows for a module's buttons (None: no buttons); 422 if one is too long."""
     if not rows:
@@ -267,6 +276,23 @@ def create_app(
                 "format": body.format,
             }
             | ({"keyboard": keyboard} if keyboard is not None else {}),
+            body.idempotency_key,
+        )
+        queue_wake.notify()
+        return {"message_ref": ref}
+
+    @app.post("/forward", status_code=202)
+    async def post_forward(module: Module, body: ForwardBody) -> dict[str, int]:
+        ref = store.enqueue_outbound(
+            module,
+            "forward",
+            str(body.to),
+            {
+                "chat": body.to,
+                "topic": body.topic,
+                "from_chat": body.from_chat,
+                "message_id": body.message_id,
+            },
             body.idempotency_key,
         )
         queue_wake.notify()
