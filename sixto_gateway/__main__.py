@@ -13,16 +13,17 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Coroutine
+from typing import TextIO
 
 import uvicorn
 from aiogram import Bot
+from t6.privacy import Scrubber, ScrubbingFormatter
 
 from sixto_gateway.api import create_app
 from sixto_gateway.commands import register_menus
 from sixto_gateway.config import Config, ConfigError, load_config
 from sixto_gateway.contacts import ContactsDirectory, CoreContacts
 from sixto_gateway.liveness import Liveness
-from sixto_gateway.logsafe import Redactor, configure_logging
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
@@ -35,8 +36,22 @@ MENU_SETUP_SECONDS = 120.0  # all boot-time menu calls together
 SHUTDOWN_GRACE_SECONDS = 5.0  # to stop on request, then again after cancelling
 
 
-def redactor_for(config: Config) -> Redactor:
-    return Redactor(config.secrets.redaction_values())
+def scrubber_for(config: Config) -> Scrubber:
+    return Scrubber(config.secrets.redaction_values())
+
+
+def configure_logging(
+    scrubber: Scrubber, stream: TextIO | None = None, level: int = logging.INFO
+) -> logging.Handler:
+    """Send every log record through the scrubber. Replaces any earlier root handlers."""
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(ScrubbingFormatter(scrubber))
+    root = logging.getLogger()
+    for old in list(root.handlers):
+        root.removeHandler(old)
+    root.addHandler(handler)
+    root.setLevel(level)
+    return handler
 
 
 async def serve(
@@ -80,7 +95,7 @@ async def serve(
         queue_wake,
         liveness,
         stop,
-        redactor_for(config).scrub,
+        scrubber_for(config).scrub,
         contacts=contacts,
         onboarding_wake=Notifier(),
     )
@@ -244,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    configure_logging(redactor_for(config))
+    configure_logging(scrubber_for(config))
     if args.command == "backup":
         return run_backup(config, args.dest)
     try:

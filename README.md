@@ -401,8 +401,8 @@ link built from the bot's id and the card's message id.
   `docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('select datetime(at,\'unixepoch\'),event,module,detail from audit order by id desc limit 30')]"`.
 - **Logs** (`docker compose logs -f gateway`): one line per update received (id, chat, topic,
   routed module), per send outcome, per auth failure and per repaired or missing delivery. Message text is never logged. Every log
-  line, including tracebacks, goes through a redactor that replaces the bot token, every module
-  secret, anything shaped like a bot token and any `Bearer ...` value with `[redacted]`. The same
+  line, including tracebacks, goes through t6-core's exact-secret scrubber (`t6.privacy`), which
+  replaces the bot token, the Notion key and every module secret with `[redacted]`. The same
   scrub is applied to send errors before they are stored in `outbound` or `audit`.
 
 ## Run

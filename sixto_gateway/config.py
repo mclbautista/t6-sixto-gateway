@@ -25,9 +25,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from t6.privacy import Scrubber
 
 from sixto_gateway.decision import GATEWAY_MODULE
-from sixto_gateway.logsafe import Redactor
 
 MIN_SECRET_LENGTH = 32
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -297,7 +297,7 @@ def load_config(path: str | Path, env: Mapping[str, str]) -> Config:
     try:
         return _validate(data, env)
     except ConfigError as exc:
-        raise ConfigError(Redactor(_known_secrets(data, env)).scrub(str(exc))) from None
+        raise ConfigError(Scrubber(_known_secrets(data, env)).scrub(str(exc))) from None
 
 
 def _validate(data: dict[str, Any], env: Mapping[str, str]) -> Config:
