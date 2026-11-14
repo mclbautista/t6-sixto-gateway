@@ -5,7 +5,7 @@
 listen: { host: 0.0.0.0, port: 8780 }
 telegram:
   poll_timeout: 50                              # seconds, Telegram long poll (0..50)
-  allowed_updates: [message, edited_message, callback_query]    # callback_query: card buttons
+  allowed_updates: [message, edited_message, callback_query, chat_member]    # callback_query: card buttons
   polling: true                                 # false = serve the API only (cutover step 1)
 notion:
   contacts_data_source_id: 77b2a701-71db-4e88-a694-37f07303e77e   # the Contacts data source
