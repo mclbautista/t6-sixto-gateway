@@ -30,6 +30,7 @@ from sixto_gateway.telegram.errors import (
     MessageNotModifiedError,
     PermanentSendError,
     RetryAfterError,
+    ThreadNotFoundError,
 )
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,10 @@ class Sender:
             if row["kind"] == "react":
                 await self._client.set_reaction(body["chat"], body["message_id"], body["emoji"])
                 telegram_id = None
+            elif row["kind"] == "forward":
+                telegram_id = await self._client.forward_message(
+                    body["chat"], body.get("topic"), body["from_chat"], body["message_id"]
+                )
             elif edit_target is not None:
                 try:
                     await self._client.edit_message(
@@ -143,6 +148,8 @@ class Sender:
     def _handle_failure(self, row: dict, exc: Exception) -> None:
         ref, module = row["id"], row["module"]
         error = self._scrub(f"{type(exc).__name__}: {exc}")[:300]
+        if isinstance(exc, ThreadNotFoundError):
+            error = "thread_not_found"
         step = row["attempts"]  # failed attempts so far, before this one
         if isinstance(exc, RetryAfterError):  # Telegram limits the bot: even a last try pauses all
             self._paused_until = max(self._paused_until, self._clock() + exc.retry_after)

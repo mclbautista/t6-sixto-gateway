@@ -46,31 +46,51 @@ class Poller:
         self.liveness = liveness or Liveness(clock)
 
     def decide(self, update: IncomingUpdate) -> Decision:
-        """``/start`` is onboarding. Another command in a private chat is checked against the
-        allow-list; the rest is routed."""
+        """``/start`` is onboarding. Configured and private-chat commands use the allow-list;
+        the rest is routed."""
+        if update.events:
+            fixed = list(
+                dict.fromkeys(
+                    route.module
+                    for route in self._config.routes
+                    if route.chat == update.chat_id
+                    and route.topic in (None, update.topic_id)
+                    and "message" in update.raw
+                )
+            )
+            return Decision(
+                fixed[0] if fixed else None,
+                additional_modules=tuple(fixed[1:]),
+                event_modules=tuple(self._store.chat_subscription_modules(update.chat_id)),
+            )
         if update.callback_id is not None:
             return decide_tap(self._config, update)
         if update.command == "start":
             return decide_start(self._store, update)
         if update.command is not None and is_builtin(self._config, update):
             return decide_builtin(self._config, update)
-        if update.command is not None and update.chat_type == "private":
+        if update.command is not None and update.edited:
+            return Decision(None)
+        if update.command is not None and (
+            update.chat_type == "private" or update.command in self._config.commands
+        ):
             return decide_command(self._config, update)
-        return Decision(self.route(update))
+        modules = self.routes(update)
+        return Decision(modules[0] if modules else None, additional_modules=tuple(modules[1:]))
 
-    def route(self, update: IncomingUpdate) -> str | None:
-        """The owning module, or None (stored, not delivered).
-
-        An edit follows its original message's route when the original is known.
-        """
+    def routes(self, update: IncomingUpdate) -> list[str]:
+        """All matching modules; edits follow the original message's deliveries."""
         if update.edited:
-            known, original = self._store.original_route(update.chat_id, update.message_id)
+            known, modules = self._store.original_modules(update.chat_id, update.message_id)
             if known:
-                return original
-        for route in self._config.routes:
-            if route.chat == update.chat_id and route.topic in (None, update.topic_id):
-                return route.module
-        return None
+                return modules
+        modules = [
+            route.module
+            for route in self._config.routes
+            if route.chat == update.chat_id and route.topic in (None, update.topic_id)
+        ]
+        modules.extend(self._store.subscription_modules(update.chat_id, update.topic_id))
+        return list(dict.fromkeys(modules))
 
     async def poll_once(self) -> int:
         """One ``getUpdates`` call; each update is committed (with the cursor) before the next.

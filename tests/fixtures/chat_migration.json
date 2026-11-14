@@ -1,0 +1,4 @@
+{
+  "to": {"update_id": 201, "message": {"message_id": 1, "date": 1700000000, "chat": {"id": -12345, "type": "group", "title": "Example"}, "migrate_to_chat_id": -10012345}},
+  "from": {"update_id": 202, "message": {"message_id": 1, "date": 1700000000, "chat": {"id": -10012345, "type": "supergroup", "title": "Example"}, "migrate_from_chat_id": -12345}}
+}

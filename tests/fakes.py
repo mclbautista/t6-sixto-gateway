@@ -16,7 +16,7 @@ from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 FIXTURES = Path(__file__).parent / "fixtures" / "telegram_updates.json"
 INTAKE_CHAT = -1001234567890
 INTAKE_TOPIC = 77
-APPROVER = 274983989  # onboarding.approver in test configs
+APPROVER = 100000001  # onboarding.approver in test configs
 CONTACTS_SOURCE = "77b2a701-71db-4e88-a694-37f07303e77e"
 NOTION_YAML = (
     f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
@@ -160,6 +160,24 @@ class FakeTelegram:
                 "text": text,
                 "parse_mode": parse_mode,
                 "keyboard": keyboard,
+                "message_id": self._next_message_id,
+            }
+        )
+        return self._next_message_id
+
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        self._maybe_fail()
+        self._next_message_id += 1
+        self.sent.append(
+            {
+                "at": self.clock() if self.clock else 0.0,
+                "kind": "forward",
+                "chat_id": chat_id,
+                "topic_id": topic_id,
+                "from_chat": from_chat,
+                "source_message_id": message_id,
                 "message_id": self._next_message_id,
             }
         )

@@ -15,7 +15,7 @@ VALID = {
     "retention_days": 30,
     "modules": {"watchdog": {"secret_env": "WATCHDOG_SECRET"}},
     "commands": {},
-    "groups": {"cyril": [274983989]},
+    "groups": {"test_group": [100000001]},
     "routes": [{"chat": -1001234567890, "topic": 77, "module": "watchdog"}],
     "notion": {"contacts_data_source_id": CONTACTS_SOURCE, "version": "2026-03-11"},
     "onboarding": {"approver": APPROVER},
@@ -41,7 +41,7 @@ def test_valid_config_loads(tmp_path):
     assert isinstance(config, Config)
     assert config.listen.port == 8780
     assert config.routes[0].module == "watchdog"
-    assert config.groups["cyril"] == [274983989]
+    assert config.groups["test_group"] == [100000001]
     assert config.module_for_secret(SECRET) == "watchdog"
     assert config.module_for_secret("nope" * 10) is None
 
@@ -57,6 +57,9 @@ def test_example_config_is_valid_with_secrets(tmp_path):
     assert "watchdog" in config.modules
     assert config.modules["t6core"].delivery == "push"
     assert config.groups["approvers"] == [100000001]
+    for name in ("abang", "link", "unlink"):
+        assert config.commands[name].module == "t6core"
+        assert config.commands[name].allow == ["coordinators", "approvers"]
 
 
 def test_rejects_route_to_unknown_module(tmp_path):
@@ -66,7 +69,7 @@ def test_rejects_route_to_unknown_module(tmp_path):
 
 def test_rejects_command_with_unknown_module(tmp_path):
     def mutate(d):
-        d["commands"] = {"jo": {"module": "ghost", "allow": ["cyril"]}}
+        d["commands"] = {"jo": {"module": "ghost", "allow": ["test_group"]}}
 
     with pytest.raises(ConfigError, match="command 'jo'.*unknown module 'ghost'"):
         load(tmp_path, mutate)
@@ -74,7 +77,7 @@ def test_rejects_command_with_unknown_module(tmp_path):
 
 def test_rejects_allow_entry_that_is_neither_group_nor_user_id(tmp_path):
     def mutate(d):
-        d["commands"] = {"jo": {"module": "watchdog", "allow": ["cyril", "nobody"]}}
+        d["commands"] = {"jo": {"module": "watchdog", "allow": ["test_group", "nobody"]}}
 
     with pytest.raises(ConfigError, match="command 'jo'.*'nobody'.*not a group"):
         load(tmp_path, mutate)
@@ -82,9 +85,9 @@ def test_rejects_allow_entry_that_is_neither_group_nor_user_id(tmp_path):
 
 def test_accepts_allow_entry_that_is_a_user_id(tmp_path):
     def mutate(d):
-        d["commands"] = {"jo": {"module": "watchdog", "allow": ["cyril", 671462215]}}
+        d["commands"] = {"jo": {"module": "watchdog", "allow": ["test_group", 671462215]}}
 
-    assert load(tmp_path, mutate).commands["jo"].allow == ["cyril", 671462215]
+    assert load(tmp_path, mutate).commands["jo"].allow == ["test_group", 671462215]
 
 
 def test_rejects_chat_topic_routed_to_two_modules(tmp_path):

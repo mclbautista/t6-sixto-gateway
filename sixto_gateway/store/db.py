@@ -131,6 +131,52 @@ class Store:
             )
             self._insert_audit("set_offset", None, f"last_update_id={last_update_id}")
 
+    # --- module subscriptions -------------------------------------------------------------
+
+    def replace_subscriptions(
+        self, module: str, subscriptions: list[tuple[int, int | None]]
+    ) -> None:
+        with self._transaction():
+            self._db.execute("DELETE FROM subscriptions WHERE module = ?", (module,))
+            self._db.executemany(
+                "INSERT INTO subscriptions (module, chat, topic) VALUES (?, ?, ?)",
+                [(module, chat, topic) for chat, topic in dict.fromkeys(subscriptions)],
+            )
+
+    def subscriptions(self, module: str) -> list[dict[str, int | None]]:
+        rows = self._db.execute(
+            "SELECT chat, topic FROM subscriptions WHERE module = ? ORDER BY chat, topic", (module,)
+        ).fetchall()
+        return [{"chat": row["chat"], "topic": row["topic"]} for row in rows]
+
+    def subscription_modules(self, chat: int, topic: int | None) -> list[str]:
+        rows = self._db.execute(
+            "SELECT DISTINCT module FROM subscriptions WHERE chat = ?"
+            " AND (topic IS NULL OR topic = ?)"
+            " ORDER BY module",
+            (chat, topic),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def chat_subscription_modules(self, chat: int) -> list[str]:
+        rows = self._db.execute(
+            "SELECT DISTINCT module FROM subscriptions WHERE chat = ? ORDER BY module", (chat,)
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def original_modules(self, chat: int, message_id: int) -> tuple[bool, list[str]]:
+        row = self._db.execute(
+            "SELECT update_id FROM updates WHERE chat_id = ? AND message_id = ? AND edited = 0"
+            " ORDER BY update_id LIMIT 1",
+            (chat, message_id),
+        ).fetchone()
+        if row is None:
+            return False, []
+        deliveries = self._db.execute(
+            "SELECT DISTINCT module FROM deliveries WHERE update_id = ? ORDER BY module", (row[0],)
+        ).fetchall()
+        return True, [delivery[0] for delivery in deliveries]
+
     # --- updates and deliveries -----------------------------------------------------------
 
     def save_update(
@@ -158,6 +204,34 @@ class Store:
         module = decision.module
         seq: int | None = None
         with self._transaction():
+            migration = next(
+                (event for event in update.events if event["event"] == "chat_migrated"), None
+            )
+            migration_modules: list[str] | None = None
+            if migration is not None:
+                old_chat, new_chat = migration["old_chat"], migration["new_chat"]
+                migration_modules = list(
+                    dict.fromkeys(
+                        self.chat_subscription_modules(old_chat)
+                        + self.chat_subscription_modules(new_chat)
+                    )
+                )
+                first = self._db.execute(
+                    "INSERT OR IGNORE INTO chat_migrations (old_chat, new_chat) VALUES (?, ?)",
+                    (old_chat, new_chat),
+                ).rowcount
+                self._db.execute(
+                    "UPDATE subscriptions SET chat = ? WHERE chat = ?", (new_chat, old_chat)
+                )
+                # A module can already have the same subscription on the new chat.
+                self._db.execute(
+                    "DELETE FROM subscriptions WHERE chat = ? AND rowid NOT IN "
+                    "(SELECT MIN(rowid) FROM subscriptions WHERE chat = ? "
+                    "GROUP BY module, chat, topic)",
+                    (new_chat, new_chat),
+                )
+                if not first:
+                    migration_modules = []
             inserted = self._db.execute(
                 "INSERT OR IGNORE INTO updates (update_id, chat_id, topic_id, message_id,"
                 " from_id, edited, module, raw, received_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -174,8 +248,31 @@ class Store:
                 ),
             ).rowcount
             if inserted:
-                if module is not None:
-                    seq = self._insert_delivery(update, decision.kind, module, received_at)
+                modules = dict.fromkeys(
+                    ([module] if module is not None else []) + list(decision.additional_modules)
+                )
+                for recipient in modules:
+                    new_seq = self._insert_delivery(update, decision.kind, recipient, received_at)
+                    if seq is None:
+                        seq = new_seq
+                    if not self._has_delivery(update.update_id, recipient):
+                        raise RuntimeError(
+                            f"update {update.update_id} routed to {recipient} has no delivery"
+                        )
+                event_modules = (
+                    migration_modules if migration_modules is not None else decision.event_modules
+                )
+                for recipient in event_modules:
+                    for event in update.events:
+                        new_seq = self._insert_delivery(
+                            update, "event", recipient, received_at, event
+                        )
+                        if seq is None:
+                            seq = new_seq
+                    if not self._has_delivery(update.update_id, recipient):
+                        raise RuntimeError(
+                            f"update {update.update_id} routed to {recipient} has no delivery"
+                        )
             else:
                 # The module the update was first stored for owns it, even if routes changed.
                 module = self._stored_module(update.update_id)
@@ -260,9 +357,14 @@ class Store:
         return row is not None
 
     def _insert_delivery(
-        self, update: IncomingUpdate, kind: str, module: str, received_at: float
+        self,
+        update: IncomingUpdate,
+        kind: str,
+        module: str,
+        received_at: float,
+        event: dict[str, Any] | None = None,
     ) -> int | None:
-        payload = json.dumps(_item_payload(update, kind), ensure_ascii=False)
+        payload = json.dumps({**_item_payload(update, kind), **(event or {})}, ensure_ascii=False)
         return self._db.execute(
             "INSERT INTO deliveries (module, kind, update_id, payload, created_at)"
             " VALUES (?, ?, ?, ?, ?)",
@@ -273,7 +375,12 @@ class Store:
         self, update: IncomingUpdate, kind: str, module: str, received_at: float
     ) -> int | None:
         """A re-fetched update was stored for ``module`` without its delivery: add it now."""
-        seq = self._insert_delivery(update, kind, module, received_at)
+        events = update.events if kind == "event" else (None,)
+        seq = None
+        for event in events:
+            new_seq = self._insert_delivery(update, kind, module, received_at, event)
+            if seq is None:
+                seq = new_seq
         log.warning(
             "update %s was stored without a delivery for %s: repaired as seq %s",
             update.update_id,
@@ -908,10 +1015,21 @@ def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any
     """
     extra: dict[str, Any] = {}
     if kind == "command":
-        extra = {"command": update.command, "args": update.command_args}
+        extra = {
+            "command": update.command,
+            "args": update.command_args,
+        }
     elif kind == "tap":
         parsed = parse_module_callback(update.callback_data)
         extra = {"data": parsed[1] if parsed else ""}
+    if kind != "tap":
+        extra.update(
+            reply_to_message_id=update.reply_to_message_id,
+            has_file=update.has_file,
+            has_link=update.has_link,
+        )
+        if update.topic_name is not None:
+            extra["topic_name"] = update.topic_name
     return {
         **extra,
         "kind": kind,

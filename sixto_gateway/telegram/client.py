@@ -14,6 +14,7 @@ from sixto_gateway.telegram.errors import (
     PermanentSendError,
     RetryAfterError,
     SendError,
+    ThreadNotFoundError,
     TransientSendError,
 )
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
@@ -41,6 +42,12 @@ class TelegramClient(Protocol):
 
         Failures raise ``SendError`` subclasses (see ``telegram.errors``).
         """
+        ...
+
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        """Forward an existing message and return its new Telegram message id."""
         ...
 
     async def edit_message(
@@ -86,6 +93,7 @@ def translate_send_error(exc: Exception) -> SendError | None:
     """Map an aiogram exception to the sender's vocabulary (None: not an aiogram error)."""
     from aiogram.exceptions import (
         TelegramAPIError,
+        TelegramBadRequest,
         TelegramForbiddenError,
         TelegramNetworkError,
         TelegramRetryAfter,
@@ -98,6 +106,8 @@ def translate_send_error(exc: Exception) -> SendError | None:
         return TransientSendError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramForbiddenError):  # 403: the person blocked the bot
         return BlockedByUserError(f"{type(exc).__name__}: {exc.message}")
+    if isinstance(exc, TelegramBadRequest) and "message thread not found" in exc.message.lower():
+        return ThreadNotFoundError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError) and "message is not modified" in exc.message.lower():
         return MessageNotModifiedError(f"{type(exc).__name__}: {exc.message}")
     if isinstance(exc, TelegramAPIError):  # every other 4xx can never succeed on a retry
@@ -163,6 +173,18 @@ class AiogramTelegramClient:
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 reply_markup=_keyboard_markup(keyboard),
+            )
+        return int(message.message_id)
+
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        with _translated_errors():
+            message = await self._bot.forward_message(
+                chat_id=chat_id,
+                message_thread_id=None if topic_id == 1 else topic_id,
+                from_chat_id=from_chat,
+                message_id=message_id,
             )
         return int(message.message_id)
 

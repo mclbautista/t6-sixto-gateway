@@ -95,12 +95,27 @@ class EditBody(BaseModel):
     buttons: Buttons | None = None
 
 
+class Subscription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    chat: BigInt
+    topic: BigInt | None
+
+
 class ReactBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     chat: BigInt
     message_id: BigInt
     emoji: str = Field(min_length=1, max_length=32)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ForwardBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    from_chat: BigInt
+    message_id: BigInt
+    to: BigInt
+    topic: BigInt | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
 
 
 def _keyboard(module: str, rows: Buttons | None) -> list[list[dict[str, str]]] | None:
@@ -176,6 +191,17 @@ def create_app(
     # async so the SQLite connection is only touched on the event-loop thread
     Module = Annotated[str, Depends(calling_module)]
 
+    @app.get("/subscriptions")
+    async def get_subscriptions(module: Module) -> list[dict[str, int | None]]:
+        return store.subscriptions(module)
+
+    @app.put("/subscriptions")
+    async def put_subscriptions(
+        module: Module, body: list[Subscription]
+    ) -> list[dict[str, int | None]]:
+        store.replace_subscriptions(module, [(item.chat, item.topic) for item in body])
+        return store.subscriptions(module)
+
     @app.get("/updates")
     async def get_updates(
         module: Module,
@@ -250,6 +276,23 @@ def create_app(
                 "format": body.format,
             }
             | ({"keyboard": keyboard} if keyboard is not None else {}),
+            body.idempotency_key,
+        )
+        queue_wake.notify()
+        return {"message_ref": ref}
+
+    @app.post("/forward", status_code=202)
+    async def post_forward(module: Module, body: ForwardBody) -> dict[str, int]:
+        ref = store.enqueue_outbound(
+            module,
+            "forward",
+            str(body.to),
+            {
+                "chat": body.to,
+                "topic": body.topic,
+                "from_chat": body.from_chat,
+                "message_id": body.message_id,
+            },
             body.idempotency_key,
         )
         queue_wake.notify()
