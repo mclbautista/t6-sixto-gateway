@@ -15,7 +15,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY sixto_gateway ./sixto_gateway
-# git is needed only to install the pinned t6 release tag
+# git is needed only to install t6 from its git tag
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && pip install . \
     && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* \

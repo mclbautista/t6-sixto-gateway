@@ -16,7 +16,7 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: t6 check-consumer sixto_gateway   # no direct Notion, LLM or Frame.io calls (ADR 0002)
+      - run: t6 check-consumer sixto_gateway   # no direct Notion, LLM or Frame.io calls (t6-core ADR 0002)
       - run: pytest -q   # fake Telegram, temp SQLite, fake clock: no network needed
   image:
     runs-on: ubuntu-latest

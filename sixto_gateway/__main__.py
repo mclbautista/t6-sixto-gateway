@@ -77,14 +77,14 @@ async def serve(
     stop = asyncio.Event()
     bot = Bot(token=config.secrets.bot_token) if client is None else None
     client = client or AiogramTelegramClient(bot)
-    notion = None
+    core_contacts = None
     if contacts is None:
-        notion = CoreContacts(
+        core_contacts = CoreContacts(
             config.secrets.notion_api_key,
             config.notion.contacts_data_source_id,
             config.notion.version,
         )
-        contacts = notion
+        contacts = core_contacts
     if config.telegram.polling:
         await _register_menus_bounded(store, client, config)
     workers = start_workers(
@@ -110,8 +110,8 @@ async def serve(
         stuck = await _shut_down(tasks)
         if bot is not None:
             await _bounded(bot.session.close(), SHUTDOWN_GRACE_SECONDS)
-        if notion is not None:
-            await _bounded(notion.close(), SHUTDOWN_GRACE_SECONDS)
+        if core_contacts is not None:
+            await _bounded(core_contacts.close(), SHUTDOWN_GRACE_SECONDS)
     deadman = tasks.get("deadman")
     if deadman and deadman.done() and not deadman.cancelled() and deadman.exception() is None:
         if deadman.result():

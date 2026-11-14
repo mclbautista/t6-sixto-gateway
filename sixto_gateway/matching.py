@@ -73,7 +73,10 @@ def legacy_closest_contacts(
 
 
 def holds_handle(contact: Contact, handle: str) -> bool:
-    """True when ``handle`` is the Contact's handle or one of its aliases (t6-core's rules)."""
+    """True when ``handle`` is the Contact's handle or an alias, by t6-core's rules or the legacy
+    ones, so a card has the same shape in both matching modes."""
+    if legacy_matches_handle(contact, handle):
+        return True
     n = Normalizers()
     wanted = n.handle(handle)
     if not wanted:
