@@ -99,6 +99,13 @@ onboarding worker.
   "idempotency_key": "..."}` and `POST /react` `{"chat", "message_id", "emoji"}` save a row in
   `outbound` and answer `202 {"message_ref": N}`. A repeated `idempotency_key` from the same
   module returns the same ref and queues nothing new. Invalid bodies get `422`.
+- **Forwarding.** `POST /forward` `{"from_chat": <chat>, "message_id": <id>, "to": <chat>,
+  "topic": <optional>, "idempotency_key": "..."}` queues Telegram's `forwardMessage` and
+  returns `202 {"message_ref": N}`. The key is required and shares the module's outbound
+  idempotency namespace. `GET /notify/N` reports the new Telegram message id when sent.
+  Forwards share the queue, pacing, retries and audit of notifications; they cannot be replies.
+  As with other sends, a crash after Telegram accepts a request but before its result is saved
+  can cause a duplicate on recovery.
 - **Inline buttons.** `/notify` optionally accepts `buttons`, an array of rows, for example:
   `"buttons": [[{"text": "Approve", "payload": "approve:42"},
   {"text": "Sign in", "url": "https://example.com/sign-in"}]]`.

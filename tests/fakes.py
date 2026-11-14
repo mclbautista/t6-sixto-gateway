@@ -165,6 +165,24 @@ class FakeTelegram:
         )
         return self._next_message_id
 
+    async def forward_message(
+        self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
+    ) -> int:
+        self._maybe_fail()
+        self._next_message_id += 1
+        self.sent.append(
+            {
+                "at": self.clock() if self.clock else 0.0,
+                "kind": "forward",
+                "chat_id": chat_id,
+                "topic_id": topic_id,
+                "from_chat": from_chat,
+                "source_message_id": message_id,
+                "message_id": self._next_message_id,
+            }
+        )
+        return self._next_message_id
+
     async def edit_message(
         self,
         chat_id: int,
