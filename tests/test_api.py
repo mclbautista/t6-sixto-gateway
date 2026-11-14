@@ -215,8 +215,8 @@ async def test_message_item_link_reply_and_topic_fields(env, client):
         "message_id": 42,
         "date": 1789700000,
         "chat": caption["message"]["chat"],
+        "forum_topic_created": {"name": "Example topic", "icon_color": 7322096},
     }
-    caption["message"]["topic_name"] = "Example topic"
     url_entity = intake(5)
     url_entity["message"]["entities"] = [{"type": "url", "offset": 0, "length": 3}]
     caption_entity = moved(fixture_updates()["caption"], update_id=6)

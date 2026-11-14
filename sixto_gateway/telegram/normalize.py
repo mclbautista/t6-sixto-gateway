@@ -80,7 +80,11 @@ def normalize(update: Any) -> IncomingUpdate | None:
             for entity in (message.entities or []) + (message.caption_entities or [])
         )
         or bool(re.search(r"(?i)\b(?:https?://|www\.)\S+", message.caption or "")),
-        topic_name=getattr(message, "topic_name", None),
+        topic_name=(
+            message.reply_to_message.forum_topic_created.name
+            if message.reply_to_message and message.reply_to_message.forum_topic_created
+            else None
+        ),
         events=_message_events(raw.get("message", {})),
     )
 

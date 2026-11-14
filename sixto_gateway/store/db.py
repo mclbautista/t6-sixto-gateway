@@ -232,7 +232,6 @@ class Store:
                 )
                 if not first:
                     migration_modules = []
-                module = migration_modules[0] if migration_modules else None
             inserted = self._db.execute(
                 "INSERT OR IGNORE INTO updates (update_id, chat_id, topic_id, message_id,"
                 " from_id, edited, module, raw, received_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -250,16 +249,23 @@ class Store:
             ).rowcount
             if inserted:
                 modules = dict.fromkeys(
-                    migration_modules
-                    if migration_modules is not None
-                    else ([module] if module is not None else [])
-                    + list(decision.additional_modules)
+                    ([module] if module is not None else []) + list(decision.additional_modules)
                 )
                 for recipient in modules:
-                    events = update.events if decision.kind == "event" else (None,)
-                    for event in events:
+                    new_seq = self._insert_delivery(update, decision.kind, recipient, received_at)
+                    if seq is None:
+                        seq = new_seq
+                    if not self._has_delivery(update.update_id, recipient):
+                        raise RuntimeError(
+                            f"update {update.update_id} routed to {recipient} has no delivery"
+                        )
+                event_modules = (
+                    migration_modules if migration_modules is not None else decision.event_modules
+                )
+                for recipient in event_modules:
+                    for event in update.events:
                         new_seq = self._insert_delivery(
-                            update, decision.kind, recipient, received_at, event
+                            update, "event", recipient, received_at, event
                         )
                         if seq is None:
                             seq = new_seq
@@ -1009,12 +1015,9 @@ def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any
     """
     extra: dict[str, Any] = {}
     if kind == "command":
-        message = update.raw.get("message") or update.raw.get("edited_message") or {}
-        reply = message.get("reply_to_message") or {}
         extra = {
             "command": update.command,
             "args": update.command_args,
-            "reply_to_message_id": reply.get("message_id"),
         }
     elif kind == "tap":
         parsed = parse_module_callback(update.callback_data)

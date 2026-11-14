@@ -65,3 +65,4 @@ class Decision:
     push: bool = False  # the delivery is posted to the module's push URL, not read from /updates
     additional_modules: tuple[str, ...] = ()
     answer_tap: str | None = None  # a routed tap: the gateway answers it, with this text or ""
+    event_modules: tuple[str, ...] = ()

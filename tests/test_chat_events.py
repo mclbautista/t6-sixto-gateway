@@ -49,7 +49,22 @@ async def test_events_are_delivered_to_chat_subscribers_once(env, client):
         (77, "Renamed"),
     ]
     assert [item["user"]["id"] for item in items[2:]] == [102, 102, 102, 103, 102]
-    assert (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"] == []
+    fixed = (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"]
+    assert [item["kind"] for item in fixed] == ["update"] * 4
+    assert [item["update_id"] for item in fixed] == [101, 102, 105, 106]
     assert (
         await client.get("/updates", headers=auth(PSR), params={"after": items[-1]["seq"]})
     ).json()["items"] == []
+
+
+async def test_service_message_to_fixed_route_and_subscriber(env, client):
+    fixtures = json.loads((Path(__file__).parent / "fixtures/chat_events.json").read_text())
+    await client.put(
+        "/subscriptions", headers=auth(WATCHDOG), json=[{"chat": INTAKE_CHAT, "topic": 77}]
+    )
+    await client.put("/subscriptions", headers=auth(PSR), json=[{"chat": INTAKE_CHAT, "topic": 77}])
+    await feed(env, [fixtures["topic_created"]])
+    fixed = (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"]
+    subscriber = (await client.get("/updates", headers=auth(PSR))).json()["items"]
+    assert [item["kind"] for item in fixed] == ["update", "event"]
+    assert [item["kind"] for item in subscriber] == ["event"]

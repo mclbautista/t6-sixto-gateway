@@ -16,7 +16,7 @@ from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 FIXTURES = Path(__file__).parent / "fixtures" / "telegram_updates.json"
 INTAKE_CHAT = -1001234567890
 INTAKE_TOPIC = 77
-APPROVER = 274983989  # onboarding.approver in test configs
+APPROVER = 100000001  # onboarding.approver in test configs
 CONTACTS_SOURCE = "77b2a701-71db-4e88-a694-37f07303e77e"
 NOTION_YAML = (
     f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
