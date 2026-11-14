@@ -104,17 +104,16 @@ async def test_unknown_command_in_a_dm_gets_the_same_refusal(config):
 async def test_commands_in_groups_get_no_reply(config):
     updates = [
         group_command(1, OTHER, "/jo x", PSR_CHAT, 1),  # not allowed, intake route
-        group_command(2, ALLOWED, "/jo x", PSR_CHAT, 1),  # allowed, still a group
+        group_command(2, ALLOWED, "/jo x", PSR_CHAT, 1),  # allowed, sent to its owner
         group_command(3, OTHER, "/nope", PSR_CHAT, 9),  # unknown, unrouted topic
     ]
     store, telegram, poller, sender = build(config, updates)
     await run(poller, sender)
 
     assert replies(telegram) == []
-    assert store.deliveries_after("jo", 0, 100) == []
-    # group messages keep their normal routing
-    assert [i["update_id"] for i in store.deliveries_after("watchdog", 0, 100)] == [1, 2]
-    assert store.unrouted_update_ids() == [3]
+    assert [i["update_id"] for i in store.deliveries_after("jo", 0, 100)] == [2]
+    assert store.deliveries_after("watchdog", 0, 100) == []
+    assert store.unrouted_update_ids() == [1, 3]
 
 
 async def test_command_forms(config):

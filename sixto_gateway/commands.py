@@ -37,7 +37,7 @@ def allowed_commands(config: Config) -> dict[int, list[str]]:
 
 
 def decide_command(config: Config, update: IncomingUpdate) -> Decision:
-    """The decision for a command typed in a private chat; the allow-list is checked here."""
+    """The decision for a module command; the allow-list is checked here."""
     assert update.command is not None
     if update.edited:  # an edit is never a new command: no delivery, no second reply
         return Decision(None)
@@ -49,7 +49,11 @@ def decide_command(config: Config, update: IncomingUpdate) -> Decision:
         assert module is not None  # built-ins are answered by decide_builtin, never here
         push = config.modules[module].delivery == "push"
         return Decision(module, "command", ("command_routed", module, detail), push=push)
-    return Decision(None, audit=("command_refused", None, detail), reply=REFUSAL)
+    return Decision(
+        None,
+        audit=("command_refused", None, detail),
+        reply=REFUSAL if update.chat_type == "private" else None,
+    )
 
 
 def is_builtin(config: Config, update: IncomingUpdate) -> bool:

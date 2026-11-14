@@ -46,15 +46,19 @@ class Poller:
         self.liveness = liveness or Liveness(clock)
 
     def decide(self, update: IncomingUpdate) -> Decision:
-        """``/start`` is onboarding. Another command in a private chat is checked against the
-        allow-list; the rest is routed."""
+        """``/start`` is onboarding. Configured and private-chat commands use the allow-list;
+        the rest is routed."""
         if update.callback_id is not None:
             return decide_tap(self._config, update)
         if update.command == "start":
             return decide_start(self._store, update)
         if update.command is not None and is_builtin(self._config, update):
             return decide_builtin(self._config, update)
-        if update.command is not None and update.chat_type == "private":
+        if update.command is not None and update.edited:
+            return Decision(None)
+        if update.command is not None and (
+            update.chat_type == "private" or update.command in self._config.commands
+        ):
             return decide_command(self._config, update)
         modules = self.routes(update)
         return Decision(modules[0] if modules else None, additional_modules=tuple(modules[1:]))

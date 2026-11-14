@@ -417,6 +417,46 @@
           }
         ]
       }
+    },
+    "group_command_topic": {
+      "update_id": 9015,
+      "message": {
+        "message_id": 510,
+        "message_thread_id": 77,
+        "is_topic_message": true,
+        "from": {
+          "id": 555,
+          "is_bot": false,
+          "first_name": "Example",
+          "username": "example"
+        },
+        "chat": {
+          "id": -1001234567890,
+          "title": "Example Group",
+          "is_forum": true,
+          "type": "supergroup"
+        },
+        "date": 1789700000,
+        "text": "/project@example_bot private arguments",
+        "entities": [
+          {
+            "type": "bot_command",
+            "offset": 0,
+            "length": 20
+          }
+        ],
+        "reply_to_message": {
+          "message_id": 509,
+          "date": 1789700000,
+          "chat": {
+            "id": -1001234567890,
+            "title": "Example Group",
+            "is_forum": true,
+            "type": "supergroup"
+          },
+          "text": "Example"
+        }
+      }
     }
   }
 }
