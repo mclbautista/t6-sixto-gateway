@@ -12,4 +12,3 @@ data/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-!.env.tailscale.example

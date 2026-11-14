@@ -21,7 +21,7 @@ Settings > Keys > Generate auth key: **not** ephemeral, **pre-approved**, tag `t
 Put it in a new file next to `compose.yaml`, mode 0600:
 
 ```sh
-cp .env.tailscale.example .env.tailscale && chmod 600 .env.tailscale
+cp tailscale.env.example .env.tailscale && chmod 600 .env.tailscale
 # edit .env.tailscale: TS_AUTHKEY=tskey-auth-...
 ```
 
