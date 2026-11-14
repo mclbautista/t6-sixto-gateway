@@ -15,7 +15,10 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY sixto_gateway ./sixto_gateway
-RUN pip install . \
+# git is needed only to install t6 from its git tag
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && pip install . \
+    && apt-get purge -y git && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/data \
     && chown gateway:gateway /app/data \
     && chmod 0700 /app/data

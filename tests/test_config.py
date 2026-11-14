@@ -3,6 +3,7 @@ import copy
 import pytest
 import yaml
 
+from sixto_gateway.commands import allowed_commands
 from sixto_gateway.config import Config, ConfigError, load_config
 from tests.fakes import APPROVER, CONTACTS_SOURCE, NOTION_ENV
 
@@ -20,7 +21,12 @@ VALID = {
     "notion": {"contacts_data_source_id": CONTACTS_SOURCE, "version": "2026-03-11"},
     "onboarding": {"approver": APPROVER},
 }
-ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": SECRET, **NOTION_ENV}
+ENV = {
+    "TELEGRAM_BOT_TOKEN": TOKEN,
+    "WATCHDOG_SECRET": SECRET,
+    **NOTION_ENV,
+    "T6_OPERATOR_IDS": "100000001, 100000003",
+}
 
 
 def write(tmp_path, data):
@@ -247,3 +253,38 @@ def test_a_secret_pasted_as_the_env_var_name_is_not_echoed(tmp_path):
     with pytest.raises(ConfigError) as err:
         load(tmp_path, mutate, env)
     assert pasted not in str(err.value)
+
+
+def test_operators_come_from_t6_operator_ids(tmp_path):
+    config = load(tmp_path)
+    assert config.group("operators") == [100000001, 100000003]
+    assert config.group("cyril") == [274983989]
+
+
+def test_a_command_can_allow_operators(tmp_path):
+    def mutate(d):
+        d["commands"] = {"project": {"module": "watchdog", "allow": ["operators"]}}
+
+    assert allowed_commands(load(tmp_path, mutate)) == {
+        100000001: ["project"],
+        100000003: ["project"],
+    }
+
+
+def test_operators_cannot_also_be_set_in_config(tmp_path):
+    with pytest.raises(ConfigError, match="'operators' is set by T6_OPERATOR_IDS"):
+        load(tmp_path, lambda d: d["groups"].update(operators=[1]))
+
+
+def test_allowing_operators_needs_t6_operator_ids(tmp_path):
+    def mutate(d):
+        d["commands"] = {"project": {"module": "watchdog", "allow": ["operators"]}}
+
+    env = {k: v for k, v in ENV.items() if k != "T6_OPERATOR_IDS"}
+    with pytest.raises(ConfigError, match="T6_OPERATOR_IDS is not set"):
+        load(tmp_path, mutate, env)
+
+
+def test_a_bad_operator_id_is_reported(tmp_path):
+    with pytest.raises(ConfigError, match="T6_OPERATOR_IDS must list whole Telegram user ids"):
+        load(tmp_path, env={**ENV, "T6_OPERATOR_IDS": "12 abc"})

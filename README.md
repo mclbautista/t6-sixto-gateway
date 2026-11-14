@@ -37,7 +37,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog), `T6_OPERATOR_IDS` (the Telegram ids behind the `operators` group, the same setting t6-core reads) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,
@@ -304,8 +304,8 @@ shows it yet (pending, updated, or failed after retries). The gateway sends that
 
 **Rollout.** Deploy t6-core with `/project` support first; this gateway version can go out
 before or after it, because nothing is pushed until the command is in `config.yaml`. Then add
-the `project` command and the `operators` group (the same Telegram ids as t6-core's
-`T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
+the `project` command (`allow: [operators]`) to `config.yaml`, set `T6_OPERATOR_IDS` in `.env`
+(the same value as t6-core's) and restart the gateway, which also puts `/project` in
 those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
 gets the refusal. The push goes to the tailnet-only tap URL the taps already use (see
 "Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the
@@ -350,11 +350,30 @@ commands:
 
 `/start` in a private chat is onboarding, never checked against the command allow-list. The poller
 saves a `pending` row in `members` and queues the "waiting" reply in the same transaction as the
-update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`),
-matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
-`Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
+update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`)
+through t6-core (the gateway has no Notion client or property names of its own), finds the
+candidates (see "Matching" below), and queues an approval card for `onboarding.approver` with inline buttons. A slow or
 down Notion never holds up polling. `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
+
+### Matching
+
+`onboarding.matching` picks who finds the candidate Contacts:
+
+- `shadow` (the default): the gateway's own matching from before t6-core decides (handle or alias,
+  else the closest names at WRatio 60, up to 3). t6-core's matching runs beside it, and each
+  lookup writes one `matching` row to the `audit` table: `user=<id> same=<bool> same_set=<bool>
+  legacy=<n> core=<n> method=<how core decided>`. No names. Read them with the audit query under
+  "Health, deadman, retention, logs" and look for `same_set=False`.
+- `core`: t6-core's matching decides: Telegram id, handle, alias, then fuzzy names (WRatio 90 with
+  a lead of 8), with up to 3 suggestions at WRatio 60 or more when no one is confident. The
+  approval rules do not change: the approver still presses a button, and a Contact that already
+  holds the person's id is the only auto-approval.
+
+One known difference: t6-core ranks a handle above an alias, so a Contact that has the person's
+handle as an *alias* is no longer listed beside the Contact that has it as the handle. After the
+audit rows look right, set `matching: core` and restart; a later change removes the legacy code
+and this option. Roll back by setting it to `shadow`.
 
 ### When Notion or Telegram fail
 
@@ -401,8 +420,8 @@ link built from the bot's id and the card's message id.
   `docker compose exec gateway python -c "import sqlite3; [print(r) for r in sqlite3.connect('/app/data/gateway.db').execute('select datetime(at,\'unixepoch\'),event,module,detail from audit order by id desc limit 30')]"`.
 - **Logs** (`docker compose logs -f gateway`): one line per update received (id, chat, topic,
   routed module), per send outcome, per auth failure and per repaired or missing delivery. Message text is never logged. Every log
-  line, including tracebacks, goes through a redactor that replaces the bot token, every module
-  secret, anything shaped like a bot token and any `Bearer ...` value with `[redacted]`. The same
+  line, including tracebacks, goes through t6-core's exact-secret scrubber (`t6.privacy`), which
+  replaces the bot token, the Notion key and every module secret with `[redacted]`. The same
   scrub is applied to send errors before they are stored in `outbound` or `audit`.
 
 ## Run
@@ -447,14 +466,13 @@ port and `gateway` / `sixto-gateway` DNS aliases. It uses kernel networking and 
 pinned image, advertises `tag:t6-gateway`, and keeps node identity in the named
 `tailscale_state` volume. Do not delete that volume on restart, update, or rollback.
 
-**Operational blocker — do not enable for unattended production use yet.** The gateway
-shares the sidecar's network namespace. An unexpected sidecar crash/restart or
-recreation can leave the gateway attached to a stale or unavailable namespace;
-Docker restart policies and Compose startup health dependencies do not establish
-automatic namespace recovery. Daemon/host reboot ordering and recovery have not been
-validated. An unhealthy sidecar is not automatically restarted by its health check.
-Arrange monitoring and an operator, and validate crash, recreation and reboot recovery
-in an isolated environment before cutover. Otherwise keep the default deployment.
+**Known limitation (accepted 2026-11-14).** The gateway shares the sidecar's network
+namespace. An unexpected sidecar crash, recreation or host reboot can leave the gateway attached
+to a stale namespace, and neither Docker restart policies nor Compose health dependencies recover
+that on their own. The recovery is manual and short (see "Recover after a sidecar restart" in
+`docs/tailscale-sidecar-runbook.md`), so someone has to be watching: the post-deploy check in
+t6-netops reports the gateway node as offline. The step-by-step enable, check and rollback
+procedure is in `docs/tailscale-sidecar-runbook.md`; the details below are the reference.
 
 Before switching, back up the existing untracked `compose.override.yaml` and check
 its actual network aliases and port binding. Add any additional aliases to the

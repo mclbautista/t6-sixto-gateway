@@ -6,11 +6,10 @@ import io
 import httpx
 import pytest
 
-from sixto_gateway.__main__ import main, redactor_for
+from sixto_gateway.__main__ import configure_logging, main, scrubber_for
 from sixto_gateway.api import create_app
 from sixto_gateway.config import load_config
 from sixto_gateway.liveness import DEADMAN_SECONDS, Liveness, watch_deadman
-from sixto_gateway.logsafe import configure_logging
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.poller import Poller
 from sixto_gateway.retention import run_retention
@@ -425,7 +424,7 @@ class LeakyTelegram(FakeTelegram):
 async def test_no_log_line_contains_a_secret_or_the_token(tmp_path, clock):
     config = load_config(write_config(tmp_path), ENV)
     stream = io.StringIO()
-    configure_logging(redactor_for(config), stream)
+    configure_logging(scrubber_for(config), stream)
     store = Store(config.database_path, clock=clock)
     telegram = LeakyTelegram([])
     notifier, wake = Notifier(), Notifier()
@@ -451,7 +450,7 @@ async def test_no_log_line_contains_a_secret_or_the_token(tmp_path, clock):
                 json={"to": 1, "text": "SECRET BODY TEXT", "format": "plain"},
             )
         ).json()["message_ref"]
-        await Sender(store, telegram, wake, scrub=redactor_for(config).scrub).send_next()
+        await Sender(store, telegram, wake, scrub=scrubber_for(config).scrub).send_next()
         status = await client.get(f"/notify/{ref}", headers={"Authorization": f"Bearer {WATCHDOG}"})
 
     output = stream.getvalue()
@@ -466,7 +465,7 @@ async def test_no_log_line_contains_a_secret_or_the_token(tmp_path, clock):
 async def test_a_successful_send_logs_one_line_without_the_text(tmp_path, clock):
     config = load_config(write_config(tmp_path), ENV)
     stream = io.StringIO()
-    configure_logging(redactor_for(config), stream)
+    configure_logging(scrubber_for(config), stream)
     store = Store(config.database_path, clock=clock)
     store.enqueue_outbound(
         "watchdog",
@@ -480,10 +479,11 @@ async def test_a_successful_send_logs_one_line_without_the_text(tmp_path, clock)
     assert "PRIVATE WORDS" not in output
 
 
-def test_redactor_scrubs_configured_secrets_tokens_and_bearer_values():
-    from sixto_gateway.logsafe import Redactor
-
-    redactor = Redactor(["supersecretvalue"])
-    text = "a supersecretvalue b bot111111:ABCDEFGHIJKLMNOPQRSTUVWX c Authorization: Bearer abc.def"
-    out = redactor.scrub(text)
-    assert "supersecretvalue" not in out and "ABCDEFGH" not in out and "abc.def" not in out
+def test_the_scrubber_removes_every_configured_secret(tmp_path):
+    config = load_config(write_config(tmp_path), ENV)
+    scrub = scrubber_for(config).scrub
+    text = " ".join(config.secrets.redaction_values())
+    assert scrub(f"url https://api.telegram.org/bot{TOKEN}/x") == (
+        "url https://api.telegram.org/bot[redacted]/x"
+    )
+    assert not any(secret in scrub(text) for secret in config.secrets.redaction_values())
