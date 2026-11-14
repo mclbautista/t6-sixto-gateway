@@ -48,6 +48,11 @@ class Poller:
     def decide(self, update: IncomingUpdate) -> Decision:
         """``/start`` is onboarding. Configured and private-chat commands use the allow-list;
         the rest is routed."""
+        if update.events:
+            modules = self._store.chat_subscription_modules(update.chat_id)
+            return Decision(
+                modules[0] if modules else None, kind="event", additional_modules=tuple(modules[1:])
+            )
         if update.callback_id is not None:
             return decide_tap(self._config, update)
         if update.command == "start":

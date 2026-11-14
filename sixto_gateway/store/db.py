@@ -158,6 +158,12 @@ class Store:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def chat_subscription_modules(self, chat: int) -> list[str]:
+        rows = self._db.execute(
+            "SELECT DISTINCT module FROM subscriptions WHERE chat = ? ORDER BY module", (chat,)
+        ).fetchall()
+        return [row[0] for row in rows]
+
     def original_modules(self, chat: int, message_id: int) -> tuple[bool, list[str]]:
         row = self._db.execute(
             "SELECT update_id FROM updates WHERE chat_id = ? AND message_id = ? AND edited = 0"
@@ -218,9 +224,13 @@ class Store:
                     ([module] if module is not None else []) + list(decision.additional_modules)
                 )
                 for recipient in modules:
-                    new_seq = self._insert_delivery(update, decision.kind, recipient, received_at)
-                    if seq is None:
-                        seq = new_seq
+                    events = update.events if decision.kind == "event" else (None,)
+                    for event in events:
+                        new_seq = self._insert_delivery(
+                            update, decision.kind, recipient, received_at, event
+                        )
+                        if seq is None:
+                            seq = new_seq
                     if not self._has_delivery(update.update_id, recipient):
                         raise RuntimeError(
                             f"update {update.update_id} routed to {recipient} has no delivery"
@@ -309,9 +319,14 @@ class Store:
         return row is not None
 
     def _insert_delivery(
-        self, update: IncomingUpdate, kind: str, module: str, received_at: float
+        self,
+        update: IncomingUpdate,
+        kind: str,
+        module: str,
+        received_at: float,
+        event: dict[str, Any] | None = None,
     ) -> int | None:
-        payload = json.dumps(_item_payload(update, kind), ensure_ascii=False)
+        payload = json.dumps({**_item_payload(update, kind), **(event or {})}, ensure_ascii=False)
         return self._db.execute(
             "INSERT INTO deliveries (module, kind, update_id, payload, created_at)"
             " VALUES (?, ?, ?, ?, ?)",
@@ -322,7 +337,12 @@ class Store:
         self, update: IncomingUpdate, kind: str, module: str, received_at: float
     ) -> int | None:
         """A re-fetched update was stored for ``module`` without its delivery: add it now."""
-        seq = self._insert_delivery(update, kind, module, received_at)
+        events = update.events if kind == "event" else (None,)
+        seq = None
+        for event in events:
+            new_seq = self._insert_delivery(update, kind, module, received_at, event)
+            if seq is None:
+                seq = new_seq
         log.warning(
             "update %s was stored without a delivery for %s: repaired as seq %s",
             update.update_id,

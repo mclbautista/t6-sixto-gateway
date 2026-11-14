@@ -35,12 +35,15 @@ class IncomingUpdate:
     has_file: bool = False
     has_link: bool = False
     topic_name: str | None = None
+    events: tuple[dict[str, Any], ...] = ()
 
 
 def normalize(update: Any) -> IncomingUpdate | None:
     """Turn an aiogram ``Update`` into an ``IncomingUpdate``; None for unsupported kinds."""
     if getattr(update, "callback_query", None) is not None:
         return _normalize_tap(update, update.callback_query)
+    if getattr(update, "chat_member", None) is not None:
+        return _normalize_member(update)
     message = update.message or update.edited_message
     if message is None:
         return None
@@ -78,6 +81,58 @@ def normalize(update: Any) -> IncomingUpdate | None:
         )
         or bool(re.search(r"(?i)\b(?:https?://|www\.)\S+", message.caption or "")),
         topic_name=getattr(message, "topic_name", None),
+        events=_message_events(raw.get("message", {})),
+    )
+
+
+def _message_events(message: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    topic = message.get("message_thread_id")
+    if message.get("forum_topic_created") and topic is not None:
+        return (
+            {
+                "event": "topic_created",
+                "topic": topic,
+                "name": message["forum_topic_created"]["name"],
+            },
+        )
+    edited = message.get("forum_topic_edited") or {}
+    if edited.get("name") is not None and topic is not None:
+        return ({"event": "topic_renamed", "topic": topic, "name": edited["name"]},)
+    if message.get("new_chat_members"):
+        return tuple(
+            {"event": "member_joined", "user": user} for user in message["new_chat_members"]
+        )
+    if message.get("left_chat_member"):
+        return ({"event": "member_left", "user": message["left_chat_member"]},)
+    return ()
+
+
+def _normalize_member(update: Any) -> IncomingUpdate | None:
+    raw = update.model_dump(mode="json", exclude_unset=True)
+    member = raw["chat_member"]
+
+    def present(value: dict[str, Any]) -> bool:
+        return value["status"] in ("creator", "administrator", "member") or (
+            value["status"] == "restricted" and value.get("is_member", False)
+        )
+
+    old, new = member["old_chat_member"], member["new_chat_member"]
+    if present(old) == present(new):
+        return None
+    event = "member_joined" if present(new) else "member_left"
+    return IncomingUpdate(
+        update_id=update.update_id,
+        chat_id=member["chat"]["id"],
+        topic_id=None,
+        message_id=0,
+        from_id=update.chat_member.from_user.id,
+        from_username=update.chat_member.from_user.username,
+        text="",
+        edited=False,
+        edit_date=None,
+        raw=raw,
+        chat_type=member["chat"]["type"],
+        events=({"event": event, "user": new["user"]},),
     )
 
 

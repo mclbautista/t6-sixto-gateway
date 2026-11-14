@@ -1,0 +1,5 @@
+{
+  "topic_created": {"update_id": 101, "message": {"message_id": 101, "message_thread_id": 77, "date": 1700000000, "chat": {"id": -1001234567890, "type": "supergroup", "is_forum": true}, "forum_topic_created": {"name": "Example", "icon_color": 7322096}}},
+  "topic_edited": {"update_id": 102, "message": {"message_id": 102, "message_thread_id": 77, "date": 1700000000, "chat": {"id": -1001234567890, "type": "supergroup", "is_forum": true}, "forum_topic_edited": {"name": "Renamed"}}},
+  "chat_member": {"update_id": 103, "chat_member": {"chat": {"id": -1001234567890, "type": "supergroup"}, "from": {"id": 101, "is_bot": false, "first_name": "Operator"}, "date": 1700000000, "old_chat_member": {"status": "left", "user": {"id": 102, "is_bot": false, "first_name": "Member"}}, "new_chat_member": {"status": "member", "user": {"id": 102, "is_bot": false, "first_name": "Member"}}}}
+}

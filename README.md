@@ -67,6 +67,10 @@ the whole chat; an integer matches that topic. An empty array removes all subscr
 `GET /subscriptions` returns the caller's current array. Subscriptions persist across restarts
 and share the same delivery cursor and retention rules as fixed routes.
 
+Subscribed modules receive `event` items for topic creation and renaming and member joins
+and departures in the chat. Each item has an `event` name and a topic `name` or Telegram
+`user` object. Sixto must be an administrator in the chat to receive `chat_member` updates.
+
 ## Taps on a module's buttons
 
 A tap on a button that `/notify` put on a message (callback data `mod:<module>:<payload>`) goes
