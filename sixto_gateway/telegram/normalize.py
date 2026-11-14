@@ -86,6 +86,19 @@ def normalize(update: Any) -> IncomingUpdate | None:
 
 
 def _message_events(message: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    chat = message.get("chat", {}).get("id")
+    if message.get("migrate_to_chat_id") is not None:
+        return (
+            {"event": "chat_migrated", "old_chat": chat, "new_chat": message["migrate_to_chat_id"]},
+        )
+    if message.get("migrate_from_chat_id") is not None:
+        return (
+            {
+                "event": "chat_migrated",
+                "old_chat": message["migrate_from_chat_id"],
+                "new_chat": chat,
+            },
+        )
     topic = message.get("message_thread_id")
     if message.get("forum_topic_created") and topic is not None:
         return (

@@ -204,6 +204,35 @@ class Store:
         module = decision.module
         seq: int | None = None
         with self._transaction():
+            migration = next(
+                (event for event in update.events if event["event"] == "chat_migrated"), None
+            )
+            migration_modules: list[str] | None = None
+            if migration is not None:
+                old_chat, new_chat = migration["old_chat"], migration["new_chat"]
+                migration_modules = list(
+                    dict.fromkeys(
+                        self.chat_subscription_modules(old_chat)
+                        + self.chat_subscription_modules(new_chat)
+                    )
+                )
+                first = self._db.execute(
+                    "INSERT OR IGNORE INTO chat_migrations (old_chat, new_chat) VALUES (?, ?)",
+                    (old_chat, new_chat),
+                ).rowcount
+                self._db.execute(
+                    "UPDATE subscriptions SET chat = ? WHERE chat = ?", (new_chat, old_chat)
+                )
+                # A module can already have the same subscription on the new chat.
+                self._db.execute(
+                    "DELETE FROM subscriptions WHERE chat = ? AND rowid NOT IN "
+                    "(SELECT MIN(rowid) FROM subscriptions WHERE chat = ? "
+                    "GROUP BY module, chat, topic)",
+                    (new_chat, new_chat),
+                )
+                if not first:
+                    migration_modules = []
+                module = migration_modules[0] if migration_modules else None
             inserted = self._db.execute(
                 "INSERT OR IGNORE INTO updates (update_id, chat_id, topic_id, message_id,"
                 " from_id, edited, module, raw, received_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -221,7 +250,10 @@ class Store:
             ).rowcount
             if inserted:
                 modules = dict.fromkeys(
-                    ([module] if module is not None else []) + list(decision.additional_modules)
+                    migration_modules
+                    if migration_modules is not None
+                    else ([module] if module is not None else [])
+                    + list(decision.additional_modules)
                 )
                 for recipient in modules:
                     events = update.events if decision.kind == "event" else (None,)
