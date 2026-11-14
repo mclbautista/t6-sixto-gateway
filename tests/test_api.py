@@ -4,6 +4,7 @@ import time
 
 import httpx
 import pytest
+from aiogram.types import Update
 
 from sixto_gateway.api import create_app
 from sixto_gateway.config import load_config
@@ -178,3 +179,58 @@ async def test_edited_flag_is_served(env, client):
     await feed(env, [fixture_updates()["edit"]])
     (item,) = (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"]
     assert item["edited"] is True and item["edit_date"] is not None
+
+
+@pytest.mark.parametrize(
+    ("kind", "media"),
+    [
+        ("document", {"file_id": "f", "file_unique_id": "u"}),
+        ("video", {"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1, "duration": 1}),
+        ("photo", [{"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1}]),
+        ("audio", {"file_id": "f", "file_unique_id": "u", "duration": 1}),
+        ("voice", {"file_id": "f", "file_unique_id": "u", "duration": 1}),
+        (
+            "animation",
+            {"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1, "duration": 1},
+        ),
+    ],
+)
+async def test_message_item_media_fields(env, client, kind, media):
+    raw = intake(1)
+    raw["message"][kind] = media
+    await feed(env, [raw])
+    item = (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"][0]
+    assert item["has_file"] is True
+    assert item["has_link"] is False
+    assert item["raw"] == Update.model_validate(raw).model_dump(mode="json", exclude_unset=True)
+
+
+async def test_message_item_link_reply_and_topic_fields(env, client):
+    plain = intake(1)
+    document = moved(fixture_updates()["document"], update_id=2)
+    linked = moved(fixture_updates()["text_link"], update_id=3)
+    caption = moved(fixture_updates()["caption"], update_id=4)
+    caption["message"]["caption"] = "See https://example.com/file"
+    caption["message"]["reply_to_message"] = {
+        "message_id": 42,
+        "date": 1789700000,
+        "chat": caption["message"]["chat"],
+    }
+    caption["message"]["topic_name"] = "Example topic"
+    url_entity = intake(5)
+    url_entity["message"]["entities"] = [{"type": "url", "offset": 0, "length": 3}]
+    caption_entity = moved(fixture_updates()["caption"], update_id=6)
+    caption_entity["message"]["caption_entities"] = [
+        {"type": "text_link", "offset": 0, "length": 3, "url": "https://example.com"}
+    ]
+    await feed(env, [plain, document, linked, caption, url_entity, caption_entity])
+    items = (await client.get("/updates", headers=auth(WATCHDOG))).json()["items"]
+    assert items[0]["has_file"] is False and items[0]["has_link"] is False
+    assert items[0]["reply_to_message_id"] is None and "topic_name" not in items[0]
+    assert items[1]["has_file"] is True
+    assert all(item["has_link"] is True for item in items[2:])
+    assert items[3]["reply_to_message_id"] == 42
+    assert items[3]["topic_name"] == "Example topic"
+    assert items[3]["raw"] == Update.model_validate(caption).model_dump(
+        mode="json", exclude_unset=True
+    )

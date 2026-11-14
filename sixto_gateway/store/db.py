@@ -961,6 +961,14 @@ def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any
     elif kind == "tap":
         parsed = parse_module_callback(update.callback_data)
         extra = {"data": parsed[1] if parsed else ""}
+    if kind != "tap":
+        extra.update(
+            reply_to_message_id=update.reply_to_message_id,
+            has_file=update.has_file,
+            has_link=update.has_link,
+        )
+        if update.topic_name is not None:
+            extra["topic_name"] = update.topic_name
     return {
         **extra,
         "kind": kind,
