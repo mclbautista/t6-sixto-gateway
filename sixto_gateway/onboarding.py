@@ -14,10 +14,11 @@ import html
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from t6.domain import Contact
+from t6.domain.studio_time import MANILA
 
 from sixto_gateway import strings
 from sixto_gateway.config import Config
@@ -32,7 +33,6 @@ from sixto_gateway.telegram.normalize import IncomingUpdate
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 CALLBACK_PREFIX = "ob"
-MANILA = timezone(timedelta(hours=8))
 # A failed lookup is retried 1, 5 and 30 minutes after the first failure; the next failure
 # sends the card marked "Lookup failed".
 LOOKUP_RETRY_AFTER_SECONDS = (60.0, 300.0, 1800.0)

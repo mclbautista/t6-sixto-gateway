@@ -37,7 +37,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog), `T6_OPERATOR_IDS` (the Telegram ids behind the `operators` group, the same setting t6-core reads) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,
@@ -304,8 +304,8 @@ shows it yet (pending, updated, or failed after retries). The gateway sends that
 
 **Rollout.** Deploy t6-core with `/project` support first; this gateway version can go out
 before or after it, because nothing is pushed until the command is in `config.yaml`. Then add
-the `project` command and the `operators` group (the same Telegram ids as t6-core's
-`T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
+the `project` command (`allow: [operators]`) to `config.yaml`, set `T6_OPERATOR_IDS` in `.env`
+(the same value as t6-core's) and restart the gateway, which also puts `/project` in
 those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
 gets the refusal. The push goes to the tailnet-only tap URL the taps already use (see
 "Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the

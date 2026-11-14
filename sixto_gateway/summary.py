@@ -18,11 +18,13 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from t6.domain.studio_time import MANILA
+
 from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import GATEWAY_MODULE
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.onboarding import MANILA, full_name
+from sixto_gateway.onboarding import full_name
 from sixto_gateway.store import Store
 from sixto_gateway.store.db import SECONDS_PER_DAY
 

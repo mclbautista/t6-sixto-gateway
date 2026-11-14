@@ -23,7 +23,7 @@ NOTION_YAML = (
     f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
     f"onboarding: {{approver: {APPROVER}}}\n"
 )
-NOTION_ENV = {"NOTION_API_KEY": "ntn_" + "k" * 40}
+NOTION_ENV = {"NOTION_API_KEY": "ntn_" + "k" * 40, "T6_OPERATOR_IDS": "100000001"}
 
 
 def fixture_updates() -> dict[str, dict]:

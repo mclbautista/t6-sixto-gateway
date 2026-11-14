@@ -25,6 +25,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from t6.domain.studio_people import OPERATOR_IDS_VARIABLE, operator_ids
 from t6.privacy import Scrubber
 
 from sixto_gateway.decision import GATEWAY_MODULE
@@ -32,6 +33,7 @@ from sixto_gateway.decision import GATEWAY_MODULE
 MIN_SECRET_LENGTH = 32
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 NOTION_KEY_ENV = "NOTION_API_KEY"
+OPERATORS_GROUP = "operators"  # not set in config: t6-core's T6_OPERATOR_IDS defines it
 
 
 class ConfigError(Exception):
@@ -183,6 +185,7 @@ class Config(_Model):
 
     # Attached by load_config; not part of the YAML schema.
     _secrets: Secrets | None = None
+    _operators: tuple[int, ...] = ()
 
     @property
     def secrets(self) -> Secrets:
@@ -191,6 +194,10 @@ class Config(_Model):
 
     def module_for_secret(self, presented: str) -> str | None:
         return self.secrets.module_for_secret(presented)
+
+    def group(self, name: str) -> list[int]:
+        """The Telegram user ids in a group. ``operators`` comes from t6-core's setting."""
+        return list(self._operators) if name == OPERATORS_GROUP else self.groups[name]
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -235,10 +242,14 @@ def _check_references(config: Config) -> list[str]:
         elif command.module not in config.modules:
             problems.append(f"command {name!r} names unknown module {command.module!r}")
         for entry in command.allow:
-            if isinstance(entry, str) and entry not in config.groups:
+            if isinstance(entry, str) and entry not in config.groups and entry != OPERATORS_GROUP:
                 problems.append(
                     f"command {name!r} allows {entry!r}, which is not a group or a user id"
                 )
+    if OPERATORS_GROUP in config.groups:
+        problems.append(
+            f"group {OPERATORS_GROUP!r} is set by {OPERATOR_IDS_VARIABLE}, not in config"
+        )
     return problems
 
 
@@ -310,7 +321,17 @@ def _validate(data: dict[str, Any], env: Mapping[str, str]) -> Config:
     problems = _check_references(config)
     secrets, secret_problems = _load_secrets(config, env)
     problems += secret_problems
+    operators: tuple[int, ...] = ()
+    try:
+        operators = operator_ids(env)
+    except ValueError:
+        problems.append(f"{OPERATOR_IDS_VARIABLE} must list whole Telegram user ids")
+    if not operators and any(OPERATORS_GROUP in c.allow for c in config.commands.values()):
+        problems.append(
+            f"{OPERATOR_IDS_VARIABLE} is not set (a command allows {OPERATORS_GROUP!r})"
+        )
     if problems:
         raise ConfigError("invalid config:\n  " + "\n  ".join(problems))
     object.__setattr__(config, "_secrets", secrets)
+    object.__setattr__(config, "_operators", operators)
     return config

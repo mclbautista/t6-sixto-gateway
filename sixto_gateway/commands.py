@@ -30,7 +30,7 @@ def allowed_commands(config: Config) -> dict[int, list[str]]:
     for name, command in config.commands.items():
         users: set[int] = set()
         for entry in command.allow:
-            users.update(config.groups[entry] if isinstance(entry, str) else [entry])
+            users.update(config.group(entry) if isinstance(entry, str) else [entry])
         for user in users:
             out.setdefault(user, []).append(name)
     return out
