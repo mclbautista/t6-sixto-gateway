@@ -21,6 +21,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-PyYAML",
+    "t6[lookup] @ git+https://github.com/mclbautista/t6-core.git@v0.4.1",
 ]
 
 [build-system]
