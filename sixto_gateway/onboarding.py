@@ -22,13 +22,7 @@ from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, NewMember, NewTap
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import (
-    Contact,
-    ContactsDirectory,
-    NotionError,
-    closest_contacts,
-    matches_handle,
-)
+from sixto_gateway.notion import Contact, ContactsDirectory, NotionError
 from sixto_gateway.people import PeopleDirectory
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
@@ -129,21 +123,6 @@ def id_fingerprint(telegram_id: str) -> str:
     return hashlib.sha256(telegram_id.encode()).hexdigest()[:6]
 
 
-def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact]:
-    """Contacts whose handle or an alias equals ``handle``. No handle, no candidates."""
-    if not handle:
-        return []
-    return [c for c in contacts if matches_handle(c, handle)]
-
-
-def find_candidates_for(contacts: list[Contact], member: dict[str, Any]) -> list[Contact]:
-    """Handle or alias matches; with none, the Contacts closest by name. Never picks one."""
-    exact = find_candidates(contacts, member["handle"])
-    if exact:
-        return exact
-    return closest_contacts(contacts, full_name(member))
-
-
 def holders_of_id(contacts: list[Contact], user_id: int) -> list[Contact]:
     """Contacts whose ``TelegramUserID`` is already this user's id."""
     return [c for c in contacts if c.telegram_user_id == str(user_id)]
@@ -219,14 +198,12 @@ def render_write_failed(member: dict[str, Any], retry_data: str) -> tuple[str, l
     return "\n".join(lines), [[{"text": strings.BUTTON_RETRY, "callback_data": retry_data}]]
 
 
-def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, Any]:
+def render_card(
+    member: dict[str, Any], candidates: list[Contact], *, by_handle: bool = False
+) -> dict[str, Any]:
     """The approver's card as an outbound body (HTML text plus inline buttons)."""
     user_id = member["telegram_user_id"]
     lines = _card_header(member)
-    handle = member["handle"]
-    by_handle = (
-        bool(handle) and bool(candidates) and all(matches_handle(c, handle) for c in candidates)
-    )
     single = len(candidates) == 1 and by_handle
     if not candidates:
         lines.append(strings.CARD_NO_MATCH)
@@ -316,6 +293,10 @@ class OnboardingWorker:
                 continue
             try:
                 contacts = await self._contacts.list_contacts()
+                if self._auto_approve(member, contacts):
+                    self._queue_wake.notify()
+                    return True
+                found, by_handle = await self._find_candidates(member)
             except NotionError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
@@ -330,20 +311,28 @@ class OnboardingWorker:
                     self._queue_wake.notify()
                     return True
                 continue
-            if self._auto_approve(member, contacts):
-                self._queue_wake.notify()
-                return True
-            found = find_candidates_for(contacts, member)
             self._store.queue_approval_card(
                 user,
                 [c.page_id for c in found],
                 self._approver,
-                render_card(member, found),
+                render_card(member, found, by_handle=by_handle),
                 f"matches={len(found)}",
             )
             self._queue_wake.notify()
             return True
         return False
+
+    async def _find_candidates(self, member: dict[str, Any]) -> tuple[list[Contact], bool]:
+        handle = member["handle"]
+        if handle:
+            found, exact = await self._contacts.find_contacts(handle)
+            if found:
+                return found[:3], exact
+        name = full_name(member)
+        if name:
+            found, _ = await self._contacts.find_contacts(name)
+            return found[:3], False
+        return [], False
 
     def _lookup_due(self, member: dict[str, Any], now: float) -> bool:
         """A lookup is tried at once, then again 1, 5 and 30 minutes after its first failure."""
@@ -437,15 +426,14 @@ class OnboardingWorker:
 
     async def _reoffer(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         try:
-            contacts = await self._contacts.list_contacts()
+            found, by_handle = await self._find_candidates(member)
         except NotionError:
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        found = find_candidates_for(contacts, member)
         user = member["telegram_user_id"]
         self._store.set_candidates(user, [c.page_id for c in found], f"matches={len(found)}")
         await self._answer(tap)
-        card = render_card(member, found)
+        card = render_card(member, found, by_handle=by_handle)
         await self._edit_card(tap, card["text"], card["keyboard"])
 
     async def _reject(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
@@ -464,6 +452,7 @@ class OnboardingWorker:
         user = member["telegram_user_id"]
         try:
             known = {c.page_id.replace("-", ""): c for c in await self._contacts.list_contacts()}
+            found, by_handle = await self._find_candidates(member)
         except NotionError as exc:
             self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
@@ -478,7 +467,8 @@ class OnboardingWorker:
         await self._answer(tap)
         fresh = self._store.member(user) or member
         if undone:
-            card = render_card(fresh, shown)
+            by_handle = by_handle and [c.page_id for c in shown] == [c.page_id for c in found]
+            card = render_card(fresh, shown, by_handle=by_handle)
             await self._edit_card(tap, card["text"], card["keyboard"])
         else:
             await self._rerender(tap, fresh)
@@ -513,18 +503,17 @@ class OnboardingWorker:
             await self._answer(tap)  # not a failed-lookup card any more
             return
         try:
-            contacts = await self._contacts.list_contacts()
+            found, by_handle = await self._find_candidates(member)
         except NotionError as exc:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        found = find_candidates_for(contacts, member)
         stored = self._store.set_candidates(
             user, [c.page_id for c in found], f"matches={len(found)}"
         )
         await self._answer(tap)
         if stored:
-            card = render_card(self._store.member(user) or member, found)
+            card = render_card(self._store.member(user) or member, found, by_handle=by_handle)
             await self._edit_card(tap, card["text"], card["keyboard"])
 
     async def _create(self, tap: dict[str, Any], member: dict[str, Any]) -> None:

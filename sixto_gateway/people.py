@@ -3,7 +3,15 @@
 import asyncio
 
 from t6.client import APIError, Client, Unavailable
-from t6.verbs import Done, PersonGetInput, PersonGetOutput, PersonListInput, PersonListOutput
+from t6.verbs import (
+    Done,
+    PersonFindInput,
+    PersonFindOutput,
+    PersonGetInput,
+    PersonGetOutput,
+    PersonListInput,
+    PersonListOutput,
+)
 
 from sixto_gateway.notion import Contact, NotionContacts, NotionError
 
@@ -39,6 +47,15 @@ class PeopleDirectory:
     async def list_contacts(self) -> list[Contact]:
         result = await self._call(self._client.person_list, PersonListInput())
         return [self._contact(p) for p in PersonListOutput.model_validate(result).people]
+
+    async def find_contacts(self, mention: str) -> tuple[list[Contact], bool]:
+        result = await self._call(self._client.person_find, PersonFindInput(mention=mention))
+        found = PersonFindOutput.model_validate(result)
+        if found.candidates:
+            contacts = [self._contact(person) for person in found.candidates[:3]]
+        else:
+            contacts = [self._contact(found.match)] if found.match else []
+        return contacts, found.method in ("normalized", "exact_id")
 
     async def get_contact(self, person_id: str) -> Contact:
         result = await self._call(self._client.person_get, PersonGetInput(person_id=person_id))

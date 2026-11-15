@@ -16,6 +16,7 @@ PAGE_ID = "aaaaaaaa-0000-0000-0000-000000000001"
 class FakeAPI:
     def __init__(self):
         self.unavailable = False
+        self.mentions = []
         self.person = {
             "t6_id": PERSON_ID,
             "page_id": PAGE_ID,
@@ -28,6 +29,21 @@ class FakeAPI:
     def person_list(self, inputs):
         return (
             Unavailable("offline") if self.unavailable else Done(result={"people": [self.person]})
+        )
+
+    def person_find(self, inputs):
+        self.mentions.append(inputs.mention)
+        if self.unavailable:
+            return Unavailable("offline")
+        return Done(
+            result={
+                "match": self.person,
+                "method": "normalized",
+                "score": 1,
+                "needs_review": False,
+                "reason": None,
+                "candidates": [],
+            }
         )
 
     def person_get(self, inputs):
@@ -108,3 +124,71 @@ def test_api_secret_is_redacted_from_logs_and_config_errors(config, tmp_path):
     with pytest.raises(ConfigError) as error:
         load_config(path, {"GATEWAY_T6_API_SECRET": secret})
     assert secret not in str(error.value)
+
+
+async def test_find_falls_back_to_name_and_shows_three_suggestions(config):
+    rig = Rig(config, [start_from(1, username="unknown", first="Example", last="Person")], [])
+    api = FakeAPI()
+    people = [
+        {**api.person, "t6_id": "t6n_" + str(i) * 32, "name": f"Placeholder {i}"}
+        for i in range(1, 5)
+    ]
+
+    def find(inputs):
+        api.mentions.append(inputs.mention)
+        return Done(
+            result={
+                "match": None,
+                "method": "review",
+                "score": 0.7,
+                "needs_review": True,
+                "reason": None,
+                "candidates": [] if inputs.mention == "unknown" else people,
+            }
+        )
+
+    api.person_find = find
+    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    await rig.settle()
+    assert api.mentions == ["unknown", "Example Person"]
+    assert [b["text"] for b in buttons(rig.card())] == [
+        "Pick Placeholder 1",
+        "Pick Placeholder 2",
+        "Pick Placeholder 3",
+        "Create new Contact",
+        "Reject",
+    ]
+    assert "Thanks for pressing Start" in rig.texts_to(USER)[0]
+    assert rig.store.member(USER)["status"] == "pending"
+
+
+async def test_duplicate_id_holders_are_not_auto_approved(config):
+    rig = Rig(config, [start_from(1)], [])
+    api = FakeAPI()
+    api.person["telegram_user_id"] = USER
+    other = {**api.person, "t6_id": "t6n_" + "2" * 32}
+    api.person_list = lambda inputs: Done(result={"people": [api.person, other]})
+    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    await rig.settle()
+    assert rig.store.member(USER)["status"] == "pending"
+    assert "Approve Example Person" in [b["text"] for b in buttons(rig.card())]
+    assert len(rig.texts_to(USER)) == 1
+
+
+async def test_fuzzy_handle_result_is_presented_as_suggestion(config):
+    rig = Rig(config, [start_from(1, username="approximate")], [])
+    api = FakeAPI()
+    api.person_find = lambda inputs: Done(
+        result={
+            "match": None,
+            "method": "review",
+            "score": 0.7,
+            "needs_review": True,
+            "reason": None,
+            "candidates": [api.person],
+        }
+    )
+    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    await rig.settle()
+    assert "Pick Example Person" in [b["text"] for b in buttons(rig.card())]
+    assert rig.store.member(USER)["status"] == "pending"

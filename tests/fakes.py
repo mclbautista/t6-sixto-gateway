@@ -286,6 +286,30 @@ class FakeNotion:
         self.calls = 0
         self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
 
+    async def find_contacts(self, mention: str) -> tuple[list[Contact], bool]:
+        from t6.domain import Contact as Person
+        from t6.lookup import Index, Lookup
+
+        if self.fail:
+            raise NotionError("Notion answered 503 (service_unavailable)")
+        people = tuple(
+            Person(
+                page_id=c.page_id,
+                name=c.name,
+                telegram_handle=c.telegram_handle,
+                aliases=tuple(a.strip() for a in c.aliases.split(",") if a.strip()),
+            )
+            for c in self.contacts
+        )
+        result = Lookup(Index(contacts=people)).contact(mention)
+        ids = [candidate.entity.page_id for candidate in result.candidates]
+        if not ids and result.entity:
+            ids = [result.entity.page_id]
+        return (
+            [next(c for c in self.contacts if c.page_id == page_id) for page_id in ids],
+            result.method in ("normalized", "exact_id"),
+        )
+
     async def get_contact(self, page_id: str) -> Contact:
         if self.fail:
             raise NotionError("Notion answered 503 (service_unavailable)")

@@ -10,7 +10,7 @@ import pytest
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import NotionContacts, NotionError, closest_contacts, matches_handle
+from sixto_gateway.notion import NotionContacts, NotionError
 from sixto_gateway.onboarding import OnboardingWorker, callback_data
 from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
@@ -148,10 +148,6 @@ async def test_start_from_a_matching_handle_gives_a_waiting_reply_and_a_card(con
 
 
 async def test_handle_matching_ignores_case_and_at_sign_and_reads_aliases(config):
-    assert matches_handle(JUAN, "JUANDC") and matches_handle(JUAN, "@juandc")
-    assert not matches_handle(JUAN, "juan") and not matches_handle(JUAN, "")
-    assert matches_handle(MARIA, "MariaSan") and matches_handle(MARIA, "mia")
-
     rig = Rig(config, [start_from(1, username="MariaSAN")], [JUAN, MARIA])
     await rig.settle()
     assert rig.store.member(USER)["candidates"] == [MARIA.page_id]
@@ -199,18 +195,8 @@ async def test_picking_a_closest_name_links_that_contact(config):
     assert rig.store.member(USER)["contact_page_id"] == MARIA.page_id
 
 
-def test_closest_contacts_ranks_names_and_aliases_and_ignores_honorifics():
-    kuya = contact("aaaaaaaa-0000-0000-0000-000000000004", "Pio Reyes", aliases="Kuya Pio")
-    ranked = closest_contacts([JUAN, MARIA, kuya], "ate mia")
-    assert [c.name for c in ranked] == ["Maria Santos"]
-    assert [c.name for c in closest_contacts([JUAN, MARIA, kuya], "Pio")] == ["Pio Reyes"]
-    assert closest_contacts([JUAN, MARIA], "") == []
-    many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(10)]
-    assert len(closest_contacts(many, "Juan")) == 3
-
-
 async def test_several_matches_get_one_button_each_and_no_single_approve(config):
-    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", aliases="juandc")
+    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", handle="@juandc")
     rig = Rig(config, [start_from(1)], [JUAN, twin])
     await rig.settle()
     assert [b["text"] for b in buttons(rig.card())] == [
@@ -452,7 +438,7 @@ async def test_replace_id_refuses_when_the_id_changed_since_the_card_was_sent(co
 
 
 async def test_replace_id_names_the_candidate_when_there_are_several(config):
-    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", aliases="juandc")
+    twin = contact("aaaaaaaa-0000-0000-0000-000000000003", "Juan D.", handle="@juandc")
     rig = await approved_rig(config, contacts=(TAKEN, twin))
     assert [b["text"] for b in buttons(rig.card())] == [
         "Replace ID: Juan Dela Cruz",
