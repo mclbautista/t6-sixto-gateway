@@ -61,7 +61,9 @@ commands:                                       # /jo arrives in phase 5
 groups:
   approvers: [100000001]                       # Telegram user ids
   coordinators: [100000002]                    # FILL IN: coordinator Telegram user ids
-  operators: [100000001]                       # who may send /project; the same ids as t6-core's T6_OPERATOR_IDS
+  # Gateway command allow-list (including /project), as Telegram user IDs. In t6, operator rights
+  # are defined by the Person permission. Keep these lists in step.
+  operators: [100000001]
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver
     - 100000002                                 # Moonfern

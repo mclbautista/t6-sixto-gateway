@@ -323,8 +323,10 @@ In the operator's DM the gateway posts it to t6-core's tap URL, like a tap, with
 
 (The item also carries `seq`, `topic`, `text`, `edited`, `edit_date` and `raw`, like every
 item.) `args` is empty for the list and is the new code after **Change code**. Anyone not on
-the gateway's allow-list gets the standard refusal and nothing is pushed. t6-core checks the
-sender against its own operator list as well and is the authority.
+the gateway's allow-list gets the standard refusal and nothing is pushed. The gateway defines
+that allow-list as Telegram user IDs in `groups.operators`; t6 defines operator rights through
+the Person permission. Keep the two lists in step so operators can use `/project` in both systems.
+t6-core checks the sender's permission as well and is the authority.
 
 **The card.** An ordinary `/notify`, then `/edit` each time the card moves on, with the
 keys `op-card:<token>` and `op-edit:<token>:<version>`:
@@ -358,9 +360,9 @@ shows it yet (pending, updated, or failed after retries). The gateway sends that
 
 **Rollout.** Deploy t6-core with `/project` support first; this gateway version can go out
 before or after it, because nothing is pushed until the command is in `config.yaml`. Then add
-the `project` command and the `operators` group (the same Telegram ids as t6-core's
-`T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
-those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
+the `project` command and the `groups.operators` Telegram user IDs to `config.yaml`, ensure the
+corresponding Persons have the operator permission in t6, and restart the gateway, which puts
+`/project` in those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
 gets the refusal. The push goes to the tailnet-only tap URL the taps already use (see
 "Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the
 command from `config.yaml` and restart; cards already sent keep working.
