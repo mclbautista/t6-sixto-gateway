@@ -32,6 +32,8 @@ from sixto_gateway.logsafe import Redactor
 MIN_SECRET_LENGTH = 32
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 NOTION_KEY_ENV = "NOTION_API_KEY"
+T6_SECRET_ENV = "GATEWAY_T6_API_SECRET"
+T6_URL_ENV = "T6_API_URL"
 
 
 class ConfigError(Exception):
@@ -131,12 +133,23 @@ class OnboardingConfig(_Model):
 class Secrets:
     """Env secrets. Deliberately opaque: repr and str never show a value."""
 
-    __slots__ = ("_bot_token", "_module_secrets", "_notion_api_key")
+    __slots__ = ("_bot_token", "_module_secrets", "_notion_api_key", "_t6_api_secret")
 
-    def __init__(self, bot_token: str, module_secrets: dict[str, str], notion_api_key: str = ""):
+    def __init__(
+        self,
+        bot_token: str,
+        module_secrets: dict[str, str],
+        notion_api_key: str = "",
+        t6_api_secret: str = "",
+    ):
         self._bot_token = bot_token
         self._module_secrets = module_secrets
         self._notion_api_key = notion_api_key
+        self._t6_api_secret = t6_api_secret
+
+    @property
+    def t6_api_secret(self) -> str:
+        return self._t6_api_secret
 
     @property
     def notion_api_key(self) -> str:
@@ -161,7 +174,12 @@ class Secrets:
 
     def redaction_values(self) -> list[str]:
         """Every secret value, for scrubbing logs. Only the log redactor should call this."""
-        return [self._bot_token, self._notion_api_key, *self._module_secrets.values()]
+        return [
+            self._bot_token,
+            self._notion_api_key,
+            self._t6_api_secret,
+            *self._module_secrets.values(),
+        ]
 
     def __repr__(self) -> str:
         return f"Secrets(modules={sorted(self._module_secrets)})"
@@ -183,6 +201,11 @@ class Config(_Model):
 
     # Attached by load_config; not part of the YAML schema.
     _secrets: Secrets | None = None
+    _t6_api_url: str = ""
+
+    @property
+    def t6_api_url(self) -> str:
+        return self._t6_api_url
 
     @property
     def secrets(self) -> Secrets:
@@ -248,6 +271,9 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
         problems.append(f"{BOT_TOKEN_ENV} is not set")
     if not env.get(NOTION_KEY_ENV):
         problems.append(f"{NOTION_KEY_ENV} is not set")
+    for var in (T6_URL_ENV, T6_SECRET_ENV):
+        if not env.get(var):
+            problems.append(f"{var} is not set")
     module_secrets: dict[str, str] = {}
     owners: dict[str, str] = {}
     for module, module_config in config.modules.items():
@@ -263,7 +289,10 @@ def _load_secrets(config: Config, env: Mapping[str, str]) -> tuple[Secrets, list
             owners[value] = module
             module_secrets[module] = value
     return Secrets(
-        env.get(BOT_TOKEN_ENV, ""), module_secrets, env.get(NOTION_KEY_ENV, "")
+        env.get(BOT_TOKEN_ENV, ""),
+        module_secrets,
+        env.get(NOTION_KEY_ENV, ""),
+        env.get(T6_SECRET_ENV, ""),
     ), problems
 
 
@@ -272,7 +301,7 @@ def _known_secrets(data: Any, env: Mapping[str, str]) -> list[str]:
     when the config is invalid: the bot token, every env value a ``modules.*.secret_env`` names,
     and any ``secret_env`` that is itself some env var's value (a secret pasted as the name).
     Each also in its ``repr`` form, because messages quote names with ``!r``."""
-    names = [BOT_TOKEN_ENV, NOTION_KEY_ENV]
+    names = [BOT_TOKEN_ENV, NOTION_KEY_ENV, T6_SECRET_ENV]
     modules = data.get("modules") if isinstance(data, dict) else None
     if isinstance(modules, dict):
         for module in modules.values():
@@ -312,5 +341,6 @@ def _validate(data: dict[str, Any], env: Mapping[str, str]) -> Config:
     problems += secret_problems
     if problems:
         raise ConfigError("invalid config:\n  " + "\n  ".join(problems))
+    object.__setattr__(config, "_t6_api_url", env[T6_URL_ENV])
     object.__setattr__(config, "_secrets", secrets)
     return config

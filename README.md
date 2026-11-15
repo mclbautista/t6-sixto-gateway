@@ -37,7 +37,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog) and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog), `T6_API_URL`, `GATEWAY_T6_API_SECRET` (the gateway service secret), and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,

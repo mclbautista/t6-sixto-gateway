@@ -22,7 +22,7 @@ import asyncio, sys, time
 import sixto_gateway.__main__ as entry
 from sixto_gateway.config import load_config
 from sixto_gateway.liveness import DEADMAN_SECONDS, Liveness
-from tests.fakes import NOTION_YAML, FakeClock, FakeTelegram
+from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
 
 entry.SHUTDOWN_GRACE_SECONDS = 0.2
 
@@ -38,7 +38,7 @@ liveness = Liveness(clock)
 clock.advance(DEADMAN_SECONDS)
 config = load_config(
     sys.argv[1],
-    {"TELEGRAM_BOT_TOKEN": "1:t", "WATCHDOG_SECRET": "w" * 40, "NOTION_API_KEY": "n" * 40},
+    {"TELEGRAM_BOT_TOKEN": "1:t", "WATCHDOG_SECRET": "w" * 40, **NOTION_ENV},
 )
 sys.exit(entry.run_serving(entry.serve(config, StuckInAThread([]), liveness)))
 """

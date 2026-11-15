@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import html
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from sixto_gateway.notion import (
     closest_contacts,
     matches_handle,
 )
+from sixto_gateway.people import PeopleDirectory
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
@@ -170,13 +172,13 @@ def _card_header(member: dict[str, Any]) -> list[str]:
     ]
 
 
-def render_outcome(member: dict[str, Any], contact_name: str | None = None) -> str:
+def render_outcome(member: dict[str, Any], contact_name: str | None = None, url: str = "") -> str:
     """The card's text once the member is decided: the same header and the outcome, no buttons."""
     lines = _card_header(member)
     status = member["status"]
     if status == "approved":
         page = member["contact_page_id"] or ""
-        url = contact_url(page)
+        url = url or contact_url(page)
         label = html.escape(contact_name or strings.OUTCOME_CONTACT)
         lines.append(strings.OUTCOME_APPROVED.format(link=f'<a href="{url}">{label}</a>'))
     elif status == "blocked":
@@ -426,7 +428,25 @@ class OnboardingWorker:
             if chosen is None:
                 await self._answer(tap)
                 return
+            if not re.fullmatch(r"t6n_[0-9a-f]{32}", chosen) and isinstance(
+                self._contacts, PeopleDirectory
+            ):
+                await self._reoffer(tap, member)
+                return
             await self._approve(tap, member, chosen, replace=action == "rep", seen=seen)
+
+    async def _reoffer(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        try:
+            contacts = await self._contacts.list_contacts()
+        except NotionError:
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return
+        found = find_candidates_for(contacts, member)
+        user = member["telegram_user_id"]
+        self._store.set_candidates(user, [c.page_id for c in found], f"matches={len(found)}")
+        await self._answer(tap)
+        card = render_card(member, found)
+        await self._edit_card(tap, card["text"], card["keyboard"])
 
     async def _reject(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         """Nothing is written to Notion. The card keeps one Undo button."""
@@ -579,10 +599,15 @@ class OnboardingWorker:
         if wrote:
             replaced = f" replaced_id={old_id}" if old_id else ""
             self._store.audit("notion_write", None, f"user={user} contact={page_id}{replaced}")
-        await self._finish_approval(tap, member, page_id, contact.name)
+        await self._finish_approval(tap, member, page_id, contact.name, contact.url)
 
     async def _finish_approval(
-        self, tap: dict[str, Any], member: dict[str, Any], page_id: str, contact_name: str
+        self,
+        tap: dict[str, Any],
+        member: dict[str, Any],
+        page_id: str,
+        contact_name: str,
+        url: str = "",
     ) -> None:
         user = member["telegram_user_id"]
         reply = {
@@ -590,7 +615,7 @@ class OnboardingWorker:
             "topic": None,
             "text": strings.APPROVED.format(
                 first_name=strings.first_name_or_there(member["first_name"]),
-                contact_url=contact_url(page_id),
+                contact_url=url or contact_url(page_id),
             ),
             "format": "plain",
         }
@@ -599,7 +624,7 @@ class OnboardingWorker:
         if approved:
             self._queue_wake.notify()
             fresh = self._store.member(user) or member
-            await self._edit_card(tap, render_outcome(fresh, contact_name))
+            await self._edit_card(tap, render_outcome(fresh, contact_name, url))
         else:  # decided while Notion was being written
             await self._rerender(tap, self._store.member(user) or member)
 
