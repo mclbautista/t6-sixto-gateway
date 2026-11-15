@@ -49,7 +49,7 @@ BUTTON_CREATE = "Create new Contact"
 BUTTON_REJECT = "Reject"
 BUTTON_UNDO = "Undo"
 BUTTON_RETRY = "Retry"
-CARD_LOOKUP_FAILED = "Lookup failed: Notion did not answer. Tap Retry, or choose below."
+CARD_LOOKUP_FAILED = "Lookup failed: Person API did not answer. Tap Retry, or choose below."
 CARD_WRITE_FAILED = (
     "Write failed: Notion did not accept the change. Nothing was changed. Tap Retry."
 )

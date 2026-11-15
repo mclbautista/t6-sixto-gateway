@@ -31,6 +31,7 @@ class Contact:
     telegram_handle: str = ""
     aliases: str = ""
     telegram_user_id: str = ""
+    notion_page_id: str = ""
     user_id_kind: str = "number"  # the TelegramUserID property type: "number" or "rich_text"
 
 

@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Coroutine
 
 import uvicorn
 from aiogram import Bot
+from t6.client import Client
 
 from sixto_gateway.api import create_app
 from sixto_gateway.commands import register_menus
@@ -24,6 +25,7 @@ from sixto_gateway.liveness import Liveness
 from sixto_gateway.logsafe import Redactor, configure_logging
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.notion import ContactsDirectory, NotionContacts
+from sixto_gateway.people import PeopleDirectory
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
 from sixto_gateway.store.db import StoreCorrupt, backup
@@ -69,7 +71,7 @@ async def serve(
             config.notion.contacts_data_source_id,
             config.notion.version,
         )
-        contacts = notion
+        contacts = PeopleDirectory(Client(config.t6_api_url, config.secrets.t6_api_secret), notion)
     if config.telegram.polling:
         await _register_menus_bounded(store, client, config)
     workers = start_workers(

@@ -10,7 +10,13 @@ from sixto_gateway.store import Store
 from sixto_gateway.store.db import StoreCorrupt
 from tests.fakes import NOTION_YAML
 
-ENV = {"TELEGRAM_BOT_TOKEN": "1:t", "WATCHDOG_SECRET": "w" * 40, "NOTION_API_KEY": "n" * 40}
+ENV = {
+    "TELEGRAM_BOT_TOKEN": "1:t",
+    "WATCHDOG_SECRET": "w" * 40,
+    "NOTION_API_KEY": "n" * 40,
+    "T6_API_URL": "https://example.invalid",
+    "GATEWAY_T6_API_SECRET": "test-secret",
+}
 
 
 @pytest.fixture

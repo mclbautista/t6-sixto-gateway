@@ -15,7 +15,8 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY sixto_gateway ./sixto_gateway
-RUN pip install . \
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && pip install . \
     && mkdir -p /app/data \
     && chown gateway:gateway /app/data \
     && chmod 0700 /app/data
