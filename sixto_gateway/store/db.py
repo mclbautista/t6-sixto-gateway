@@ -7,7 +7,7 @@ import logging
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,18 @@ AUDIT_RETENTION_DAYS = 180
 
 class StoreCorrupt(RuntimeError):
     """The database file failed SQLite's integrity check at startup (t6-jo-watchdog#131)."""
+
+
+def _contact_key(contact_id: str) -> str:
+    """A Contact id as the members table compares it: no dashes, lower case."""
+    return contact_id.replace("-", "").lower()
+
+
+def _contact_columns(contact_page_id: str, notion_page_id: str) -> tuple[str | None, str | None]:
+    """``(T6 id, Notion page id)`` to store for a Contact; None for the one not known."""
+    if contact_page_id.startswith("t6n_"):
+        return _contact_key(contact_page_id), (_contact_key(notion_page_id) or None)
+    return None, _contact_key(notion_page_id or contact_page_id)
 
 
 def backup(source: str | Path, dest: str | Path) -> str:
@@ -614,20 +626,53 @@ class Store:
         )
         return {normalize_handle(r[0]) for r in rows if r[0]}
 
-    def approved_user_for_contact(self, contact_page_id: str) -> int | None:
+    def approved_user_for_contact(self, *contact_ids: str) -> int | None:
         """The Telegram user id of the approved member linked to a Contact, else None.
 
-        Dashes in the page id do not matter. ``/notify`` addresses people through this.
+        Each id is a Notion page id (dashes and case do not matter) or a T6 Person id; a member
+        matches on whichever of the two their row has. ``/notify`` addresses people through this.
         """
+        ids = [_contact_key(i) for i in contact_ids if i]
+        if not ids:
+            return None
+        marks = ",".join("?" * len(ids))
         row = self._db.execute(
-            "SELECT telegram_user_id FROM members WHERE status = 'approved'"
-            " AND REPLACE(contact_page_id, '-', '') = ?",
-            (contact_page_id.replace("-", ""),),
+            "SELECT telegram_user_id FROM members WHERE status = 'approved' AND ("
+            f"LOWER(REPLACE(contact_page_id, '-', '')) IN ({marks})"
+            f" OR contact_t6_id IN ({marks}) OR contact_notion_id IN ({marks}))",
+            ids * 3,
         ).fetchone()
         return None if row is None else int(row[0])
 
+    def learn_contact_ids(self, pairs: Iterable[tuple[str, str]]) -> None:
+        """Fill the missing ID of approved members from Contacts that show both.
+
+        Each pair is ``(t6 id, notion page id)`` of one listed Contact. A row that has only one
+        of them gets the other; a row with both, or with neither, is left alone.
+        """
+        with self._transaction():
+            for t6_id, notion_id in pairs:
+                if not (t6_id and notion_id):
+                    continue
+                t6, notion = _contact_key(t6_id), _contact_key(notion_id)
+                self._db.execute(
+                    "UPDATE members SET contact_t6_id = ? WHERE status = 'approved'"
+                    " AND contact_t6_id IS NULL AND contact_notion_id = ?",
+                    (t6, notion),
+                )
+                self._db.execute(
+                    "UPDATE members SET contact_notion_id = ? WHERE status = 'approved'"
+                    " AND contact_notion_id IS NULL AND contact_t6_id = ?",
+                    (notion, t6),
+                )
+
     def approve_member(
-        self, user_id: int, contact_page_id: str, decided_by: int, reply: dict[str, Any]
+        self,
+        user_id: int,
+        contact_page_id: str,
+        decided_by: int,
+        reply: dict[str, Any],
+        notion_page_id: str = "",
     ) -> bool:
         """Mark a pending member approved and queue their "approved" reply, in one transaction.
 
@@ -638,10 +683,18 @@ class Store:
             with self._transaction():
                 now = self._clock()
                 updated = self._db.execute(
-                    "UPDATE members SET status = 'approved', contact_page_id = ?, decided_by = ?,"
+                    "UPDATE members SET status = 'approved', contact_page_id = ?,"
+                    " contact_t6_id = ?, contact_notion_id = ?, decided_by = ?,"
                     " decided_at = ?, updated_at = ? WHERE telegram_user_id = ?"
                     " AND status = 'pending'",
-                    (contact_page_id, decided_by, now, now, user_id),
+                    (
+                        contact_page_id,
+                        *_contact_columns(contact_page_id, notion_page_id),
+                        decided_by,
+                        now,
+                        now,
+                        user_id,
+                    ),
                 ).rowcount
                 if not updated:
                     return False
@@ -665,6 +718,7 @@ class Store:
         reply: dict[str, Any],
         fyi_chat: int,
         fyi: dict[str, Any],
+        notion_page_id: str = "",
     ) -> bool:
         """Approve a member whose Contact already holds their id: no card and no Notion write.
 
@@ -678,9 +732,17 @@ class Store:
                 now = self._clock()
                 updated = self._db.execute(
                     "UPDATE members SET status = 'approved', contact_page_id = ?, candidates = ?,"
+                    " contact_t6_id = ?, contact_notion_id = ?,"
                     " decided_at = ?, updated_at = ? WHERE telegram_user_id = ?"
                     " AND status = 'pending' AND candidates IS NULL",
-                    (contact_page_id, json.dumps([contact_page_id]), now, now, user_id),
+                    (
+                        contact_page_id,
+                        json.dumps([contact_page_id]),
+                        *_contact_columns(contact_page_id, notion_page_id),
+                        now,
+                        now,
+                        user_id,
+                    ),
                 ).rowcount
                 if not updated:
                     return False

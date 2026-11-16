@@ -137,4 +137,16 @@ MIGRATIONS: list[str] = [
     CREATE TABLE chat_migrations (old_chat INTEGER NOT NULL, new_chat INTEGER NOT NULL,
                                   PRIMARY KEY (old_chat, new_chat));
     """,
+    # 11: a member keeps both IDs of their Contact (ticket #108). ``contact_page_id`` stays as it
+    # was (the ID the Contact was approved under), so the image before this one still works. Each
+    # old row gets the one ID it shows; the other is unknown offline and is filled by the
+    # onboarding worker when it next lists that Contact.
+    """
+    ALTER TABLE members ADD COLUMN contact_t6_id TEXT;
+    ALTER TABLE members ADD COLUMN contact_notion_id TEXT;
+    UPDATE members SET contact_t6_id = contact_page_id
+        WHERE contact_page_id LIKE 't6n\\_%' ESCAPE '\\';
+    UPDATE members SET contact_notion_id = LOWER(REPLACE(contact_page_id, '-', ''))
+        WHERE contact_page_id IS NOT NULL AND contact_page_id NOT LIKE 't6n\\_%' ESCAPE '\\';
+    """,
 ]
