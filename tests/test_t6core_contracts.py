@@ -19,7 +19,7 @@ from sixto_gateway.poller import Poller
 from sixto_gateway.push import PushWorker
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
-from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram, dm_message
+from tests.fakes import GATEWAY_ENV, ONBOARDING_YAML, FakeClock, FakeTelegram, dm_message
 
 README = Path(__file__).parent.parent / "README.md"
 T6CORE = "t" * 40
@@ -43,10 +43,10 @@ def env(tmp_path):
         "modules:\n"
         "  t6core: {secret_env: T6CORE_SECRET, delivery: push, push_url: 'http://vps:8790/tap'}\n"
         "routes: []\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     config = load_config(
-        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "T6CORE_SECRET": T6CORE, **NOTION_ENV}
+        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "T6CORE_SECRET": T6CORE, **GATEWAY_ENV}
     )
     clock = FakeClock()
     store = Store(config.database_path, clock=clock)
@@ -225,10 +225,10 @@ async def test_the_pushed_project_command_matches_the_readme(tmp_path):
         "modules:\n"
         "  t6core: {secret_env: T6CORE_SECRET, delivery: push, push_url: 'http://vps:8791/tap'}\n"
         f"commands: {{project: {{module: t6core, allow: [{OPERATOR}]}}}}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     config = load_config(
-        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "T6CORE_SECRET": T6CORE, **NOTION_ENV}
+        path, {"TELEGRAM_BOT_TOKEN": "1:tok", "T6CORE_SECRET": T6CORE, **GATEWAY_ENV}
     )
     clock = FakeClock()
     store = Store(config.database_path, clock=clock)

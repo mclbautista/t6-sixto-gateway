@@ -8,7 +8,6 @@ from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.summary import SummaryWorker
 from tests.fakes import (
     APPROVER,
-    CONTACTS_SOURCE,
     INTAKE_CHAT,
     INTAKE_TOPIC,
     contact,
@@ -27,7 +26,6 @@ def make_config(tmp_path, onboarding="", name="config.yaml"):
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"routes: [{{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}]\n"
         f"database_path: {tmp_path / 'gateway.db'}\n"
-        f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
         f"onboarding: {{approver: {APPROVER}{onboarding}}}\n"
     )
     return path

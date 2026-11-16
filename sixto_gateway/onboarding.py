@@ -2,8 +2,9 @@
 
 A person presses Start in a private chat: the poller saves a ``pending`` member and the
 "waiting" reply in the same transaction as the update (``decide_start``). A separate worker then
-looks the person up in Notion Contacts and queues an approval card for the approver. The lookup
-runs outside the poll loop, so a slow or down Notion never holds up ``getUpdates``.
+looks the person up in the Contacts (through the t6 API) and queues an approval card for the
+approver. The lookup runs outside the poll loop, so a slow or down API never holds up
+``getUpdates``. The writes a tap causes are made through the t6 API as the approver who tapped.
 """
 
 from __future__ import annotations
@@ -21,15 +22,9 @@ from typing import Any
 from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, NewMember, NewTap
+from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import (
-    Contact,
-    ContactsDirectory,
-    NotionError,
-    closest_contacts,
-    matches_handle,
-)
-from sixto_gateway.people import PeopleDirectory
+from sixto_gateway.people import Contact, ContactsDirectory, PeopleDirectory, PeopleError, Refusal
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
@@ -41,7 +36,7 @@ MANILA = timezone(timedelta(hours=8))
 # A failed lookup is retried 1, 5 and 30 minutes after the first failure; the next failure
 # sends the card marked "Lookup failed".
 LOOKUP_RETRY_AFTER_SECONDS = (60.0, 300.0, 1800.0)
-# A failed Notion write after a tap is retried after these waits, then the card says "Write failed".
+# A failed write after a tap is retried after these waits, then the card says "Write failed".
 WRITE_RETRY_WAITS_SECONDS = (1.0, 5.0, 15.0)
 
 
@@ -316,7 +311,7 @@ class OnboardingWorker:
                 continue
             try:
                 contacts = await self._list_contacts()
-            except NotionError as exc:
+            except PeopleError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
                 if failures > len(LOOKUP_RETRY_AFTER_SECONDS):  # same test as _retry_lookup
@@ -446,7 +441,7 @@ class OnboardingWorker:
     async def _reoffer(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         try:
             contacts = await self._list_contacts()
-        except NotionError:
+        except PeopleError:
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
         found = find_candidates_for(contacts, member)
@@ -472,7 +467,7 @@ class OnboardingWorker:
         user = member["telegram_user_id"]
         try:
             known = {c.page_id.replace("-", ""): c for c in await self._list_contacts()}
-        except NotionError as exc:
+        except PeopleError as exc:
             self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
@@ -492,14 +487,14 @@ class OnboardingWorker:
             await self._rerender(tap, fresh)
 
     async def _retrying(self, what: str, user: int, operation: Callable[[], Awaitable[Any]]) -> Any:
-        """Run a Notion call, repeating it after each wait in ``WRITE_RETRY_WAITS_SECONDS``.
+        """Run an API call, repeating it after each wait in ``WRITE_RETRY_WAITS_SECONDS``.
 
-        Raises the last ``NotionError`` when every try failed.
+        Raises the last ``PeopleError`` when every try failed. A ``Refusal`` is not repeated.
         """
         for wait in (*WRITE_RETRY_WAITS_SECONDS, None):
             try:
                 return await operation()
-            except NotionError as exc:
+            except PeopleError as exc:
                 self._store.audit("notion_write", None, f"user={user} {what} failed: {exc}"[:300])
                 log.warning("%s for user %s failed: %s", what, user, exc)
                 if wait is None:
@@ -512,6 +507,15 @@ class OnboardingWorker:
         text, keyboard = render_write_failed(member, tap["data"])
         await self._edit_card(tap, text, keyboard)
 
+    async def _refused(self, tap: dict[str, Any], user: int, refusal: Refusal) -> None:
+        """The API refused the write: say why on the tap. The member stays pending."""
+        self._store.audit("decision", None, f"user={user} refused: {refusal}"[:300])
+        if refusal.rule == "telegram_id":  # another active Person holds this Telegram ID
+            await self._answer(tap, strings.TAP_ALREADY_LINKED, alert=True)
+        else:
+            text = strings.TAP_REFUSED.format(reason=refusal.reason)
+            await self._answer(tap, text[:200], alert=True)  # Telegram shows 200 characters
+
     async def _retry_lookup(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         """The Retry button on a "Lookup failed" card: look the person up once more."""
         user = member["telegram_user_id"]
@@ -522,7 +526,7 @@ class OnboardingWorker:
             return
         try:
             contacts = await self._list_contacts()
-        except NotionError as exc:
+        except PeopleError as exc:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
@@ -536,7 +540,7 @@ class OnboardingWorker:
             await self._edit_card(tap, card["text"], card["keyboard"])
 
     async def _create(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
-        """Create a Contact for the person, then approve them with it (Notion first).
+        """Create a Contact for the person, then approve them with it (the API writes first).
 
         A Contact that already holds this user's id (left by a create whose approval never
         finished) is used instead of making a second page.
@@ -544,8 +548,9 @@ class OnboardingWorker:
         user = member["telegram_user_id"]
         name = full_name(member)
         handle = member["handle"] or ""
+        # the date the person pressed Start, so a retry on a later day sends the same note
         note = strings.CREATED_NOTE.format(
-            date=datetime.fromtimestamp(self._clock(), MANILA).date()
+            date=datetime.fromtimestamp(member["created_at"], MANILA).date()
         )
 
         async def make() -> tuple[Contact, bool]:
@@ -553,14 +558,17 @@ class OnboardingWorker:
             if len(held) == 1:
                 return held[0], False
             made = await self._contacts.create_contact(
-                name or handle or str(user), handle, user, note
+                name or handle or str(user), handle, user, note, tap["from_id"]
             )
             return made, True
 
         try:
             created, new = await self._retrying("create", user, make)
-        except NotionError:
+        except PeopleError:
             await self._write_failed(tap, member)
+            return
+        except Refusal as refusal:
+            await self._refused(tap, user, refusal)
             return
         verb = "created" if new else "reused"
         self._store.audit("notion_write", None, f"user={user} {verb} contact={created.page_id}")
@@ -598,13 +606,16 @@ class OnboardingWorker:
                 return contact, old_id, False, True, False
             wrote = old_id != str(user)
             if wrote:
-                await self._contacts.set_telegram_user_id(contact, user)
+                await self._contacts.link_telegram(contact, user, tap["from_id"])
             return contact, old_id, wrote, False, False
 
         try:
             contact, old_id, wrote, refused, linked = await self._retrying("write", user, write)
-        except NotionError:
+        except PeopleError:
             await self._write_failed(tap, member)
+            return
+        except Refusal as refusal:
+            await self._refused(tap, user, refusal)
             return
         if linked:
             self._store.audit("decision", None, f"user={user} refused: contact has a member")

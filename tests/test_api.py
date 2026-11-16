@@ -12,10 +12,10 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.poller import Poller
 from sixto_gateway.store import Store
 from tests.fakes import (
+    GATEWAY_ENV,
     INTAKE_CHAT,
     INTAKE_TOPIC,
-    NOTION_ENV,
-    NOTION_YAML,
+    ONBOARDING_YAML,
     FakeClock,
     FakeTelegram,
     fixture_updates,
@@ -34,7 +34,7 @@ def env(tmp_path):
         "routes:\n"
         f"  - {{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}\n"
         f"  - {{chat: {INTAKE_CHAT}, topic: 5, module: psr}}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     config = load_config(
         path,
@@ -42,7 +42,7 @@ def env(tmp_path):
             "TELEGRAM_BOT_TOKEN": "1:tok",
             "WATCHDOG_SECRET": WATCHDOG,
             "PSR_SECRET": PSR,
-            **NOTION_ENV,
+            **GATEWAY_ENV,
         },
     )
     clock = FakeClock()

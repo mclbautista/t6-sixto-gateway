@@ -9,21 +9,18 @@ from dataclasses import replace
 from pathlib import Path
 
 from aiogram.types import Update
+from t6.client import Unavailable
+from t6.verbs import Ambiguous, Done, Preview, Refused
 
-from sixto_gateway.notion import Contact, NotionError
+from sixto_gateway.people import Contact, PeopleDirectory, PeopleError, Refusal
 from sixto_gateway.telegram.normalize import IncomingUpdate, normalize
 
 FIXTURES = Path(__file__).parent / "fixtures" / "telegram_updates.json"
 INTAKE_CHAT = -1001234567890
 INTAKE_TOPIC = 77
 APPROVER = 100000001  # onboarding.approver in test configs
-CONTACTS_SOURCE = "77b2a701-71db-4e88-a694-37f07303e77e"
-NOTION_YAML = (
-    f"notion: {{contacts_data_source_id: {CONTACTS_SOURCE}, version: '2026-03-11'}}\n"
-    f"onboarding: {{approver: {APPROVER}}}\n"
-)
-NOTION_ENV = {
-    "NOTION_API_KEY": "ntn_" + "k" * 40,
+ONBOARDING_YAML = f"onboarding: {{approver: {APPROVER}}}\n"
+GATEWAY_ENV = {
     "T6_API_URL": "https://example.invalid",
     "GATEWAY_T6_API_SECRET": "test-secret",
 }
@@ -272,8 +269,11 @@ def contact(
     )
 
 
-class FakeNotion:
-    """The Contacts directory. ``block`` holds lookups until set; ``fail`` makes them raise."""
+class FakeContacts:
+    """The Contacts directory. ``block`` holds lookups until set; ``fail`` makes them raise.
+
+    ``refuse`` makes a write raise that ``Refusal``; ``operators`` is who each write was made as.
+    """
 
     def __init__(self, contacts: list[Contact]):
         self.contacts = contacts
@@ -281,32 +281,41 @@ class FakeNotion:
         self.fail = False
         self.fail_write = False
         self.fail_create = False
+        self.refuse: Refusal | None = None
         self.created: list[Contact] = []
         self.notes: list[str] = []  # body line of each created Contact
         self.calls = 0
         self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
+        self.operators: list[int] = []  # who each write was made as
 
     async def get_contact(self, page_id: str) -> Contact:
         if self.fail:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise PeopleError("Person API unavailable")
         return next(c for c in self.contacts if c.page_id == page_id)
 
-    async def set_telegram_user_id(self, contact: Contact, user_id: int) -> None:
+    async def link_telegram(self, contact: Contact, user_id: int, operator: int) -> Contact:
         if self.fail_write:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise PeopleError("Person API unavailable")
+        if self.refuse:
+            raise self.refuse
         self.writes.append((contact.page_id, user_id))
-        self.contacts = [
-            replace(c, telegram_user_id=str(user_id)) if c.page_id == contact.page_id else c
-            for c in self.contacts
-        ]
+        self.operators.append(operator)
+        saved = replace(contact, telegram_user_id=str(user_id))
+        self.contacts = [saved if c.page_id == contact.page_id else c for c in self.contacts]
+        return saved
 
-    async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
+    async def create_contact(
+        self, name: str, handle: str, user_id: int, note: str, operator: int
+    ) -> Contact:
         if self.fail_create:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise PeopleError("Person API unavailable")
+        if self.refuse:
+            raise self.refuse
         page_id = f"cccccccc-0000-0000-0000-{len(self.created) + 1:012d}"
         made = contact(page_id, name, handle=handle, user_id=str(user_id))
         self.created.append(made)
         self.notes.append(note)
+        self.operators.append(operator)
         self.contacts = [*self.contacts, made]
         return made
 
@@ -315,5 +324,137 @@ class FakeNotion:
         if self.block is not None:
             await self.block.wait()
         if self.fail:
-            raise NotionError("Notion answered 503 (service_unavailable)")
+            raise PeopleError("Person API unavailable")
         return list(self.contacts)
+
+
+PERSON_ID = "t6n_" + "1" * 32
+PAGE_ID = "aaaaaaaa-0000-0000-0000-000000000001"
+
+
+class FakeAPI:
+    """The t6 API client the people directory calls: reads, and the preview-then-confirm writes.
+
+    It follows the real API's rules for a write: a preview needs the operator's permission and a
+    free Telegram ID; a confirm commits once per idempotency key and replays on a repeat.
+    ``operators`` is who may write (``None``: anyone); ``lose_answers`` is how many confirms
+    commit but answer ``Unavailable``; ``pending_creates`` is how many creates answer
+    ``Ambiguous`` and stay pending (the API's answer to a retried, unclear create).
+    """
+
+    def __init__(self):
+        self.unavailable = False
+        self.persons = [
+            {
+                "t6_id": PERSON_ID,
+                "page_id": PAGE_ID,
+                "name": "Example Person",
+                "telegram_handle": "example_handle",
+                "aliases": ["Sample Alias"],
+                "telegram_user_id": None,
+                "kind": "staff",
+            }
+        ]
+        self.operators: set[int] | None = None
+        self.lose_answers = 0
+        self.pending_creates = 0
+        self.calls: list[tuple[str, int, str | None, str | None]] = []  # verb, as, key, confirm
+        self._tokens: dict[str, tuple[str, str]] = {}  # token -> (verb, key)
+        self._used: set[str] = set()
+        self._done: dict[str, dict] = {}  # idempotency key -> result
+        self._pending: set[str] = set()
+
+    @property
+    def person(self) -> dict:
+        return self.persons[0]
+
+    @person.setter
+    def person(self, value: dict) -> None:
+        self.persons[0] = value
+
+    def directory(self) -> PeopleDirectory:
+        return PeopleDirectory(self, self.as_operator)
+
+    def as_operator(self, telegram_user_id: int) -> _FakeAPIAs:
+        return _FakeAPIAs(self, telegram_user_id)
+
+    def person_list(self, inputs):
+        return Unavailable("offline") if self.unavailable else Done(result={"people": self.persons})
+
+    def person_get(self, inputs):
+        if self.unavailable:
+            return Unavailable("offline")
+        found = next(p for p in self.persons if p["t6_id"] == inputs.person_id)
+        return Done(result={"person": found})
+
+    def _write(self, verb: str, operator: int, inputs):
+        key, confirm = inputs.idempotency_key, inputs.confirm
+        self.calls.append((verb, operator, key, confirm))
+        if self.operators is not None and operator not in self.operators:
+            return Refused(rule="permission", reason="needs operator")
+        holder = next(
+            (p for p in self.persons if p["telegram_user_id"] == inputs.telegram_id), None
+        )
+        if confirm is None:
+            if (
+                key not in self._done
+                and holder
+                and holder["t6_id"] != getattr(inputs, "person_id", None)
+            ):
+                return Refused(
+                    rule="telegram_id", reason=f"Telegram ID is held by {holder['t6_id']}"
+                )
+            token = f"token-{len(self._tokens)}"
+            self._tokens[token] = (verb, key)
+            return Preview(plan={}, token=token)
+        if self._tokens.get(confirm) != (verb, key):
+            return Refused(rule="token", reason="Preview token is not valid")
+        if confirm in self._used:
+            return Refused(rule="token_used", reason="Preview token has already been used")
+        self._used.add(confirm)
+        if key in self._pending:
+            return Ambiguous(candidates=[{"pending": True}])
+        if key in self._done:
+            return Done(result=self._done[key])
+        if verb == "create" and self.pending_creates:
+            self.pending_creates -= 1
+            self._pending.add(key)
+            return Ambiguous(candidates=[{"pending": True}])
+        result = self._commit(verb, inputs)
+        self._done[key] = result
+        if self.lose_answers:
+            self.lose_answers -= 1
+            return Unavailable("the answer was lost", key)
+        return Done(result=result)
+
+    def _commit(self, verb: str, inputs) -> dict:
+        if verb == "set-telegram":
+            person = next(p for p in self.persons if p["t6_id"] == inputs.person_id)
+            person["telegram_user_id"] = inputs.telegram_id
+            return {"person_id": inputs.person_id, "telegram_id": inputs.telegram_id}
+        number = len(self.persons) + 1
+        person = {
+            "t6_id": "t6n_" + f"{number:032x}",
+            "page_id": f"cccccccc-0000-0000-0000-{number:012d}",
+            "name": inputs.name,
+            "telegram_handle": inputs.telegram_handle,
+            "aliases": [],
+            "telegram_user_id": inputs.telegram_id,
+            "kind": inputs.kind,
+            "note": inputs.note,
+        }
+        self.persons.append(person)
+        return {"person": person}
+
+
+class _FakeAPIAs:
+    """The API client built for one operator (``Client(telegram_user_id=...)``)."""
+
+    def __init__(self, api: FakeAPI, telegram_user_id: int):
+        self._api, self._user = api, telegram_user_id
+
+    def person_set_telegram(self, inputs):
+        return self._api._write("set-telegram", self._user, inputs)
+
+    def person_create(self, inputs):
+        return self._api._write("create", self._user, inputs)

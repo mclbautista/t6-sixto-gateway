@@ -1,15 +1,12 @@
 # Non-secret configuration. Copy to config.yaml (mounted read-only into the container).
-# Secrets go in .env, never here: TELEGRAM_BOT_TOKEN, NOTION_API_KEY (the same value as in
-# t6-sixto-watchdog) and one <MODULE>_SECRET per module (each at least 32 characters). Every key is validated at boot; a bad value fails the boot.
+# Secrets go in .env, never here: TELEGRAM_BOT_TOKEN, GATEWAY_T6_API_SECRET and one <MODULE>_SECRET
+# per module (each at least 32 characters). Every key is validated at boot; a bad value fails the boot.
 
 listen: { host: 0.0.0.0, port: 8780 }
 telegram:
   poll_timeout: 50                              # seconds, Telegram long poll (0..50)
   allowed_updates: [message, edited_message, callback_query, chat_member]    # callback_query: card buttons
   polling: true                                 # false = serve the API only (cutover step 1)
-notion:
-  contacts_data_source_id: 77b2a701-71db-4e88-a694-37f07303e77e   # the Contacts data source
-  version: "2026-03-11"                         # Notion-Version header, pinned
 onboarding:
   approver: 100000001                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
@@ -61,7 +58,10 @@ commands:                                       # /jo arrives in phase 5
 groups:
   approvers: [100000001]                       # Telegram user ids
   coordinators: [100000002]                    # FILL IN: coordinator Telegram user ids
-  operators: [100000001]                       # who may send /project; the same ids as t6-core's T6_OPERATOR_IDS
+  # The gateway's own allow-list for /project (and any command that allows `operators`). It does not
+  # give anyone operator rights in t6: those are the Person permission `operator` in the t6 registry.
+  # Keep the two lists in step by hand.
+  operators: [100000001]
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver
     - 100000002                                 # Moonfern

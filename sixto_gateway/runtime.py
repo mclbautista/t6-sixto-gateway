@@ -10,8 +10,8 @@ from collections.abc import Callable
 from sixto_gateway.config import Config
 from sixto_gateway.liveness import Liveness, watch_deadman
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import ContactsDirectory
 from sixto_gateway.onboarding import OnboardingWorker
+from sixto_gateway.people import ContactsDirectory
 from sixto_gateway.poller import Poller
 from sixto_gateway.push import PushWorker
 from sixto_gateway.retention import run_retention

@@ -10,7 +10,7 @@ from sixto_gateway.config import load_config
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
-from tests.fakes import NOTION_ENV, FakeClock, FakeTelegram
+from tests.fakes import GATEWAY_ENV, FakeClock, FakeTelegram
 
 EXAMPLE = Path(__file__).parent.parent / "config.example.yaml"
 NETOPS = "n" * 40
@@ -30,7 +30,7 @@ def env(tmp_path):
             "SHIFT_SECRET": "s" * 40,
             "T6CORE_SECRET": "t" * 40,
             "NETOPS_SECRET": NETOPS,
-            **NOTION_ENV,
+            **GATEWAY_ENV,
         },
     )
     clock = FakeClock()

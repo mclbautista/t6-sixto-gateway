@@ -9,8 +9,8 @@ from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from tests.fakes import (
-    NOTION_ENV,
-    NOTION_YAML,
+    GATEWAY_ENV,
+    ONBOARDING_YAML,
     FakeClock,
     FakeTelegram,
     dm_message,
@@ -23,13 +23,13 @@ REFUSAL = "That command isn't available to you."
 BASE = (
     "modules: {watchdog: {secret_env: WATCHDOG_SECRET}, jo: {secret_env: JO_SECRET}}\n"
     f"routes: [{{chat: {PSR_CHAT}, topic: 1, module: watchdog}}]\n"
-    f"groups: {{psr: [{ALLOWED}, 5003]}}\n" + NOTION_YAML
+    f"groups: {{psr: [{ALLOWED}, 5003]}}\n" + ONBOARDING_YAML
 )
 ENV = {
     "TELEGRAM_BOT_TOKEN": "1:tok",
     "WATCHDOG_SECRET": "w" * 40,
     "JO_SECRET": "j" * 40,
-    **NOTION_ENV,
+    **GATEWAY_ENV,
 }
 
 

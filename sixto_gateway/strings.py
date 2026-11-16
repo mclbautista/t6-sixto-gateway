@@ -58,6 +58,7 @@ OUTCOME_REJECTED = "Rejected"
 OUTCOME_BLOCKED = "Blocked the bot"
 OUTCOME_CONTACT = "Contact"  # link text when the Contact's name is not at hand
 TAP_ALREADY_LINKED = "That Contact is already linked to another Telegram user."
+TAP_REFUSED = "The t6 API refused the change: {reason} Nothing was changed."
 TAP_OTHER_ID = "That Contact already has a different Telegram id. Nothing was changed."
 FYI_AUTO = (
     "{person} pressed Start and is linked to {link}: that Contact already had this Telegram id. "

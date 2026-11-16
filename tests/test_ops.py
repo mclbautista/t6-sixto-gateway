@@ -18,12 +18,12 @@ from sixto_gateway.runtime import start_workers
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from tests.fakes import (
+    GATEWAY_ENV,
     INTAKE_CHAT,
     INTAKE_TOPIC,
-    NOTION_ENV,
-    NOTION_YAML,
+    ONBOARDING_YAML,
     FakeClock,
-    FakeNotion,
+    FakeContacts,
     FakeTelegram,
     fixture_updates,
     moved,
@@ -40,12 +40,12 @@ def write_config(tmp_path, polling=True):
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"routes: [{{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}]\n"
         f"telegram: {{polling: {str(polling).lower()}}}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     return path
 
 
-ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": WATCHDOG, **NOTION_ENV}
+ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": WATCHDOG, **GATEWAY_ENV}
 
 
 @pytest.fixture
@@ -323,7 +323,7 @@ async def test_with_polling_off_no_telegram_call_is_made_and_the_api_still_works
         wake,
         liveness,
         stop,
-        contacts=FakeNotion([]),
+        contacts=FakeContacts([]),
         onboarding_wake=Notifier(),
     )
     assert set(tasks) == {"retention"}  # no poller, sender or deadman
@@ -363,7 +363,7 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
         wake,
         liveness,
         stop,
-        contacts=FakeNotion([]),
+        contacts=FakeContacts([]),
         onboarding_wake=Notifier(),
     )
     assert set(tasks) == {"retention", "poller", "sender", "deadman", "onboarding", "summary"}

@@ -14,7 +14,7 @@ push), commands with the allow-list, `/start` onboarding with its daily summary,
 
 Anyone can read this repository and its full history. Never commit:
 
-- `.env` or any real secret: the Telegram bot token, the Notion API key, module secrets
+- `.env` or any real secret: the Telegram bot token, the t6 API secret, module secrets
 - `config.yaml` (it holds the real chat and topic ids; only `config.example.yaml` is tracked)
 - `data/`, `*.db` or any SQLite file (saved Telegram updates and messages)
 - real client, show or person names, in code, tests, fixtures or docs
@@ -37,7 +37,7 @@ ruff check . && ruff format --check . && mypy
 | Where | What | Notes |
 |---|---|---|
 | `config.yaml` | everything non-secret: listen address, poll settings, modules, groups, routes | copy `config.example.yaml`; mounted read-only |
-| `.env` | `TELEGRAM_BOT_TOKEN`, `NOTION_API_KEY` (same value as the watchdog, t6-jo-watchdog), `T6_API_URL`, `GATEWAY_T6_API_SECRET` (the gateway service secret), and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
+| `.env` | `TELEGRAM_BOT_TOKEN`, `T6_API_URL`, `GATEWAY_T6_API_SECRET` (the gateway service secret), and one secret per module (the env var named by `modules.<name>.secret_env`, e.g. `WATCHDOG_SECRET`) | never committed; each module secret is at least 32 characters and unique |
 
 The config is validated at boot and a bad value stops the process (exit code 2) with a message
 that names the key or env var, never its value. Routes carry the real intake chat and topic ids,
@@ -83,6 +83,11 @@ The example config routes `/abang`, `/link` and `/unlink` to `t6core` for coordi
 approvers. The operator manages those groups in gateway config. Allowed group commands carry the
 chat, topic, sender, message and reply context to t6-core; refusals are silent and audited without
 arguments. See "Commands and the allow-list" below for delivery and menu details.
+
+**Operators are defined in two places.** `groups.operators` in `config.yaml` is only the gateway's
+command allow-list (who may send `/project`). Operator rights in t6 (approving writes made through
+the t6 API, including the Contact writes of onboarding) are the Person permission `operator` in the
+t6 registry. The two lists are not linked: keep them in step by hand.
 
 ### Subscriptions
 
@@ -361,8 +366,8 @@ shows it yet (pending, updated, or failed after retries). The gateway sends that
 
 **Rollout.** Deploy t6-core with `/project` support first; this gateway version can go out
 before or after it, because nothing is pushed until the command is in `config.yaml`. Then add
-the `project` command and the `operators` group (the same Telegram ids as t6-core's
-`T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
+the `project` command and the `operators` group (the people who also hold the `operator`
+permission in t6, see "Group commands") to `config.yaml` and restart the gateway, which also puts `/project` in
 those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
 gets the refusal. The push goes to the tap URL the taps already use (the t6 API's `/tap`, see
 "Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the
@@ -409,18 +414,29 @@ commands:
 
 `/start` in a private chat is onboarding, never checked against the command allow-list. The poller
 saves a `pending` row in `members` and queues the "waiting" reply in the same transaction as the
-update. A separate worker then reads the Notion Contacts (`notion.contacts_data_source_id`),
+update. A separate worker then reads the Contacts through the t6 API (`person list`),
 matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
 `Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
-down Notion never holds up polling. `/start` in a group gets a "message me directly" reply with a
+down API never holds up polling. `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
 
-### When Notion or Telegram fail
+Taps on the card write through the t6 API as the approver who tapped (the request carries their
+Telegram user ID, so it runs with their rights; the gateway service has no operator grant). The
+approver must be an active Person with the `operator` permission in t6, or the tap is refused and
+shows why. Approve and Replace ID call `person set-telegram`; Create new Contact calls `person
+create` with kind `staff`. Each is a preview and then a confirm with one idempotency key derived
+from the member and the Contact, so a retry after a restart or a lost answer is safe. The card
+says "linked" only after `person get` shows the Telegram ID. A Telegram ID held by another active
+Person answers "already linked". The gateway has no Notion client and no Notion key. A
+`config.yaml` that still has a `notion:` block fails the boot with a message to remove it.
+
+### When the t6 API or Telegram fail
 
 - **Lookup:** a failed lookup is retried 1, 5 and 30 minutes after the first failure (the count
   is in `members`, so it survives a restart). After the fourth failure the card says "Lookup
   failed" with Retry, Create new Contact and Reject. Retry looks the person up once more.
-- **Writes after a tap** (approve, Replace ID, create): retried after 1, 5 and 15 seconds. If all
+- **Writes after a tap** (approve, Replace ID, create): retried after 1, 5 and 15 seconds, also
+  when the API could not confirm the write (`Ambiguous`). If all
   fail, the card says "Write failed" with a Retry button, and the member stays `pending`.
 - **Create new Contact** first looks for a Contact that already has the person's Telegram id (left
   by an earlier create that did not finish) and uses it instead of making a second page.
