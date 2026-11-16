@@ -273,6 +273,9 @@ class FakeContacts:
     """The Contacts directory. ``block`` holds lookups until set; ``fail`` makes them raise.
 
     ``refuse`` makes a write raise that ``Refusal``; ``operators`` is who each write was made as.
+    ``finds`` is what ``person find`` offers per mention (the rule lives in the API, so the fake
+    replays answers); a mention not in it gets the plain equal-handle or equal-name answer, and no
+    suggestions. ``find_calls`` is each ``(mention, suggest)`` asked.
     """
 
     def __init__(self, contacts: list[Contact]):
@@ -286,6 +289,8 @@ class FakeContacts:
         self.notes: list[str] = []  # body line of each created Contact
         self.kinds: list[str] = []  # kind of each created Contact
         self.calls = 0
+        self.finds: dict[str, list[Contact]] = {}
+        self.find_calls: list[tuple[str, bool]] = []
         self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
         self.operators: list[int] = []  # who each write was made as
 
@@ -293,6 +298,22 @@ class FakeContacts:
         if self.fail:
             raise PeopleError("Person API unavailable")
         return next(c for c in self.contacts if c.page_id == page_id)
+
+    async def find(self, mention: str, suggest: bool = False) -> list[Contact]:
+        self.find_calls.append((mention, suggest))
+        if self.block is not None:
+            await self.block.wait()
+        if self.fail:
+            raise PeopleError("Person API unavailable")
+        if mention in self.finds:
+            return list(self.finds[mention])
+        wanted = mention.lstrip("@").casefold()
+        return [
+            c
+            for c in self.contacts
+            if wanted in (c.telegram_handle.lstrip("@").casefold(), c.name.casefold())
+            or wanted in (a.strip().lstrip("@").casefold() for a in c.aliases.split(","))
+        ]
 
     async def link_telegram(self, contact: Contact, user_id: int, operator: int) -> Contact:
         if self.fail_write:
@@ -360,6 +381,8 @@ class FakeAPI:
         self.operators: set[int] | None = None
         self.lose_answers = 0
         self.pending_creates = 0
+        self.finds: dict[str, dict] = {}  # mention -> the ``person find`` reply
+        self.find_calls: list[tuple[str | None, bool]] = []
         self.calls: list[tuple[str, int, str | None, str | None]] = []  # verb, as, key, confirm
         self._tokens: dict[str, tuple[str, str]] = {}  # token -> (verb, key)
         self._used: set[str] = set()
@@ -382,6 +405,37 @@ class FakeAPI:
 
     def person_list(self, inputs):
         return Unavailable("offline") if self.unavailable else Done(result={"people": self.persons})
+
+    def person_find(self, inputs):
+        """``finds`` holds the reply per mention; any other mention is a plain equal-handle,
+        equal-alias or equal-name answer (the rule itself lives in the API)."""
+        self.find_calls.append((inputs.mention, inputs.suggest))
+        if self.unavailable:
+            return Unavailable("offline")
+        if inputs.mention in self.finds:
+            return Done(result=self.finds[inputs.mention])
+        wanted = inputs.mention.lstrip("@").casefold()
+        hits = [
+            p
+            for p in self.persons
+            if wanted
+            in (
+                (p["telegram_handle"] or "").casefold(),
+                p["name"].casefold(),
+                *(a.casefold() for a in p["aliases"]),
+            )
+        ]
+        found = len(hits) == 1
+        return Done(
+            result={
+                "match": hits[0] if found else None,
+                "method": "normalized" if found else "review" if hits else "none",
+                "score": 1.0 if hits else 0,
+                "needs_review": len(hits) > 1,
+                "reason": None,
+                "candidates": [{**p, "score": 1.0} for p in hits],
+            }
+        )
 
     def person_get(self, inputs):
         if self.unavailable:

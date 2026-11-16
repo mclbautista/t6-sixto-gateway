@@ -7,7 +7,6 @@ import pytest
 
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
-from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker, callback_data
 from sixto_gateway.people import PeopleError, Refusal
@@ -145,13 +144,11 @@ async def test_start_from_a_matching_handle_gives_a_waiting_reply_and_a_card(con
     assert "That command isn't available to you." not in rig.texts_to(USER)
 
 
-async def test_handle_matching_ignores_case_and_at_sign_and_reads_aliases(config):
-    assert matches_handle(JUAN, "JUANDC") and matches_handle(JUAN, "@juandc")
-    assert not matches_handle(JUAN, "juan") and not matches_handle(JUAN, "")
-    assert matches_handle(MARIA, "MariaSan") and matches_handle(MARIA, "mia")
-
+async def test_the_handle_is_asked_first_as_an_at_handle_and_the_answer_is_used(config):
     rig = Rig(config, [start_from(1, username="MariaSAN")], [JUAN, MARIA])
+    rig.contacts.finds["@MariaSAN"] = [MARIA]  # the API's answer: the alias is her handle
     await rig.settle()
+    assert rig.contacts.find_calls == [("@MariaSAN", False)]  # an answer ends the lookup
     assert rig.store.member(USER)["candidates"] == [MARIA.page_id]
     assert "Approve Maria Santos" in [b["text"] for b in buttons(rig.card())]
 
@@ -165,46 +162,69 @@ async def test_no_handle_and_no_close_name_means_no_candidates(config):
     assert [b["text"] for b in buttons(card)] == ["Create new Contact", "Reject"]
 
 
-async def test_no_handle_lists_the_closest_names_and_aliases_and_picks_nothing(config):
-    rig = Rig(config, [start_from(1, username=None, first="Mia", last="")], [JUAN, MARIA])
+async def test_no_handle_asks_by_full_name_with_suggestions_and_picks_nothing(config):
+    rig = Rig(config, [start_from(1, username=None, first="Mia", last="Cruz")], [JUAN, MARIA])
+    rig.contacts.finds["Mia Cruz"] = [MARIA, JUAN]
     await rig.settle()
+    assert rig.contacts.find_calls == [("Mia Cruz", True)]
     card = rig.card()
-    assert "Closest by name:" in card["text"] and "Maria Santos" in card["text"]
+    assert "Possible matches:" in card["text"] and "Maria Santos" in card["text"]
     assert [b["text"] for b in buttons(card)] == [
         "Pick Maria Santos",
+        "Pick Juan Dela Cruz",
         "Create new Contact",
         "Reject",
     ]
     assert rig.store.member(USER)["status"] == "pending" and rig.contacts.writes == []
 
 
-async def test_a_handle_with_no_match_falls_back_to_the_closest_names(config):
+async def test_a_handle_with_no_answer_falls_back_to_the_name_with_up_to_3_suggestions(config):
+    many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(3)]
     rig = Rig(config, [start_from(1, username="somebody_else")], [JUAN, MARIA])
+    rig.contacts.finds["Juan Dela Cruz"] = many  # an exact name match, still with suggestions
     await rig.settle()
+    assert rig.contacts.find_calls == [("@somebody_else", False), ("Juan Dela Cruz", True)]
+    assert rig.store.member(USER)["candidates"] == [c.page_id for c in many]
     card = rig.card()
-    assert "Closest by name:" in card["text"] and "Juan Dela Cruz" in card["text"]
-    assert "Pick Juan Dela Cruz" in [b["text"] for b in buttons(card)]
+    assert "Possible matches:" in card["text"]
+    assert [b["text"] for b in buttons(card)][:3] == [f"Pick Juan {i}" for i in range(3)]
     assert not any(b["text"].startswith("Approve") for b in buttons(card))
 
 
-async def test_picking_a_closest_name_links_that_contact(config):
-    rig = Rig(config, [start_from(1, username=None, first="Mia", last="")], [JUAN, MARIA])
+async def test_a_member_with_no_handle_and_no_name_is_not_looked_up(config):
+    rig = Rig(config, [start_from(1, username=None, first="", last="")], [JUAN])
     await rig.settle()
-    pick = next(b for b in buttons(rig.card()) if b["text"].startswith("Pick"))
+    assert rig.contacts.find_calls == [] and rig.store.member(USER)["candidates"] == []
+
+
+async def test_picking_a_suggested_name_links_that_contact(config):
+    rig = Rig(config, [start_from(1, username=None, first="Mia", last="")], [JUAN, MARIA])
+    rig.contacts.finds["Mia"] = [MARIA]
+    await rig.settle()
+    pick = next(b for b in buttons(rig.card()) if b["text"].startswith("Approve"))
     tap(rig, 2, pick["callback_data"])
     await rig.settle()
     assert rig.contacts.writes == [(MARIA.page_id, USER)]
     assert rig.store.member(USER)["contact_page_id"] == MARIA.page_id
 
 
-def test_closest_contacts_ranks_names_and_aliases_and_ignores_honorifics():
-    kuya = contact("aaaaaaaa-0000-0000-0000-000000000004", "Pio Reyes", aliases="Kuya Pio")
-    ranked = closest_contacts([JUAN, MARIA, kuya], "ate mia")
-    assert [c.name for c in ranked] == ["Maria Santos"]
-    assert [c.name for c in closest_contacts([JUAN, MARIA, kuya], "Pio")] == ["Pio Reyes"]
-    assert closest_contacts([JUAN, MARIA], "") == []
-    many = [contact(f"aaaaaaaa-0000-0000-0000-{i:012d}", f"Juan {i}") for i in range(10)]
-    assert len(closest_contacts(many, "Juan")) == 3
+async def test_a_failed_find_is_a_failed_lookup_and_is_retried(config):
+    rig = Rig(config, [start_from(1)], [JUAN])
+    real = rig.contacts.find
+    failing = True
+
+    async def find(mention, suggest=False):
+        if failing:
+            raise PeopleError("Person API unavailable")
+        return await real(mention, suggest)
+
+    rig.contacts.find = find
+    await rig.settle()
+    assert rig.store.member(USER)["candidates"] is None and rig.texts_to(APPROVER) == []
+    failing = False
+    rig.clock.advance(61)
+    await rig.settle()
+    assert rig.store.member(USER)["candidates"] == [JUAN.page_id]
 
 
 async def test_several_matches_get_one_button_each_and_no_single_approve(config):
