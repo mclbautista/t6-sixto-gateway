@@ -123,6 +123,9 @@ Each module chooses a delivery mode in `config.yaml`:
   pushed tap is not also served by `/updates`. The gateway calls out; nothing calls into it.
   A push module's **commands** (see "Commands and the allow-list") are posted to the same URL
   in the same way, as `command` items with the key `cmd-<update_id>`.
+  Every push also carries `X-Telegram-User-Id: <from.id>` (the tapper's or sender's Telegram
+  user ID, a decimal string). The t6 API requires a push to carry a bearer secret bound to the
+  identity `gateway` in its `T6_API_SECRETS`, and that header equal to `from.id` in the body.
 
 A tap naming a module that is not in `modules` is written to the audit table
 (`tap_unknown_module`), answered with "This button is no longer active." and not delivered.
@@ -525,8 +528,7 @@ uses `127.0.0.1`; if publishing directly to a LAN interface, use its specific IP
 Never bind to all interfaces or expose the port to the internet. The auth key is
 needed for initial enrollment, not subsequent starts with intact state. Treat both env
 files and `docker compose config` output as secret. Set the t6core `push_url` in
-`config.yaml` to the VPS tailnet IPv4 and tap port 8791; MagicDNS is not assumed
-to work in the gateway container. Confirm the deployed server's tap path and port.
+`config.yaml` to the t6 API's LAN listener, `http://<t6-api-lan-address>:8081/tap`.
 
 For a checkout with an existing `compose.override.yaml`, select the files explicitly,
 in this order, for **every** Compose command while the overlay is enabled:
