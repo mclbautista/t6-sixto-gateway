@@ -19,10 +19,10 @@ permissions:
 
 jobs:
   safety:
-    # Pinned to a t6-core commit until the v0.6.6 tag exists; a later change pins the tag.
-    uses: mclbautista/t6-core/.github/workflows/public-repo-safety.yml@05e16c06d9b3b1c33ada1d6b7b4cef332edd6365
+    # Pinned to the same t6-core tag as pyproject.toml.
+    uses: mclbautista/t6-core/.github/workflows/public-repo-safety.yml@v0.6.6
     with:
-      t6-core-ref: 05e16c06d9b3b1c33ada1d6b7b4cef332edd6365
+      t6-core-ref: v0.6.6
       full-history: ${{ github.event_name == 'workflow_dispatch' && inputs.full-history }}
     secrets:
       T6_NAMES_DENYLIST: ${{ secrets.T6_NAMES_DENYLIST }}
