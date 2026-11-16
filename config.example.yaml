@@ -31,12 +31,12 @@ modules:                                        # each module authenticates with
   # Taps on a module's buttons and its commands: delivery "pull" (default) = the module reads
   # them from /updates; "push" = the gateway posts each one to push_url with the module's
   # secret, retrying until it is accepted. t6core is the t6-core webhooks server and Frame.io worker (README: "Messages
-  # from t6-core"); its taps go to the server's tailnet-only tap endpoint
-  # (mclbautista/t6-core#21, allowed by mclbautista/t6-netops#3).
+  # from t6-core"); its taps go to the t6 API's tap endpoint
+  # on its LAN listener (README: "Optional Tailscale gateway node").
   t6core:
     secret_env: T6CORE_SECRET
     delivery: push
-    push_url: "http://100.64.0.1:8791/tap"   # FILL IN: the VPS tailnet IPv4, port and path
+    push_url: "http://192.0.2.10:8081/tap"   # FILL IN: the t6 API's LAN address, port and path
 commands:                                       # /jo arrives in phase 5
   whereami:                                     # built-in: answered by the gateway, no module
     builtin: true
