@@ -17,6 +17,7 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest -q   # fake Telegram, temp SQLite, fake clock: no network needed
+      - run: t6 admin consumer-check .   # the t6 install above; exceptions in .t6-consumer-allowlist.json
   image:
     runs-on: ubuntu-latest
     steps:

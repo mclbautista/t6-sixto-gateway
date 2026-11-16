@@ -90,7 +90,8 @@ def test_readme_documents_every_contract():
 
 async def test_review_done_dm_reaches_an_approved_coordinator(client, env):
     approve(env[0])
-    sent = await send(client, env, readme_contracts()["review-done"])
+    body = readme_contracts()["review-done"]
+    sent = await send(client, env, body)
     assert sent["chat_id"] == COORDINATOR and sent["topic_id"] is None
     assert sent["parse_mode"] == "HTML"
     assert sent["text"] == (
@@ -100,7 +101,7 @@ async def test_review_done_dm_reaches_an_approved_coordinator(client, env):
         [
             {
                 "text": "Open in Frame.io",
-                "url": "https://next.frame.io/share/00000000-0000-4000-8000-000000000000",
+                "url": body["buttons"][0][0]["url"],
             }
         ]
     ]

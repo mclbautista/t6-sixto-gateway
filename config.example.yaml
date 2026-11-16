@@ -70,4 +70,4 @@ routes:
   # FILL IN: copy the intake chat and topic ids from the watchdog's config.yaml
   # (intake_chat_id / intake_topic_id). The operator supplies the deployed values; they are not
   # stored in any repo, so the real values go into the deployed config.yaml.
-  - { chat: -1000000000000, topic: 1, module: watchdog }
+  - { chat: -1000000000000, topic: 2, module: watchdog }

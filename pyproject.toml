@@ -11,7 +11,7 @@ dependencies = [
     "PyYAML>=6.0",
     "httpx>=0.27",
     "rapidfuzz>=3.9",
-    "t6 @ git+https://github.com/mclbautista/t6-core.git@v0.4.1",
+    "t6 @ git+https://github.com/mclbautista/t6-core.git@05e16c06d9b3b1c33ada1d6b7b4cef332edd6365",
 ]
 
 [project.optional-dependencies]
