@@ -284,6 +284,7 @@ class FakeContacts:
         self.refuse: Refusal | None = None
         self.created: list[Contact] = []
         self.notes: list[str] = []  # body line of each created Contact
+        self.kinds: list[str] = []  # kind of each created Contact
         self.calls = 0
         self.writes: list[tuple[str, int]] = []  # (page id, user id) in order
         self.operators: list[int] = []  # who each write was made as
@@ -305,7 +306,7 @@ class FakeContacts:
         return saved
 
     async def create_contact(
-        self, name: str, handle: str, user_id: int, note: str, operator: int
+        self, name: str, handle: str, user_id: int, note: str, operator: int, kind: str
     ) -> Contact:
         if self.fail_create:
             raise PeopleError("Person API unavailable")
@@ -315,6 +316,7 @@ class FakeContacts:
         made = contact(page_id, name, handle=handle, user_id=str(user_id))
         self.created.append(made)
         self.notes.append(note)
+        self.kinds.append(kind)
         self.operators.append(operator)
         self.contacts = [*self.contacts, made]
         return made

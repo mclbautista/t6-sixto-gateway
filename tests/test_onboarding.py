@@ -10,7 +10,7 @@ from sixto_gateway.config import ConfigError, load_config
 from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker, callback_data
-from sixto_gateway.people import PeopleError
+from sixto_gateway.people import PeopleError, Refusal
 from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
@@ -653,6 +653,8 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
     rig.clock.advance(10)  # past the pacing gap after the waiting reply
     tap(rig, 2, data_of(rig.card(), "Create new"))
     await rig.settle()
+    tap(rig, 3, data_of(rig.telegram.edits[-1], "Staff"))
+    await rig.settle()
 
     (made,) = rig.contacts.created
     assert (made.name, made.telegram_handle, made.telegram_user_id) == (
@@ -674,15 +676,14 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
 async def test_a_failed_create_is_retried_then_the_card_offers_retry(config):
     rig = await approved_rig(config)
     rig.contacts.fail_create = True
-    tap(rig, 2, data_of(rig.card(), "Create new"))
-    await rig.settle()
+    await choose(rig, 2, "Staff")
     assert rig.sleeps == [1.0, 5.0, 15.0]
     assert rig.store.member(USER)["status"] == "pending"
     edit = rig.telegram.edits[-1]
     assert "Write failed" in edit["text"] and [b["text"] for b in buttons(edit)] == ["Retry"]
 
     rig.contacts.fail_create = False
-    tap(rig, 3, buttons(edit)[0]["callback_data"])
+    tap(rig, 5, buttons(edit)[0]["callback_data"])
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
     assert len(rig.contacts.created) == 1
@@ -697,8 +698,7 @@ async def test_create_reuses_a_contact_left_by_an_earlier_create_instead_of_maki
         *rig.contacts.contacts,
         orphan,
     ]  # created, approval unfinished
-    tap(rig, 2, data_of(rig.card(), "Create new"))
-    await rig.settle()
+    await choose(rig, 2, "Freelancer")
 
     assert rig.contacts.created == []
     member = rig.store.member(USER)
@@ -707,15 +707,18 @@ async def test_create_reuses_a_contact_left_by_an_earlier_create_instead_of_maki
 
 async def test_reject_undo_and_create_ignore_taps_from_anyone_but_the_approver(config):
     rig = await approved_rig(config)
-    for n, data in enumerate((data_of(rig.card(), "Reject"), data_of(rig.card(), "Create new"))):
+    asked = ob("mk", "staff")
+    for n, data in enumerate(
+        (data_of(rig.card(), "Reject"), data_of(rig.card(), "Create new"), asked)
+    ):
         tap(rig, 2 + n, data, user=555)
     await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
     assert rig.contacts.created == [] and rig.telegram.edits == []
 
-    tap(rig, 5, data_of(rig.card(), "Reject"))
+    tap(rig, 6, data_of(rig.card(), "Reject"))
     await rig.settle()
-    tap(rig, 6, callback_for(rig, "undo"), user=555)
+    tap(rig, 7, callback_for(rig, "undo"), user=555)
     await rig.settle()
     assert rig.store.member(USER)["status"] == "rejected"
 
@@ -948,8 +951,7 @@ async def test_retry_on_the_failure_card_looks_the_person_up_again(config):
 async def test_create_new_and_reject_work_on_the_failure_card(config):
     rig = await exhausted_rig(config)
     rig.contacts.fail = False
-    tap(rig, 2, data_of(rig.card(), "Create new Contact"))
-    await rig.settle()
+    await choose(rig, 2, "Staff", first="Create new Contact")
     assert rig.store.member(USER)["status"] == "approved" and len(rig.contacts.created) == 1
 
 
@@ -973,3 +975,80 @@ async def test_a_card_that_cannot_be_sent_leaves_the_row_pending_and_is_audited(
     assert rig.store.member(USER)["status"] == "pending"
     failures = rig.store.send_failures_since(0)
     assert any("network down" in f for f in failures)
+
+
+def ob(action, kind=""):
+    return callback_data(action, USER, kind)
+
+
+async def choose(rig, update_id, label, first="Create new"):
+    """Tap Create, then the kind button on the question the card turned into."""
+    tap(rig, update_id, data_of(rig.card(), first))
+    await rig.settle()
+    tap(rig, update_id + 1, data_of(rig.telegram.edits[-1], label))
+    await rig.settle()
+
+
+async def test_create_turns_the_card_into_one_question_with_three_kinds_and_back(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, data_of(rig.card(), "Create new"))
+    await rig.settle()
+
+    edit = rig.telegram.edits[-1]
+    assert "What is this person?" in edit["text"]
+    assert [b["text"] for b in buttons(edit)] == ["Staff", "Freelancer", "Client", "Back"]
+    assert all(len(b["callback_data"].encode()) <= 64 for b in buttons(edit))
+    assert rig.contacts.created == [] and rig.store.member(USER)["status"] == "pending"
+
+
+@pytest.mark.parametrize("label", ["Staff", "Freelancer", "Client"])
+async def test_each_choice_creates_the_contact_with_its_kind_as_the_operator(config, label):
+    rig = await approved_rig(config)
+    await choose(rig, 2, label)
+
+    assert rig.contacts.kinds == [label.lower()]
+    assert rig.contacts.operators == [APPROVER]
+    assert rig.store.member(USER)["status"] == "approved"
+    assert f"Created as {label.lower()}" in rig.telegram.edits[-1]["text"]
+    audit = [d for e, _, d in rig.store.audit_events() if e == "notion_write" and "created" in d]
+    assert len(audit) == 1 and f"kind={label.lower()}" in audit[0]
+
+
+async def test_back_restores_the_first_card(config):
+    rig = await approved_rig(config)
+    first = rig.card()
+    tap(rig, 2, data_of(first, "Create new"))
+    await rig.settle()
+    tap(rig, 3, data_of(rig.telegram.edits[-1], "Back"))
+    await rig.settle()
+
+    edit = rig.telegram.edits[-1]
+    assert edit["text"] == first["text"] and edit["keyboard"] == first["keyboard"]
+    assert rig.contacts.created == [] and rig.store.member(USER)["status"] == "pending"
+
+
+async def test_a_second_tap_on_another_button_makes_no_second_contact(config):
+    rig = await approved_rig(config)
+    await choose(rig, 2, "Staff")
+    tap(rig, 4, ob("mk", "client"))  # a stale tap on the old question
+    await rig.settle()
+
+    assert len(rig.contacts.created) == 1 and rig.contacts.kinds == ["staff"]
+    assert rig.store.member(USER)["status"] == "approved"
+
+
+async def test_a_refused_kind_leaves_the_member_pending_and_says_why(config):
+    rig = await approved_rig(config)
+    rig.contacts.refuse = Refusal("kind", "Unknown kind freelancer.")
+    await choose(rig, 2, "Freelancer")
+
+    assert rig.store.member(USER)["status"] == "pending" and rig.contacts.created == []
+    answer = rig.telegram.answers[-1]
+    assert answer["alert"] and "Unknown kind freelancer." in answer["text"]
+
+
+async def test_a_kind_that_is_not_offered_creates_nothing(config):
+    rig = await approved_rig(config)
+    tap(rig, 2, ob("mk", "vendor"))
+    await rig.settle()
+    assert rig.contacts.created == [] and rig.store.member(USER)["status"] == "pending"

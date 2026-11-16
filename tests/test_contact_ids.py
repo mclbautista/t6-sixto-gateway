@@ -238,6 +238,9 @@ async def test_a_created_contact_is_stored_like_a_linked_one(config):
     create = next(b for b in buttons(rig.card()) if b["text"].startswith("Create new"))
     tap(rig, 2, create["callback_data"])
     await rig.settle()
+    staff = next(b for b in buttons(rig.telegram.edits[-1]) if b["text"] == "Staff")
+    tap(rig, 3, staff["callback_data"])
+    await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
     made = api.persons[-1]
     assert columns(rig.store, USER) == (

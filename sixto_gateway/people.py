@@ -19,8 +19,6 @@ from t6.verbs import (
     Refused,
 )
 
-CREATED_KIND = "staff"  # a Contact made from onboarding is staff
-
 
 class PeopleError(Exception):
     """The t6 API did not answer, or could not confirm a write. Safe to try again."""
@@ -67,9 +65,9 @@ class ContactsDirectory(Protocol):
         ...
 
     async def create_contact(
-        self, name: str, handle: str, user_id: int, note: str, operator: int
+        self, name: str, handle: str, user_id: int, note: str, operator: int, kind: str
     ) -> Contact:
-        """Create a Contact (kind staff) as ``operator``; return it read back. Same errors."""
+        """Create a Contact of ``kind`` as ``operator``; return it read back. Same errors."""
         ...
 
 
@@ -156,11 +154,11 @@ class PeopleDirectory:
         return await self._saved(contact.page_id, user_id)
 
     async def create_contact(
-        self, name: str, handle: str, user_id: int, note: str, operator: int
+        self, name: str, handle: str, user_id: int, note: str, operator: int, kind: str
     ) -> Contact:
         inputs = PersonCreateInput(
             name=name,
-            kind=CREATED_KIND,
+            kind=kind,
             telegram_handle=handle or None,
             telegram_id=user_id,
             note=note,
