@@ -315,7 +315,7 @@ class OnboardingWorker:
             if not self._lookup_due(member, now):
                 continue
             try:
-                contacts = await self._contacts.list_contacts()
+                contacts = await self._list_contacts()
             except NotionError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
@@ -352,6 +352,12 @@ class OnboardingWorker:
             return True
         return now >= member["lookup_failed_at"] + LOOKUP_RETRY_AFTER_SECONDS[failures - 1]
 
+    async def _list_contacts(self) -> list[Contact]:
+        """Every Contact; each one that shows both of its IDs completes an approved member's row."""
+        contacts = await self._contacts.list_contacts()
+        self._store.learn_contact_ids((c.page_id, c.notion_page_id) for c in contacts)
+        return contacts
+
     def _auto_approve(self, member: dict[str, Any], contacts: list[Contact]) -> bool:
         """A Contact already holds this user's id: onboard them with no card and no write.
 
@@ -363,7 +369,7 @@ class OnboardingWorker:
         if len(holders) != 1:
             return False
         holder = holders[0]
-        if self._store.approved_user_for_contact(holder.page_id) is not None:
+        if self._store.approved_user_for_contact(holder.page_id, holder.notion_page_id) is not None:
             return False
         reply = {
             "chat": user,
@@ -383,7 +389,9 @@ class OnboardingWorker:
             ),
             "format": "html",
         }
-        return self._store.auto_approve_member(user, holder.page_id, reply, self._approver, fyi)
+        return self._store.auto_approve_member(
+            user, holder.page_id, reply, self._approver, fyi, holder.notion_page_id
+        )
 
     async def process_tap(self) -> bool:
         """Handle the oldest unhandled button tap. False when there is none."""
@@ -437,7 +445,7 @@ class OnboardingWorker:
 
     async def _reoffer(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         try:
-            contacts = await self._contacts.list_contacts()
+            contacts = await self._list_contacts()
         except NotionError:
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
@@ -463,7 +471,7 @@ class OnboardingWorker:
         """Back to pending, and the card shows the choices it had before the rejection."""
         user = member["telegram_user_id"]
         try:
-            known = {c.page_id.replace("-", ""): c for c in await self._contacts.list_contacts()}
+            known = {c.page_id.replace("-", ""): c for c in await self._list_contacts()}
         except NotionError as exc:
             self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
@@ -513,7 +521,7 @@ class OnboardingWorker:
             await self._answer(tap)  # not a failed-lookup card any more
             return
         try:
-            contacts = await self._contacts.list_contacts()
+            contacts = await self._list_contacts()
         except NotionError as exc:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
@@ -541,7 +549,7 @@ class OnboardingWorker:
         )
 
         async def make() -> tuple[Contact, bool]:
-            held = holders_of_id(await self._contacts.list_contacts(), user)
+            held = holders_of_id(await self._list_contacts(), user)
             if len(held) == 1:
                 return held[0], False
             made = await self._contacts.create_contact(
@@ -556,7 +564,9 @@ class OnboardingWorker:
             return
         verb = "created" if new else "reused"
         self._store.audit("notion_write", None, f"user={user} {verb} contact={created.page_id}")
-        await self._finish_approval(tap, member, created.page_id, created.name)
+        await self._finish_approval(
+            tap, member, created.page_id, created.name, notion_page_id=created.notion_page_id
+        )
 
     async def _approve(
         self,
@@ -575,22 +585,30 @@ class OnboardingWorker:
             await self._answer(tap, strings.TAP_ALREADY_LINKED, alert=True)
             return
 
-        async def write() -> tuple[Contact, str, bool, bool]:
+        async def write() -> tuple[Contact, str, bool, bool, bool]:
             contact = await self._contacts.get_contact(page_id)
+            # a member linked before the T6 IDs is stored under the Notion page id only
+            held = self._store.approved_user_for_contact(contact.page_id, contact.notion_page_id)
+            if held is not None and held != user:
+                return contact, "", False, False, True
             old_id = contact.telegram_user_id
             if old_id not in ("", str(user)) and (not replace or id_fingerprint(old_id) != seen):
                 # only the Replace ID button overwrites another person's id, and only the id
                 # its card warned about: if Notion changed since, the approver looks again
-                return contact, old_id, False, True
+                return contact, old_id, False, True, False
             wrote = old_id != str(user)
             if wrote:
                 await self._contacts.set_telegram_user_id(contact, user)
-            return contact, old_id, wrote, False
+            return contact, old_id, wrote, False, False
 
         try:
-            contact, old_id, wrote, refused = await self._retrying("write", user, write)
+            contact, old_id, wrote, refused, linked = await self._retrying("write", user, write)
         except NotionError:
             await self._write_failed(tap, member)
+            return
+        if linked:
+            self._store.audit("decision", None, f"user={user} refused: contact has a member")
+            await self._answer(tap, strings.TAP_ALREADY_LINKED, alert=True)
             return
         if refused:
             self._store.audit("decision", None, f"user={user} refused: contact has other id")
@@ -599,7 +617,9 @@ class OnboardingWorker:
         if wrote:
             replaced = f" replaced_id={old_id}" if old_id else ""
             self._store.audit("notion_write", None, f"user={user} contact={page_id}{replaced}")
-        await self._finish_approval(tap, member, page_id, contact.name, contact.url)
+        await self._finish_approval(
+            tap, member, page_id, contact.name, contact.url, contact.notion_page_id
+        )
 
     async def _finish_approval(
         self,
@@ -608,6 +628,7 @@ class OnboardingWorker:
         page_id: str,
         contact_name: str,
         url: str = "",
+        notion_page_id: str = "",
     ) -> None:
         user = member["telegram_user_id"]
         reply = {
@@ -619,7 +640,7 @@ class OnboardingWorker:
             ),
             "format": "plain",
         }
-        approved = self._store.approve_member(user, page_id, tap["from_id"], reply)
+        approved = self._store.approve_member(user, page_id, tap["from_id"], reply, notion_page_id)
         await self._answer(tap)
         if approved:
             self._queue_wake.notify()
@@ -653,6 +674,12 @@ class OnboardingWorker:
             log.warning("editing card %s failed: %s", tap["message_id"], exc)
 
     async def run(self, stop: asyncio.Event) -> None:
+        try:  # complete legacy rows once, so /notify finds them by either ID from the start
+            await self._list_contacts()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the next lookup fills them instead
+            log.warning("contact IDs not filled at start: %s", exc)
         while not stop.is_set():
             wake = self._wake.current()  # before reading, so a commit in between is not missed
             try:

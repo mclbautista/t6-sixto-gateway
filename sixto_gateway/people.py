@@ -1,6 +1,7 @@
 """Async Person reads, with the existing Notion writer during the transition."""
 
 import asyncio
+from dataclasses import replace
 
 from t6.client import APIError, Client, Unavailable
 from t6.verbs import Done, PersonGetInput, PersonGetOutput, PersonListInput, PersonListOutput
@@ -49,4 +50,16 @@ class PeopleDirectory:
         await self._writer.set_telegram_user_id(original, user_id)
 
     async def create_contact(self, name: str, handle: str, user_id: int, note: str) -> Contact:
-        return await self._writer.create_contact(name, handle, user_id, note)
+        """Make the Contact in Notion, then return it as a linked one is: keyed by its T6 ID.
+
+        If the t6 API does not list the new page yet, the Notion-keyed Contact comes back and the
+        member is stored under the Notion page id only.
+        """
+        made = await self._writer.create_contact(name, handle, user_id, note)
+        try:
+            listed = await self.list_contacts()
+        except NotionError:  # the page exists now; a retry would make a second one
+            listed = []
+        same = made.page_id.replace("-", "")
+        found = next((c for c in listed if c.notion_page_id.replace("-", "") == same), None)
+        return found or replace(made, notion_page_id=made.page_id)

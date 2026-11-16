@@ -170,12 +170,12 @@ onboarding worker.
   idempotency keys as `/notify`. **An edit of a message that is still queued waits for it to be
   sent**, then edits it; if that send fails, the edit fails too with an error naming the ref.
   Telegram's "message is not modified" (the message already shows exactly this) counts as sent.
-- **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id>",
+- **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id or T6 ID>",
   "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@juandc"}, "text": "..."}`.
   If the Contact has an `approved` member (see /start onboarding), the message is queued to that
   person's DM. Otherwise it goes to the fallback chat and topic with `@handle` added at the start
   of the text. The lookup reads only the local `members` table, never Notion, and dashes in the
-  page id do not matter. Send either `to` or `contact` with `fallback`, never both and never
+  page id do not matter. A `t6n_` T6 Person ID works too; a member is found by either ID. Send either `to` or `contact` with `fallback`, never both and never
   neither (`422`); the topic belongs inside `fallback`, and a text that the `@handle` would push past 4096 characters is a `422` too. `format`, `text` and `idempotency_key` work the same in both forms.
 - One sender task sends queued rows in order (link previews off; `html` uses Telegram's HTML
   parse mode). `GET /notify/{ref}` returns `{state: queued|sent|failed, telegram_message_id,

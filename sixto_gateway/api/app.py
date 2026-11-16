@@ -27,7 +27,8 @@ BigInt = Annotated[int, Field(ge=-INT64_MAX, le=INT64_MAX)]
 
 
 HANDLE_PATTERN = r"^@?[A-Za-z0-9_]{1,64}$"
-CONTACT_ID_PATTERN = r"^[0-9A-Fa-f-]{32,36}$"
+# a Notion page id, or a T6 Person id (as onboarding stores it)
+CONTACT_ID_PATTERN = r"^([0-9A-Fa-f-]{32,36}|t6n_[0-9a-f]{32})$"
 
 
 class Fallback(BaseModel):
