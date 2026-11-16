@@ -424,7 +424,8 @@ Taps on the card write through the t6 API as the approver who tapped (the reques
 Telegram user ID, so it runs with their rights; the gateway service has no operator grant). The
 approver must be an active Person with the `operator` permission in t6, or the tap is refused and
 shows why. Approve and Replace ID call `person set-telegram`; Create new Contact calls `person
-create` with kind `staff`. Each is a preview and then a confirm with one idempotency key derived
+create` with the kind the operator chose (`staff`, `freelancer` or `client`; `freelancer` needs t6
+0.6.7 on the API). Each is a preview and then a confirm with one idempotency key derived
 from the member and the Contact, so a retry after a restart or a lost answer is safe. The card
 says "linked" only after `person get` shows the Telegram ID. A Telegram ID held by another active
 Person answers "already linked". The gateway has no Notion client and no Notion key. A
@@ -438,7 +439,8 @@ Person answers "already linked". The gateway has no Notion client and no Notion 
 - **Writes after a tap** (approve, Replace ID, create): retried after 1, 5 and 15 seconds, also
   when the API could not confirm the write (`Ambiguous`). If all
   fail, the card says "Write failed" with a Retry button, and the member stays `pending`.
-- **Create new Contact** first looks for a Contact that already has the person's Telegram id (left
+- **Create new Contact** asks "What is this person?" (Staff, Freelancer, Client, Back) and then
+  creates with that kind. It first looks for a Contact that already has the person's Telegram id (left
   by an earlier create that did not finish) and uses it instead of making a second page.
 - **Sends:** the send queue retries cards and replies; permanent failures go to the `audit` table
   (`send_failed`) and the daily summary, and a 403 on an approved member sets them to `blocked`.
