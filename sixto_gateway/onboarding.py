@@ -674,6 +674,12 @@ class OnboardingWorker:
             log.warning("editing card %s failed: %s", tap["message_id"], exc)
 
     async def run(self, stop: asyncio.Event) -> None:
+        try:  # complete legacy rows once, so /notify finds them by either ID from the start
+            await self._list_contacts()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the next lookup fills them instead
+            log.warning("contact IDs not filled at start: %s", exc)
         while not stop.is_set():
             wake = self._wake.current()  # before reading, so a commit in between is not missed
             try:

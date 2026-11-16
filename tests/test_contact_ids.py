@@ -204,6 +204,32 @@ async def test_listing_contacts_during_onboarding_completes_a_legacy_row(config)
     assert columns(rig.store, 9999) == (PAGE_ID, PERSON_ID, PAGE_ID.replace("-", ""))
 
 
+async def test_the_worker_completes_legacy_rows_when_it_starts(config):
+    import asyncio
+
+    from tests.fakes import contact
+
+    rig = Rig(config, [], [contact(PAGE_ID, "X")])
+    legacy_member(rig)
+    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    stop = asyncio.Event()
+    stop.set()
+    await rig.worker.run(stop)
+    assert columns(rig.store, 9999) == (PAGE_ID, PERSON_ID, PAGE_ID.replace("-", ""))
+
+
+async def test_a_failed_listing_at_start_does_not_stop_the_worker(config):
+    import asyncio
+
+    rig = Rig(config, [], [])
+    api = FakeAPI()
+    api.unavailable = True
+    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    stop = asyncio.Event()
+    stop.set()
+    await rig.worker.run(stop)
+
+
 CREATED = "cccccccc-0000-0000-0000-000000000001"  # the page FakeNotion makes first
 
 
