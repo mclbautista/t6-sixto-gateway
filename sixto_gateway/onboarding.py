@@ -167,8 +167,13 @@ def _card_header(member: dict[str, Any]) -> list[str]:
     ]
 
 
-def render_outcome(member: dict[str, Any], contact_name: str | None = None, url: str = "") -> str:
-    """The card's text once the member is decided: the same header and the outcome, no buttons."""
+def render_outcome(
+    member: dict[str, Any], contact_name: str | None = None, url: str = "", kind: str = ""
+) -> str:
+    """The card's text once the member is decided: the same header and the outcome, no buttons.
+
+    ``kind`` is set when this tap made the Contact.
+    """
     lines = _card_header(member)
     status = member["status"]
     if status == "approved":
@@ -176,6 +181,8 @@ def render_outcome(member: dict[str, Any], contact_name: str | None = None, url:
         url = url or contact_url(page)
         label = html.escape(contact_name or strings.OUTCOME_CONTACT)
         lines.append(strings.OUTCOME_APPROVED.format(link=f'<a href="{url}">{label}</a>'))
+        if kind:
+            lines.append(strings.OUTCOME_CREATED_AS.format(kind=kind))
     elif status == "blocked":
         lines.append(strings.OUTCOME_BLOCKED)
     else:
@@ -192,6 +199,18 @@ def outcome_keyboard(member: dict[str, Any]) -> list[list[dict[str, str]]] | Non
         "callback_data": callback_data("undo", member["telegram_user_id"]),
     }
     return [[undo]]
+
+
+def render_kind_question(member: dict[str, Any]) -> tuple[str, list[list[dict[str, str]]]]:
+    """The card once Create is tapped: one question, the three kinds, and Back."""
+    user_id = member["telegram_user_id"]
+    text = "\n".join([*_card_header(member), strings.CARD_KIND_QUESTION])
+    kinds = [
+        {"text": label, "callback_data": callback_data("mk", user_id, kind)}
+        for kind, label in strings.BUTTON_KINDS.items()
+    ]
+    back = {"text": strings.BUTTON_BACK, "callback_data": callback_data("bk", user_id)}
+    return text, [kinds, [back]]
 
 
 def render_lookup_failed(member: dict[str, Any]) -> dict[str, Any]:
@@ -409,7 +428,7 @@ class OnboardingWorker:
             return
         action, user_id, page, seen = parsed
         member = self._store.member(user_id)
-        if member is None or action not in ("ok", "rep", "no", "new", "undo", "try"):
+        if member is None or action not in ("ok", "rep", "no", "new", "mk", "bk", "undo", "try"):
             await self._answer(tap)
             return
         if member["status"] != ("rejected" if action == "undo" else "pending"):
@@ -423,7 +442,16 @@ class OnboardingWorker:
         elif action == "undo":
             await self._undo(tap, member)
         elif action == "new":
-            await self._create(tap, member)
+            await self._answer(tap)
+            text, keyboard = render_kind_question(member)
+            await self._edit_card(tap, text, keyboard)
+        elif action == "bk":
+            await self._back(tap, member)
+        elif action == "mk":
+            if page not in strings.BUTTON_KINDS:
+                await self._answer(tap)
+                return
+            await self._create(tap, member, page)
         else:
             chosen = next(
                 (p for p in member["candidates"] or [] if p.replace("-", "") == page), None
@@ -462,21 +490,39 @@ class OnboardingWorker:
             self._queue_wake.notify()
         await self._rerender(tap, fresh)
 
-    async def _undo(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
-        """Back to pending, and the card shows the choices it had before the rejection."""
-        user = member["telegram_user_id"]
-        try:
-            known = {c.page_id.replace("-", ""): c for c in await self._list_contacts()}
-        except PeopleError as exc:
-            self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
-            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
-            return
-        # a Contact deleted since the card was first sent is simply not offered again
-        shown = [
+    async def _shown(self, member: dict[str, Any]) -> list[Contact]:
+        """The Contacts the card offered, read fresh. One deleted since is not offered again."""
+        known = {c.page_id.replace("-", ""): c for c in await self._list_contacts()}
+        return [
             c
             for p in member["candidates"] or []
             if (c := known.get(p.replace("-", ""))) is not None
         ]
+
+    async def _back(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Back on the kind question: the card as it was before Create was tapped."""
+        if member["candidates"] == [] and member["lookup_attempts"] > len(
+            LOOKUP_RETRY_AFTER_SECONDS
+        ):  # the "Lookup failed" card, as _retry_lookup tells it
+            card = render_lookup_failed(member)
+        else:
+            try:
+                card = render_card(member, await self._shown(member))
+            except PeopleError:
+                await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+                return
+        await self._answer(tap)
+        await self._edit_card(tap, card["text"], card["keyboard"])
+
+    async def _undo(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
+        """Back to pending, and the card shows the choices it had before the rejection."""
+        user = member["telegram_user_id"]
+        try:
+            shown = await self._shown(member)
+        except PeopleError as exc:
+            self._store.audit("undo", None, f"user={user} failed: {exc}"[:300])
+            await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
+            return
         undone = self._store.undo_rejection(user, tap["from_id"])
         await self._answer(tap)
         fresh = self._store.member(user) or member
@@ -539,8 +585,8 @@ class OnboardingWorker:
             card = render_card(self._store.member(user) or member, found)
             await self._edit_card(tap, card["text"], card["keyboard"])
 
-    async def _create(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
-        """Create a Contact for the person, then approve them with it (the API writes first).
+    async def _create(self, tap: dict[str, Any], member: dict[str, Any], kind: str) -> None:
+        """Create a Contact of ``kind`` for the person, then approve them with it (API writes).
 
         A Contact that already holds this user's id (left by a create whose approval never
         finished) is used instead of making a second page.
@@ -558,7 +604,7 @@ class OnboardingWorker:
             if len(held) == 1:
                 return held[0], False
             made = await self._contacts.create_contact(
-                name or handle or str(user), handle, user, note, tap["from_id"]
+                name or handle or str(user), handle, user, note, tap["from_id"], kind
             )
             return made, True
 
@@ -570,10 +616,15 @@ class OnboardingWorker:
         except Refusal as refusal:
             await self._refused(tap, user, refusal)
             return
-        verb = "created" if new else "reused"
-        self._store.audit("notion_write", None, f"user={user} {verb} contact={created.page_id}")
+        what = f"created kind={kind}" if new else "reused"
+        self._store.audit("notion_write", None, f"user={user} {what} contact={created.page_id}")
         await self._finish_approval(
-            tap, member, created.page_id, created.name, notion_page_id=created.notion_page_id
+            tap,
+            member,
+            created.page_id,
+            created.name,
+            notion_page_id=created.notion_page_id,
+            created_kind=kind if new else "",
         )
 
     async def _approve(
@@ -640,6 +691,7 @@ class OnboardingWorker:
         contact_name: str,
         url: str = "",
         notion_page_id: str = "",
+        created_kind: str = "",
     ) -> None:
         user = member["telegram_user_id"]
         reply = {
@@ -656,7 +708,7 @@ class OnboardingWorker:
         if approved:
             self._queue_wake.notify()
             fresh = self._store.member(user) or member
-            await self._edit_card(tap, render_outcome(fresh, contact_name, url))
+            await self._edit_card(tap, render_outcome(fresh, contact_name, url, created_kind))
         else:  # decided while Notion was being written
             await self._rerender(tap, self._store.member(user) or member)
 

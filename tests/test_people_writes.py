@@ -55,12 +55,14 @@ async def test_replace_id_overwrites_the_old_id_and_reads_the_new_one_back():
     assert saved.telegram_user_id == str(USER) and api.person["telegram_user_id"] == USER
 
 
-async def test_create_makes_a_staff_person_and_reads_it_back():
+async def test_create_makes_a_person_of_the_given_kind_and_reads_it_back():
     api = FakeAPI()
-    made = await api.directory().create_contact("New Person", "newperson", USER, "a note", APPROVER)
+    made = await api.directory().create_contact(
+        "New Person", "newperson", USER, "a note", APPROVER, "client"
+    )
 
     assert made.page_id == api.persons[-1]["t6_id"] and made.telegram_user_id == str(USER)
-    assert api.persons[-1]["kind"] == "staff"
+    assert api.persons[-1]["kind"] == "client"
     assert api.persons[-1]["telegram_handle"] == "newperson"
     assert {c[1] for c in api.calls} == {APPROVER}
     assert {c[2] for c in api.calls} == {write_key("create", USER)}
@@ -72,7 +74,9 @@ async def test_a_create_retried_after_ambiguous_uses_the_same_key_and_makes_no_s
     directory = api.directory()
     for _ in range(2):  # the API stays unsure until a person checks the Contact
         with pytest.raises(PeopleError):
-            await directory.create_contact("New Person", "newperson", USER, "a note", APPROVER)
+            await directory.create_contact(
+                "New Person", "newperson", USER, "a note", APPROVER, "staff"
+            )
     assert len(api.persons) == 1
     assert {c[2] for c in api.calls} == {write_key("create", USER)}
 
@@ -107,7 +111,7 @@ async def test_an_approver_without_the_permission_is_refused_and_nothing_is_writ
         await directory.link_telegram(await person(api), USER, 4242)
     assert refused.value.rule == "permission"
     with pytest.raises(Refusal):
-        await directory.create_contact("New Person", "", USER, "a note", 4242)
+        await directory.create_contact("New Person", "", USER, "a note", 4242, "staff")
     assert api.person["telegram_user_id"] is None and len(api.persons) == 1
 
 
@@ -180,17 +184,29 @@ async def test_a_create_after_ambiguous_offers_retry_and_makes_one_person(config
     rig = await card_rig(config, api, username="nobody_here")
     tap(rig, 2, button(rig, "Create new"))
     await rig.settle()
+    tap(
+        rig,
+        3,
+        next(b["callback_data"] for b in buttons(rig.telegram.edits[-1]) if b["text"] == "Staff"),
+    )
+    await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
     assert "Write failed" in rig.telegram.edits[-1]["text"]
     assert len(api.persons) == 1
     assert {c[2] for c in api.calls} == {write_key("create", USER)}
 
 
-async def test_create_writes_a_staff_contact_with_the_note_dated_from_the_start(config):
+async def test_create_writes_a_contact_with_the_note_dated_from_the_start(config):
     api = FakeAPI()
     rig = await card_rig(config, api, username="nobody_here")
     rig.clock.advance(3 * 86400)  # the tap comes days after the Start; a retry must send one note
     tap(rig, 2, button(rig, "Create new"))
+    await rig.settle()
+    tap(
+        rig,
+        3,
+        next(b["callback_data"] for b in buttons(rig.telegram.edits[-1]) if b["text"] == "Staff"),
+    )
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
     assert api.persons[-1]["kind"] == "staff"
