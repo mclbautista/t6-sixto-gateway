@@ -7,13 +7,11 @@ import pytest
 
 from sixto_gateway.api.app import create_app
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.people import PeopleDirectory
 from sixto_gateway.store import Store
 from sixto_gateway.store.migrations import MIGRATIONS
-from tests.fakes import FakeClock
+from tests.fakes import PAGE_ID, PERSON_ID, FakeAPI, FakeClock
 from tests.test_onboarding import USER, Rig, buttons, start_from, tap
 from tests.test_onboarding import config as config_fixture
-from tests.test_people_reads import PAGE_ID, PERSON_ID, FakeAPI
 
 config = config_fixture
 
@@ -103,7 +101,7 @@ def test_a_missing_id_is_filled_when_a_listed_contact_shows_both(tmp_path):
 @pytest.fixture
 async def api(config):
     rig = Rig(config, [start_from(1, username="example_handle")], [])
-    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    rig.worker._contacts = FakeAPI().directory()
     app = create_app(config, rig.store, Notifier(), Notifier())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://gateway"
@@ -121,7 +119,7 @@ async def test_a_member_approved_through_the_people_directory_is_reached_by_both
     from tests.fakes import contact
 
     rig, client = api
-    rig.notion.contacts = [contact(PAGE_ID, "Example Person")]
+    rig.contacts.contacts = [contact(PAGE_ID, "Example Person")]
     await rig.settle()
     rig.clock.advance(10)
     tap(rig, 2, buttons(rig.card())[0]["callback_data"])
@@ -173,7 +171,7 @@ async def test_the_auto_approve_guard_sees_a_member_stored_under_the_notion_page
     legacy_member(rig)
     api = FakeAPI()
     api.person["telegram_user_id"] = USER  # the Contact already holds this user's id
-    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    rig.worker._contacts = api.directory()
     await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
     assert "Approve Example Person" in [b["text"] for b in buttons(rig.card())]
@@ -184,13 +182,13 @@ async def test_the_approve_guard_sees_a_member_stored_under_the_notion_page_id(c
 
     rig = Rig(config, [start_from(1, username="example_handle")], [contact(PAGE_ID, "X")])
     legacy_member(rig)
-    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    rig.worker._contacts = FakeAPI().directory()
     await rig.settle()
     rig.clock.advance(10)
     tap(rig, 2, buttons(rig.card())[0]["callback_data"])
     await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
-    assert rig.notion.writes == []
+    assert rig.contacts.writes == []
     assert rig.telegram.answers[-1]["alert"]
 
 
@@ -199,7 +197,7 @@ async def test_listing_contacts_during_onboarding_completes_a_legacy_row(config)
 
     rig = Rig(config, [start_from(1, username="example_handle")], [contact(PAGE_ID, "X")])
     legacy_member(rig)
-    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    rig.worker._contacts = FakeAPI().directory()
     await rig.settle()
     assert columns(rig.store, 9999) == (PAGE_ID, PERSON_ID, PAGE_ID.replace("-", ""))
 
@@ -211,7 +209,7 @@ async def test_the_worker_completes_legacy_rows_when_it_starts(config):
 
     rig = Rig(config, [], [contact(PAGE_ID, "X")])
     legacy_member(rig)
-    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    rig.worker._contacts = FakeAPI().directory()
     stop = asyncio.Event()
     stop.set()
     await rig.worker.run(stop)
@@ -224,29 +222,26 @@ async def test_a_failed_listing_at_start_does_not_stop_the_worker(config):
     rig = Rig(config, [], [])
     api = FakeAPI()
     api.unavailable = True
-    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    rig.worker._contacts = api.directory()
     stop = asyncio.Event()
     stop.set()
     await rig.worker.run(stop)
 
 
-CREATED = "cccccccc-0000-0000-0000-000000000001"  # the page FakeNotion makes first
-
-
-@pytest.mark.parametrize("listed", [True, False])
-async def test_a_created_contact_is_stored_like_a_linked_one(config, listed):
+async def test_a_created_contact_is_stored_like_a_linked_one(config):
     rig = Rig(config, [start_from(1, username="nobody_here")], [])
     api = FakeAPI()
     api.person = {**api.person, "name": "Someone Else", "telegram_handle": "other"}
-    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    rig.worker._contacts = api.directory()
     await rig.settle()
-    if listed:  # the t6 API already lists the page the Create button is about to make
-        api.person = {**api.person, "page_id": CREATED}
     rig.clock.advance(10)
     create = next(b for b in buttons(rig.card()) if b["text"].startswith("Create new"))
     tap(rig, 2, create["callback_data"])
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
-    notion = CREATED.replace("-", "")
-    expected = (PERSON_ID, PERSON_ID, notion) if listed else (CREATED, None, notion)
-    assert columns(rig.store, USER) == expected
+    made = api.persons[-1]
+    assert columns(rig.store, USER) == (
+        made["t6_id"],
+        made["t6_id"],
+        made["page_id"].replace("-", ""),
+    )

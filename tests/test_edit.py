@@ -18,12 +18,12 @@ from sixto_gateway.telegram.errors import (
     PermanentSendError,
     TransientSendError,
 )
-from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
+from tests.fakes import GATEWAY_ENV, ONBOARDING_YAML, FakeClock, FakeTelegram
 
 WATCHDOG = "w" * 40
 PSR = "p" * 40
 CHAT = -1003261335368
-ENV = {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": WATCHDOG, "PSR_SECRET": PSR, **NOTION_ENV}
+ENV = {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": WATCHDOG, "PSR_SECRET": PSR, **GATEWAY_ENV}
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def env(tmp_path):
     path.write_text(
         "modules:\n  watchdog: {secret_env: WATCHDOG_SECRET}\n  psr: {secret_env: PSR_SECRET}\n"
         "routes: []\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     config = load_config(path, ENV)
     clock = FakeClock()
@@ -176,7 +176,7 @@ async def test_gateway_is_a_reserved_module_name(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(
         "modules:\n  gateway: {secret_env: WATCHDOG_SECRET}\nroutes: []\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     with pytest.raises(ConfigError, match="reserved"):
         load_config(path, ENV)

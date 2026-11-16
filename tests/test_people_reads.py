@@ -1,37 +1,10 @@
 """Exercise onboarding through the synchronous Person client seam."""
 
-from t6.client import Unavailable
-from t6.verbs import Done
-
-from sixto_gateway.people import PeopleDirectory
+from tests.fakes import APPROVER, PAGE_ID, PERSON_ID, FakeAPI
 from tests.test_onboarding import USER, Rig, buttons, start_from, tap
 from tests.test_onboarding import config as config_fixture
 
 config = config_fixture
-
-PERSON_ID = "t6n_" + "1" * 32
-PAGE_ID = "aaaaaaaa-0000-0000-0000-000000000001"
-
-
-class FakeAPI:
-    def __init__(self):
-        self.unavailable = False
-        self.person = {
-            "t6_id": PERSON_ID,
-            "page_id": PAGE_ID,
-            "name": "Example Person",
-            "telegram_handle": "example_handle",
-            "aliases": ["Sample Alias"],
-            "telegram_user_id": None,
-        }
-
-    def person_list(self, inputs):
-        return (
-            Unavailable("offline") if self.unavailable else Done(result={"people": [self.person]})
-        )
-
-    def person_get(self, inputs):
-        return Unavailable("offline") if self.unavailable else Done(result={"person": self.person})
 
 
 async def test_person_card_and_approval_reply(config):
@@ -43,7 +16,7 @@ async def test_person_card_and_approval_reply(config):
         [contact(PAGE_ID, "Example Person")],
     )
     api = FakeAPI()
-    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    rig.worker._contacts = api.directory()
     await rig.settle()
     card = rig.card()
     assert "Approve Example Person" in [b["text"] for b in buttons(card)]
@@ -53,7 +26,8 @@ async def test_person_card_and_approval_reply(config):
     await rig.settle()
     assert "You are all set" in rig.texts_to(USER)[-1]
     assert PAGE_ID.replace("-", "") in rig.texts_to(USER)[-1]
-    assert rig.notion.writes == [(PAGE_ID, USER)]
+    assert api.person["telegram_user_id"] == USER
+    assert {operator for _, operator, _, _ in api.calls} == {APPROVER}  # written as the approver
 
 
 async def test_old_card_is_reoffered(config):
@@ -66,19 +40,20 @@ async def test_old_card_is_reoffered(config):
     )
     await rig.settle()
     old_button = buttons(rig.card())[0]["callback_data"]
-    rig.worker._contacts = PeopleDirectory(FakeAPI(), rig.notion)
+    api = FakeAPI()
+    rig.worker._contacts = api.directory()
     tap(rig, 2, old_button)
     await rig.settle()
     assert "Approve Example Person" in [b["text"] for b in buttons(rig.telegram.edits[-1])]
     assert PERSON_ID in buttons(rig.telegram.edits[-1])[0]["callback_data"]
-    assert rig.notion.writes == []
+    assert api.calls == []
 
 
 async def test_unavailable_offers_retry(config):
     rig = Rig(config, [start_from(1, first="Example", last="Person")], [])
     api = FakeAPI()
     api.unavailable = True
-    rig.worker._contacts = PeopleDirectory(api, rig.notion)
+    rig.worker._contacts = api.directory()
     await rig.settle()
     for seconds in (60, 240, 1500):
         rig.clock.advance(seconds)

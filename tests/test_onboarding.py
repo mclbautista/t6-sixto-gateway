@@ -1,29 +1,27 @@
 """/start onboarding, first slice (#20): a Start becomes a pending member and an approval card."""
 
 import asyncio
-import json
 from dataclasses import replace
 
-import httpx
 import pytest
 
 from sixto_gateway import strings
 from sixto_gateway.config import ConfigError, load_config
+from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
-from sixto_gateway.notion import NotionContacts, NotionError, closest_contacts, matches_handle
 from sixto_gateway.onboarding import OnboardingWorker, callback_data
+from sixto_gateway.people import PeopleError
 from sixto_gateway.poller import Poller
 from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from tests.fakes import (
     APPROVER,
-    CONTACTS_SOURCE,
+    GATEWAY_ENV,
     INTAKE_CHAT,
     INTAKE_TOPIC,
-    NOTION_ENV,
-    NOTION_YAML,
+    ONBOARDING_YAML,
     FakeClock,
-    FakeNotion,
+    FakeContacts,
     FakeTelegram,
     button_tap,
     contact,
@@ -36,7 +34,7 @@ JUAN = contact("aaaaaaaa-0000-0000-0000-000000000001", "Juan Dela Cruz", handle=
 MARIA = contact(
     "aaaaaaaa-0000-0000-0000-000000000002", "Maria Santos", aliases="Ate Mia, @mariasan"
 )
-ENV = {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": "w" * 40, **NOTION_ENV}
+ENV = {"TELEGRAM_BOT_TOKEN": "1:tok", "WATCHDOG_SECRET": "w" * 40, **GATEWAY_ENV}
 
 
 def start_from(
@@ -58,7 +56,7 @@ def config(tmp_path):
     path.write_text(
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
         f"routes: [{{chat: {INTAKE_CHAT}, topic: {INTAKE_TOPIC}, module: watchdog}}]\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     return load_config(path, ENV)
 
@@ -68,7 +66,7 @@ class Rig:
         self.clock = FakeClock()
         self.telegram = FakeTelegram(list(raw_updates), self.clock)
         self.store = Store(config.database_path, clock=self.clock)
-        self.notion = FakeNotion(contacts)
+        self.contacts = FakeContacts(contacts)
         self.queue_wake, self.onboarding_wake = Notifier(), Notifier()
         self.poller = Poller(
             self.store,
@@ -87,7 +85,7 @@ class Rig:
         self.config = config
         self.worker = OnboardingWorker(
             self.store,
-            self.notion,
+            self.contacts,
             config,
             self.onboarding_wake,
             self.queue_wake,
@@ -177,7 +175,7 @@ async def test_no_handle_lists_the_closest_names_and_aliases_and_picks_nothing(c
         "Create new Contact",
         "Reject",
     ]
-    assert rig.store.member(USER)["status"] == "pending" and rig.notion.writes == []
+    assert rig.store.member(USER)["status"] == "pending" and rig.contacts.writes == []
 
 
 async def test_a_handle_with_no_match_falls_back_to_the_closest_names(config):
@@ -195,7 +193,7 @@ async def test_picking_a_closest_name_links_that_contact(config):
     pick = next(b for b in buttons(rig.card()) if b["text"].startswith("Pick"))
     tap(rig, 2, pick["callback_data"])
     await rig.settle()
-    assert rig.notion.writes == [(MARIA.page_id, USER)]
+    assert rig.contacts.writes == [(MARIA.page_id, USER)]
     assert rig.store.member(USER)["contact_page_id"] == MARIA.page_id
 
 
@@ -238,7 +236,7 @@ async def test_start_in_a_group_or_topic_gets_the_dm_me_reply_and_no_row(config)
     ]
     assert [m["topic_id"] for m in rig.telegram.sent] == [INTAKE_TOPIC, None]  # answered in place
     assert rig.store.member(USER) is None
-    assert rig.notion.calls == 0
+    assert rig.contacts.calls == 0
 
 
 async def test_pressing_start_again_while_pending_sends_no_second_card(config):
@@ -263,13 +261,13 @@ async def test_an_edited_start_is_not_a_new_start(config):
 
 async def test_polling_keeps_going_while_a_notion_lookup_is_slow(config):
     rig = Rig(config, [start_from(1)], [JUAN])
-    rig.notion.block = asyncio.Event()  # Notion is hanging
+    rig.contacts.block = asyncio.Event()  # Notion is hanging
     stop = asyncio.Event()
     worker = asyncio.create_task(rig.worker.run(stop))
 
     await rig.poller.poll_once()
     await asyncio.sleep(0.05)  # the worker is now stuck inside the lookup
-    assert rig.notion.calls == 1 and rig.store.member(USER)["candidates"] is None
+    assert rig.contacts.calls == 1 and rig.store.member(USER)["candidates"] is None
 
     watchdog_message = dm_message(2, USER, "hello")
     watchdog_message["message"]["chat"] = {"id": INTAKE_CHAT, "type": "supergroup", "title": "g"}
@@ -278,7 +276,7 @@ async def test_polling_keeps_going_while_a_notion_lookup_is_slow(config):
     assert await rig.poller.poll_once() == 1  # polling is not held up
     assert len(rig.store.deliveries_after("watchdog", 0)) == 1
 
-    rig.notion.block.set()
+    rig.contacts.block.set()
     await asyncio.sleep(0.05)
     stop.set()
     rig.onboarding_wake.notify()
@@ -288,14 +286,14 @@ async def test_polling_keeps_going_while_a_notion_lookup_is_slow(config):
 
 async def test_a_failed_lookup_leaves_the_member_pending_and_is_retried(config):
     rig = Rig(config, [start_from(1)], [JUAN])
-    rig.notion.fail = True
+    rig.contacts.fail = True
     await rig.settle()
     assert rig.store.member(USER)["candidates"] is None and rig.texts_to(APPROVER) == []
     assert len(rig.texts_to(USER)) == 1  # the waiting reply went out anyway
 
-    rig.notion.fail = False
+    rig.contacts.fail = False
     await rig.settle()
-    assert rig.notion.calls == 1  # not retried before the delay
+    assert rig.contacts.calls == 1  # not retried before the delay
     rig.clock.advance(61)
     await rig.settle()
     assert len(rig.texts_to(APPROVER)) == 1
@@ -324,7 +322,7 @@ async def test_approve_writes_notion_then_marks_the_row_approved_and_replies(con
     tap(rig, 2, approve_data(rig))
     await rig.settle()
 
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
     member = rig.store.member(USER)
     assert member["status"] == "approved" and member["contact_page_id"] == JUAN.page_id
     assert member["decided_by"] == APPROVER and member["decided_at"] is not None
@@ -351,7 +349,7 @@ async def test_a_second_tap_changes_nothing_and_rerenders_the_card(config):
     tap(rig, 3, data)
     await rig.settle()
 
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
     assert len(rig.telegram.answers) == 2  # both taps were answered
     assert len(rig.telegram.edits) == 2 and "✅ Approved:" in rig.telegram.edits[1]["text"]
     assert len([t for t in rig.texts_to(USER) if t.startswith("You are all set, Juan.")]) == 1
@@ -363,13 +361,13 @@ async def test_a_tap_from_anyone_but_the_approver_changes_nothing(config):
     await rig.settle()
 
     assert rig.store.member(USER)["status"] == "pending"
-    assert rig.notion.writes == [] and rig.telegram.edits == []
+    assert rig.contacts.writes == [] and rig.telegram.edits == []
     assert [a["callback_id"] for a in rig.telegram.answers] == ["cb2"]  # spinner stops
 
 
 async def test_a_failed_notion_write_is_retried_then_the_card_offers_retry(config):
     rig = await approved_rig(config)
-    rig.notion.fail_write = True
+    rig.contacts.fail_write = True
     tap(rig, 2, approve_data(rig))
     await rig.settle()
 
@@ -380,7 +378,7 @@ async def test_a_failed_notion_write_is_retried_then_the_card_offers_retry(confi
     assert [b["text"] for b in buttons(edit)] == ["Retry"]
     assert any(e == "notion_write" and "failed" in d for e, _, d in rig.store.audit_events())
 
-    rig.notion.fail_write = False
+    rig.contacts.fail_write = False
     retry = buttons(edit)[0]["callback_data"]
     tap(rig, 3, retry)
     await rig.settle()
@@ -390,21 +388,21 @@ async def test_a_failed_notion_write_is_retried_then_the_card_offers_retry(confi
 
 async def test_a_write_that_works_on_a_retry_needs_no_retry_button(config):
     rig = await approved_rig(config)
-    real = rig.notion.set_telegram_user_id
+    real = rig.contacts.link_telegram
     calls = []
 
-    async def flaky(contact, user_id):
+    async def flaky(contact, user_id, operator):
         calls.append(1)
         if len(calls) < 3:
-            raise NotionError("Notion answered 503 (service_unavailable)")
-        await real(contact, user_id)
+            raise PeopleError("Person API unavailable")
+        return await real(contact, user_id, operator)
 
-    rig.notion.set_telegram_user_id = flaky
+    rig.contacts.link_telegram = flaky
     tap(rig, 2, approve_data(rig))
     await rig.settle()
     assert rig.sleeps == [1.0, 5.0]
     assert rig.store.member(USER)["status"] == "approved"
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
 
 
 def replace_id(c, new_id):
@@ -419,7 +417,7 @@ async def test_a_conflicting_id_shows_a_warning_and_a_replace_id_button(config):
     card = rig.card()
     assert "⚠ This Contact already has Telegram id 987" in card["text"]
     assert [b["text"] for b in buttons(card)] == ["Replace ID", "Create new Contact", "Reject"]
-    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.contacts.writes == [] and rig.store.member(USER)["status"] == "pending"
 
 
 async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
@@ -427,13 +425,13 @@ async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
     # a plain Approve payload for the same Contact (an old or forged card) changes nothing
     tap(rig, 2, callback_data("ok", USER, TAKEN.page_id))
     await rig.settle()
-    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.contacts.writes == [] and rig.store.member(USER)["status"] == "pending"
     assert rig.telegram.answers[-1]["alert"] is True
 
     replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
     tap(rig, 3, replace["callback_data"])
     await rig.settle()
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
     assert rig.store.member(USER)["status"] == "approved"
     assert any(
         e == "notion_write" and "replaced_id=987" in d for e, _, d in rig.store.audit_events()
@@ -444,10 +442,10 @@ async def test_only_the_replace_id_tap_overwrites_the_old_id(config):
 async def test_replace_id_refuses_when_the_id_changed_since_the_card_was_sent(config):
     rig = await approved_rig(config, contacts=(TAKEN,))
     replace = next(b for b in buttons(rig.card()) if b["text"] == "Replace ID")
-    rig.notion.contacts = [replace_id(TAKEN, "555")]  # someone edited Notion meanwhile
+    rig.contacts.contacts = [replace_id(TAKEN, "555")]  # someone edited Notion meanwhile
     tap(rig, 2, replace["callback_data"])
     await rig.settle()
-    assert rig.notion.writes == [] and rig.store.member(USER)["status"] == "pending"
+    assert rig.contacts.writes == [] and rig.store.member(USER)["status"] == "pending"
     assert rig.telegram.answers[-1]["alert"] is True
 
 
@@ -480,7 +478,7 @@ async def test_replace_id_cannot_take_a_contact_linked_to_another_user(config):
     )
     await rig.settle()
     assert rig.store.member(6002)["status"] == "pending"
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
     assert rig.telegram.answers[-1]["alert"] is True
 
 
@@ -494,7 +492,7 @@ async def test_a_contact_that_already_has_this_id_is_approved_with_no_card_and_n
     member = rig.store.member(USER)
     assert member["status"] == "approved" and member["contact_page_id"] == holder.page_id
     assert member["decided_by"] is None
-    assert rig.notion.writes == [] and rig.notion.created == []
+    assert rig.contacts.writes == [] and rig.contacts.created == []
     assert rig.texts_to(USER) == [
         strings.WAITING.format(first_name="Juan"),
         strings.APPROVED.format(first_name="Juan", contact_url=holder.url),
@@ -521,9 +519,9 @@ async def test_a_contact_with_this_id_that_belongs_to_another_member_is_left_to_
     tap(rig, 2, approve_data(rig))
     await rig.settle()
     rig.telegram.push(start_from(3, user=6002, username="juandc", first="Other"))
-    rig.notion.contacts = [
+    rig.contacts.contacts = [
         replace(c, telegram_user_id="6002") if c.page_id == JUAN.page_id else c
-        for c in rig.notion.contacts
+        for c in rig.contacts.contacts
     ]
     await rig.settle()
     assert rig.store.member(6002)["status"] == "pending"
@@ -559,27 +557,6 @@ async def test_callback_query_is_polled_by_default(config):
     assert "callback_query" in config.telegram.allowed_updates
 
 
-async def test_the_adapter_writes_a_number_or_text_property_as_the_contact_has_it():
-    seen = []
-
-    def handler(request):
-        seen.append((request.method, request.url.path, request.read()))
-        return httpx.Response(200, json=page("p-1", "Juan"))
-
-    notion = notion_with(handler)
-    await notion.set_telegram_user_id(contact("p-1", "Juan"), 42)
-    await notion.set_telegram_user_id(replace(contact("p-2", "Mia"), user_id_kind="rich_text"), 7)
-    await notion.close()
-
-    assert seen[0][:2] == ("PATCH", "/v1/pages/p-1")
-    assert json.loads(seen[0][2]) == {"properties": {"TelegramUserID": {"number": 42}}}
-    assert json.loads(seen[1][2]) == {
-        "properties": {
-            "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "7"}}]}
-        }
-    }
-
-
 # --- rejecting, undoing and creating (#22) --------------------------------------------------
 
 
@@ -596,7 +573,7 @@ async def test_reject_marks_the_row_replies_neutrally_and_leaves_notion_alone(co
     member = rig.store.member(USER)
     assert member["status"] == "rejected" and member["decided_by"] == APPROVER
     assert rig.texts_to(USER)[-1] == strings.REJECTED
-    assert rig.notion.writes == [] and rig.notion.created == []
+    assert rig.contacts.writes == [] and rig.contacts.created == []
     (edit,) = rig.telegram.edits
     assert "Rejected" in edit["text"]
     assert [b["text"] for row in edit["keyboard"] for b in row] == ["Undo"]
@@ -616,7 +593,7 @@ async def test_undo_puts_the_row_back_to_pending_with_the_original_buttons(confi
     undone = rig.telegram.edits[-1]
     assert undone["text"] == original["text"] and undone["keyboard"] == original["keyboard"]
     assert any(e == "undo" for e, _, _ in rig.store.audit_events())
-    assert rig.notion.calls >= 2  # the card is rebuilt from the stored candidates
+    assert rig.contacts.calls >= 2  # the card is rebuilt from the stored candidates
 
     tap(rig, 4, data_of(undone, "Pick Juan Dela"))  # a decision works again after Undo
     await rig.settle()
@@ -633,7 +610,7 @@ async def test_undo_then_approve_works_as_in_approving(config):
     rig.clock.advance(10)  # the sender paces messages to one chat
     await rig.settle()
 
-    assert rig.notion.writes == [(JUAN.page_id, USER)]
+    assert rig.contacts.writes == [(JUAN.page_id, USER)]
     assert rig.store.member(USER)["status"] == "approved"
     # rejecting never repeats: the person was told once, then told they are all set
     assert rig.texts_to(USER)[-1].startswith("You are all set")
@@ -660,12 +637,12 @@ async def test_undo_with_notion_down_changes_nothing_and_can_be_retried(config):
     rig = await approved_rig(config)
     tap(rig, 2, data_of(rig.card(), "Reject"))
     await rig.settle()
-    rig.notion.fail = True
+    rig.contacts.fail = True
     tap(rig, 3, callback_for(rig, "undo"))
     await rig.settle()
     assert rig.store.member(USER)["status"] == "rejected" and rig.telegram.answers[-1]["alert"]
 
-    rig.notion.fail = False
+    rig.contacts.fail = False
     tap(rig, 4, callback_for(rig, "undo"))
     await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
@@ -677,14 +654,14 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
     tap(rig, 2, data_of(rig.card(), "Create new"))
     await rig.settle()
 
-    (made,) = rig.notion.created
+    (made,) = rig.contacts.created
     assert (made.name, made.telegram_handle, made.telegram_user_id) == (
         "Juan Dela Cruz",
         "juandc",
         str(USER),
     )
-    assert rig.notion.writes == []
-    assert rig.notion.notes == ["Created by Sixto /start on 2026-09-18."]
+    assert rig.contacts.writes == []
+    assert rig.contacts.notes == ["Created by Sixto /start on 2026-09-18."]
     member = rig.store.member(USER)
     assert member["status"] == "approved" and member["contact_page_id"] == made.page_id
     assert rig.texts_to(USER)[-1].endswith(
@@ -696,7 +673,7 @@ async def test_create_new_makes_a_contact_with_exactly_the_listed_fields(config)
 
 async def test_a_failed_create_is_retried_then_the_card_offers_retry(config):
     rig = await approved_rig(config)
-    rig.notion.fail_create = True
+    rig.contacts.fail_create = True
     tap(rig, 2, data_of(rig.card(), "Create new"))
     await rig.settle()
     assert rig.sleeps == [1.0, 5.0, 15.0]
@@ -704,11 +681,11 @@ async def test_a_failed_create_is_retried_then_the_card_offers_retry(config):
     edit = rig.telegram.edits[-1]
     assert "Write failed" in edit["text"] and [b["text"] for b in buttons(edit)] == ["Retry"]
 
-    rig.notion.fail_create = False
+    rig.contacts.fail_create = False
     tap(rig, 3, buttons(edit)[0]["callback_data"])
     await rig.settle()
     assert rig.store.member(USER)["status"] == "approved"
-    assert len(rig.notion.created) == 1
+    assert len(rig.contacts.created) == 1
 
 
 async def test_create_reuses_a_contact_left_by_an_earlier_create_instead_of_making_a_second(
@@ -716,11 +693,14 @@ async def test_create_reuses_a_contact_left_by_an_earlier_create_instead_of_maki
 ):
     rig = await approved_rig(config)
     orphan = contact("bbbbbbbb-0000-0000-0000-000000000009", "Juan Dela Cruz", user_id=str(USER))
-    rig.notion.contacts = [*rig.notion.contacts, orphan]  # made, but the approval never finished
+    rig.contacts.contacts = [
+        *rig.contacts.contacts,
+        orphan,
+    ]  # created, approval unfinished
     tap(rig, 2, data_of(rig.card(), "Create new"))
     await rig.settle()
 
-    assert rig.notion.created == []
+    assert rig.contacts.created == []
     member = rig.store.member(USER)
     assert member["status"] == "approved" and member["contact_page_id"] == orphan.page_id
 
@@ -731,7 +711,7 @@ async def test_reject_undo_and_create_ignore_taps_from_anyone_but_the_approver(c
         tap(rig, 2 + n, data, user=555)
     await rig.settle()
     assert rig.store.member(USER)["status"] == "pending"
-    assert rig.notion.created == [] and rig.telegram.edits == []
+    assert rig.contacts.created == [] and rig.telegram.edits == []
 
     tap(rig, 5, data_of(rig.card(), "Reject"))
     await rig.settle()
@@ -751,51 +731,10 @@ async def test_a_stale_reject_tap_after_approval_changes_nothing(config):
     assert rig.texts_to(USER).count(strings.REJECTED) == 0
 
 
-async def test_the_adapter_creates_a_contact_page_in_the_data_source():
-    seen = []
-
-    def handler(request):
-        seen.append((request.method, request.url.path, request.read()))
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json={
-                    "properties": {
-                        "TelegramUserID": {"type": "rich_text"},
-                        "TelegramHandle": {"type": "rich_text"},
-                    }
-                },
-            )
-        return httpx.Response(200, json=page("p-9", "Juan", "juandc", user_id="42"))
-
-    notion = notion_with(handler)
-    made = await notion.create_contact("Juan", "juandc", 42, "Created by Sixto /start on X.")
-    await notion.close()
-
-    assert made.page_id == "p-9"
-    assert seen[0][:2] == ("GET", f"/v1/data_sources/{CONTACTS_SOURCE}")
-    assert seen[1][:2] == ("POST", "/v1/pages")
-    body = json.loads(seen[1][2])
-    assert body["parent"] == {"type": "data_source_id", "data_source_id": CONTACTS_SOURCE}
-    assert body["properties"] == {
-        "Name": {"title": [{"type": "text", "text": {"content": "Juan"}}]},
-        "TelegramUserID": {"rich_text": [{"type": "text", "text": {"content": "42"}}]},
-        "TelegramHandle": {"rich_text": [{"type": "text", "text": {"content": "juandc"}}]},
-    }
-    (block,) = body["children"]
-    assert block["paragraph"]["rich_text"][0]["text"]["content"] == "Created by Sixto /start on X."
-
-
 # --- config ---------------------------------------------------------------------------------
 
 
-def test_boot_fails_naming_the_key_when_notion_api_key_is_missing(config, tmp_path):
-    env = {k: v for k, v in ENV.items() if k != "NOTION_API_KEY"}
-    with pytest.raises(ConfigError, match="NOTION_API_KEY is not set"):
-        load_config(tmp_path / "config.yaml", env)
-
-
-@pytest.mark.parametrize("section", ["notion", "onboarding"])
+@pytest.mark.parametrize("section", ["onboarding"])
 def test_boot_fails_when_a_config_section_is_missing(config, tmp_path, section):
     path = tmp_path / "config.yaml"
     kept = [line for line in path.read_text().splitlines() if not line.startswith(section)]
@@ -804,95 +743,15 @@ def test_boot_fails_when_a_config_section_is_missing(config, tmp_path, section):
         load_config(path, ENV)
 
 
-def test_a_bad_notion_value_is_reported_without_echoing_it(config, tmp_path):
+def test_boot_needs_no_notion_key_or_block(config):
+    assert "notion" not in type(config).model_fields
+
+
+def test_a_config_that_still_has_a_notion_block_fails_boot_with_a_clear_message(config, tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text(path.read_text().replace("2026-03-11", "leaky-secret-version"))
-    with pytest.raises(ConfigError) as caught:
+    path.write_text(path.read_text() + "notion: {version: '2026-03-11'}\n")
+    with pytest.raises(ConfigError, match="notion: this block is no longer used"):
         load_config(path, ENV)
-    assert "notion.version" in str(caught.value)
-    assert "leaky-secret-version" not in str(caught.value)
-
-
-def test_the_notion_key_is_scrubbed_from_redaction_and_never_shown(config):
-    assert NOTION_ENV["NOTION_API_KEY"] in config.secrets.redaction_values()
-    assert NOTION_ENV["NOTION_API_KEY"] not in repr(config.secrets)
-
-
-# --- the Notion adapter ---------------------------------------------------------------------
-
-
-def page(page_id, name, handle="", aliases="", user_id=None):
-    def rich(text):
-        return {"type": "rich_text", "rich_text": [{"plain_text": text}] if text else []}
-
-    return {
-        "id": page_id,
-        "url": f"https://www.notion.so/{page_id.replace('-', '')}",
-        "properties": {
-            "Name": {"type": "title", "title": [{"plain_text": name}]},
-            "TelegramHandle": rich(handle),
-            "Aliases": rich(aliases),
-            "TelegramUserID": {"type": "number", "number": user_id},
-        },
-    }
-
-
-def notion_with(handler):
-    transport = httpx.MockTransport(handler)
-    return NotionContacts("ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=transport)
-
-
-async def test_the_adapter_reads_every_page_of_contacts_with_the_pinned_version():
-    seen = []
-
-    def handler(request):
-        seen.append(request)
-        body = request.read()
-        if b"start_cursor" not in body:
-            return httpx.Response(
-                200,
-                json={
-                    "results": [page("p-1", "Juan", "@juandc", user_id=42)],
-                    "has_more": True,
-                    "next_cursor": "c2",
-                },
-            )
-        return httpx.Response(
-            200, json={"results": [page("p-2", "Maria", aliases="mia")], "has_more": False}
-        )
-
-    notion = NotionContacts(
-        "ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=httpx.MockTransport(handler)
-    )
-    contacts = await notion.list_contacts()
-    await notion.close()
-
-    assert [(c.name, c.telegram_handle, c.aliases, c.telegram_user_id) for c in contacts] == [
-        ("Juan", "@juandc", "", "42"),
-        ("Maria", "", "mia", ""),
-    ]
-    assert seen[0].url.path == f"/v1/data_sources/{CONTACTS_SOURCE}/query"
-    assert seen[0].headers["Notion-Version"] == "2026-03-11"
-    assert seen[0].headers["Authorization"] == "Bearer ntn_secret"
-
-
-@pytest.mark.parametrize(
-    "response",
-    [httpx.Response(503, json={"code": "service_unavailable"}), httpx.ConnectError("boom")],
-)
-async def test_adapter_errors_never_carry_the_key(response):
-    def handler(request):
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-    notion = NotionContacts(
-        "ntn_secret", CONTACTS_SOURCE, "2026-03-11", transport=httpx.MockTransport(handler)
-    )
-    with pytest.raises(NotionError) as caught:
-        await notion.list_contacts()
-    assert "ntn_secret" not in str(caught.value)
-    await notion.close()
 
 
 # --- repeat presses and blocked users (#26) ---------------------------------------------------
@@ -915,11 +774,11 @@ async def onboarded_rig(config):
 
 async def test_start_again_when_approved_says_already_onboarded_with_no_card_and_no_lookup(config):
     rig = await onboarded_rig(config)
-    calls, cards = rig.notion.calls, len(rig.texts_to(APPROVER))
+    calls, cards = rig.contacts.calls, len(rig.texts_to(APPROVER))
     await press_again(rig, 3)
 
     assert rig.texts_to(USER)[-1] == strings.ALREADY_ONBOARDED
-    assert len(rig.texts_to(APPROVER)) == cards and rig.notion.calls == calls
+    assert len(rig.texts_to(APPROVER)) == cards and rig.contacts.calls == calls
     assert rig.store.member(USER)["status"] == "approved"
 
 
@@ -975,12 +834,12 @@ async def test_a_block_error_for_a_pending_member_or_a_group_changes_no_row(conf
 async def test_a_blocked_member_pressing_start_goes_back_to_approved_with_no_card(config):
     rig = await onboarded_rig(config)
     rig.store.block_member(USER)
-    cards, calls = len(rig.texts_to(APPROVER)), rig.notion.calls
+    cards, calls = len(rig.texts_to(APPROVER)), rig.contacts.calls
     await press_again(rig, 3)
 
     assert rig.store.member(USER)["status"] == "approved"
     assert rig.texts_to(USER)[-1] == strings.ALREADY_ONBOARDED
-    assert len(rig.texts_to(APPROVER)) == cards and rig.notion.calls == calls
+    assert len(rig.texts_to(APPROVER)) == cards and rig.contacts.calls == calls
 
 
 async def test_pressing_start_many_times_while_pending_gives_the_approver_one_card(config):
@@ -1011,18 +870,18 @@ def test_a_telegram_403_is_translated_to_a_block_error():
 
 async def test_lookups_are_retried_after_1_5_and_30_minutes_then_a_failure_card_is_sent(config):
     rig = Rig(config, [start_from(1)], [JUAN])
-    rig.notion.fail = True
+    rig.contacts.fail = True
     await rig.settle()
-    assert rig.notion.calls == 1
+    assert rig.contacts.calls == 1
     for minutes, calls in ((0.5, 1), (1, 2), (4.9, 2), (5, 3), (29, 3)):
         rig.clock.now = 1_789_700_000.0 + minutes * 60
         await rig.settle()
-        assert rig.notion.calls == calls, minutes
+        assert rig.contacts.calls == calls, minutes
     assert rig.texts_to(APPROVER) == []
 
     rig.clock.now = 1_789_700_000.0 + 30 * 60
     await rig.settle()
-    assert rig.notion.calls == 4
+    assert rig.contacts.calls == 4
     card = rig.card()
     assert "Lookup failed" in card["text"]
     assert [b["text"] for b in buttons(card)] == ["Retry", "Create new Contact", "Reject"]
@@ -1031,32 +890,32 @@ async def test_lookups_are_retried_after_1_5_and_30_minutes_then_a_failure_card_
 
     rig.clock.advance(3600)
     await rig.settle()
-    assert rig.notion.calls == 4  # no more automatic tries
+    assert rig.contacts.calls == 4  # no more automatic tries
 
 
 async def test_lookup_retries_resume_after_a_restart(config):
     rig = Rig(config, [start_from(1)], [JUAN])
-    rig.notion.fail = True
+    rig.contacts.fail = True
     await rig.settle()
     rig.clock.advance(61)
     await rig.settle()
-    assert rig.notion.calls == 2
+    assert rig.contacts.calls == 2
     rig.store.close()
 
     again = Rig(config, [], [JUAN])  # a new process on the same database
     again.clock.now = rig.clock.now
-    again.notion.fail = True
+    again.contacts.fail = True
     await again.settle()
-    assert again.notion.calls == 0  # the 5-minute step is not due yet
+    assert again.contacts.calls == 0  # the 5-minute step is not due yet
     again.clock.advance(5 * 60)
     await again.settle()
-    assert again.notion.calls == 1
+    assert again.contacts.calls == 1
     assert again.store.member(USER)["lookup_attempts"] == 3
 
 
 async def exhausted_rig(config, contacts=(JUAN,)):
     rig = Rig(config, [start_from(1)], list(contacts))
-    rig.notion.fail = True
+    rig.contacts.fail = True
     for offset in (0, 60, 300, 1800):
         rig.clock.now = 1_789_700_000.0 + offset
         await rig.settle()
@@ -1073,7 +932,7 @@ async def test_retry_on_the_failure_card_looks_the_person_up_again(config):
     assert rig.telegram.answers[-1]["alert"] is True
     assert rig.telegram.edits == [] and rig.store.member(USER)["candidates"] == []
 
-    rig.notion.fail = False
+    rig.contacts.fail = False
     tap(rig, 3, retry)
     await rig.settle()
     edit = rig.telegram.edits[-1]
@@ -1088,10 +947,10 @@ async def test_retry_on_the_failure_card_looks_the_person_up_again(config):
 
 async def test_create_new_and_reject_work_on_the_failure_card(config):
     rig = await exhausted_rig(config)
-    rig.notion.fail = False
+    rig.contacts.fail = False
     tap(rig, 2, data_of(rig.card(), "Create new Contact"))
     await rig.settle()
-    assert rig.store.member(USER)["status"] == "approved" and len(rig.notion.created) == 1
+    assert rig.store.member(USER)["status"] == "approved" and len(rig.contacts.created) == 1
 
 
 async def test_reject_works_on_the_failure_card(config):

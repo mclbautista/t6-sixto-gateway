@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from sixto_gateway.config import Config, ConfigError, load_config
-from tests.fakes import APPROVER, CONTACTS_SOURCE, NOTION_ENV
+from tests.fakes import APPROVER, GATEWAY_ENV
 
 TOKEN = "123456:ABC-DEF-token-value-for-tests"
 SECRET = "w" * 40
@@ -17,10 +17,9 @@ VALID = {
     "commands": {},
     "groups": {"test_group": [100000001]},
     "routes": [{"chat": -1001234567890, "topic": 77, "module": "watchdog"}],
-    "notion": {"contacts_data_source_id": CONTACTS_SOURCE, "version": "2026-03-11"},
     "onboarding": {"approver": APPROVER},
 }
-ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": SECRET, **NOTION_ENV}
+ENV = {"TELEGRAM_BOT_TOKEN": TOKEN, "WATCHDOG_SECRET": SECRET, **GATEWAY_ENV}
 
 
 def write(tmp_path, data):

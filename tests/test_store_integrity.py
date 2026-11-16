@@ -8,12 +8,11 @@ import pytest
 from sixto_gateway.__main__ import main
 from sixto_gateway.store import Store
 from sixto_gateway.store.db import StoreCorrupt
-from tests.fakes import NOTION_YAML
+from tests.fakes import ONBOARDING_YAML
 
 ENV = {
     "TELEGRAM_BOT_TOKEN": "1:t",
     "WATCHDOG_SECRET": "w" * 40,
-    "NOTION_API_KEY": "n" * 40,
     "T6_API_URL": "https://example.invalid",
     "GATEWAY_T6_API_SECRET": "test-secret",
 }
@@ -31,7 +30,7 @@ def config(tmp_path, db, monkeypatch):
     path = tmp_path / "config.yaml"
     path.write_text(
         "modules: {watchdog: {secret_env: WATCHDOG_SECRET}}\n"
-        f"database_path: {db}\n" + NOTION_YAML
+        f"database_path: {db}\n" + ONBOARDING_YAML
     )
     return str(path)
 

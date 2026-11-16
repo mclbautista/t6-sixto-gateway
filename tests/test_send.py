@@ -10,7 +10,7 @@ from sixto_gateway.sender import Sender
 from sixto_gateway.store import Store
 from sixto_gateway.telegram.client import AiogramTelegramClient
 from sixto_gateway.telegram.errors import PermanentSendError, TransientSendError
-from tests.fakes import NOTION_ENV, NOTION_YAML, FakeClock, FakeTelegram
+from tests.fakes import GATEWAY_ENV, ONBOARDING_YAML, FakeClock, FakeTelegram
 
 WATCHDOG = "w" * 40
 PSR = "p" * 40
@@ -23,7 +23,7 @@ def env(tmp_path):
     path.write_text(
         "modules:\n  watchdog: {secret_env: WATCHDOG_SECRET}\n  psr: {secret_env: PSR_SECRET}\n"
         "routes: []\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     config = load_config(
         path,
@@ -31,7 +31,7 @@ def env(tmp_path):
             "TELEGRAM_BOT_TOKEN": "1:tok",
             "WATCHDOG_SECRET": WATCHDOG,
             "PSR_SECRET": PSR,
-            **NOTION_ENV,
+            **GATEWAY_ENV,
         },
     )
     clock = FakeClock()

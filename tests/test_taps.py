@@ -11,8 +11,8 @@ from sixto_gateway.poller import Poller
 from sixto_gateway.push import RETRY_SCHEDULE_SECONDS, PushWorker
 from sixto_gateway.store import Store
 from tests.fakes import (
-    NOTION_ENV,
-    NOTION_YAML,
+    GATEWAY_ENV,
+    ONBOARDING_YAML,
     FakeClock,
     FakeTelegram,
     button_tap,
@@ -27,7 +27,7 @@ ENV = {
     "TELEGRAM_BOT_TOKEN": "123456:" + "t" * 35,
     "CARDS_SECRET": CARDS_SECRET,
     "SHIFT_SECRET": SHIFT_SECRET,
-    **NOTION_ENV,
+    **GATEWAY_ENV,
 }
 PUSH_URL = "http://100.64.0.9:8790/tap"
 USER, CHAT = 555, 555
@@ -44,7 +44,7 @@ def write_config(tmp_path, modules=None):
     path = tmp_path / "config.yaml"
     path.write_text(
         f"modules: {modules}\ncommands: {commands}\n"
-        f"database_path: {tmp_path / 'gateway.db'}\n" + NOTION_YAML
+        f"database_path: {tmp_path / 'gateway.db'}\n" + ONBOARDING_YAML
     )
     return path
 
