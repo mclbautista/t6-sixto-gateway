@@ -364,7 +364,7 @@ before or after it, because nothing is pushed until the command is in `config.ya
 the `project` command and the `operators` group (the same Telegram ids as t6-core's
 `T6_OPERATOR_IDS`) to `config.yaml` and restart the gateway, which also puts `/project` in
 those people's menus. Check: an operator sends `/project` and the list arrives; anyone else
-gets the refusal. The push goes to the tailnet-only tap URL the taps already use (see
+gets the refusal. The push goes to the tap URL the taps already use (the t6 API's `/tap`, see
 "Optional Tailscale gateway node"), so no new network path is opened. To roll back, remove the
 command from `config.yaml` and restart; cards already sent keep working.
 
@@ -543,11 +543,12 @@ If there is no override, omit `:compose.override.yaml` from `COMPOSE_FILE`. Insp
 the resolved config privately before starting: gateway must have neither ports nor
 networks, and the sidecar must own the intended host binding and all shared-network
 aliases. Check the LAN health URL from another app, and check both shared-network
-clients can still resolve and reach the gateway. With the VPS listening on both
-ports, check TCP from *inside the gateway* (substitute its tailnet IPv4):
+clients can still resolve and reach the gateway. Check TCP from
+*inside the gateway*: the t6 API's tap listener must answer and the VPS queue port must
+not (substitute the two addresses):
 
 ```sh
-docker compose exec -T gateway python -c 'import socket; s=socket.create_connection(("<VPS_TAILNET_IPV4>", 8791), 5); s.close(); print("tap reachable")'
+docker compose exec -T gateway python -c 'import socket; s=socket.create_connection(("<T6_API_LAN_ADDRESS>", 8081), 5); s.close(); print("tap reachable")'
 docker compose exec -T gateway python -c 'import socket; s=socket.create_connection(("<VPS_TAILNET_IPV4>", 8790), 5); s.close(); print("ERROR: queue reachable")'
 ```
 
