@@ -4,6 +4,7 @@ A module in ``delivery: push`` mode gets every tap on its buttons as an HTTP POS
 ``push_url`` with ``Authorization: Bearer <its secret>``. The body is the tap item (the same
 shape ``GET /updates`` serves) plus ``idempotency_key``, which is also sent as an
 ``Idempotency-Key`` header and is the same on every retry, so the receiver can drop a repeat.
+The tapper's (or sender's) ``from.id`` also goes in an ``X-Telegram-User-Id`` header.
 The module's commands (ticket #72) travel the same way, as ``command`` items.
 
 Any 2xx answer accepts the tap. Anything else (an error status, a timeout, no connection) is
@@ -71,6 +72,7 @@ class PushWorker:
                 headers={
                     "Authorization": f"Bearer {self._config.secrets.secret_for(module)}",
                     "Idempotency-Key": key,
+                    "X-Telegram-User-Id": str(item["from"]["id"]),
                 },
             )
             if not response.is_success:

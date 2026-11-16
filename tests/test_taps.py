@@ -220,6 +220,7 @@ async def test_a_push_module_gets_a_post_with_its_secret_and_an_idempotency_key(
     assert str(request.url) == PUSH_URL
     assert request.headers["authorization"] == f"Bearer {CARDS_SECRET}"
     assert request.headers["idempotency-key"] == "tap-7"
+    assert request.headers["x-telegram-user-id"] == "777"
     body = httpx.Response(200, content=request.content).json()
     assert body["idempotency_key"] == "tap-7"
     assert body["kind"] == "tap" and body["data"] == "approve:42"
@@ -242,6 +243,7 @@ async def test_a_failed_push_is_retried_with_backoff_under_the_same_key(rig):
     assert await rig.pusher.push_due() == 1  # accepted on the third
 
     assert [r.headers["idempotency-key"] for r in rig.posts] == ["tap-7"] * 3
+    assert [r.headers["x-telegram-user-id"] for r in rig.posts] == [str(USER)] * 3
     assert rig.store.push_status(1)["state"] == "done"
     assert ("tap_push_retry", "cards") in audits(rig)
     rig.clock.advance(10_000)
@@ -346,6 +348,7 @@ async def test_a_push_modules_command_is_posted_like_a_tap_with_its_own_key(rig)
     assert str(request.url) == PUSH_URL
     assert request.headers["authorization"] == f"Bearer {CARDS_SECRET}"
     assert request.headers["idempotency-key"] == "cmd-9"
+    assert request.headers["x-telegram-user-id"] == str(USER)
     body = httpx.Response(200, content=request.content).json()
     assert body["idempotency_key"] == "cmd-9"
     assert (body["kind"], body["command"], body["args"]) == ("command", "project", "ABC 1")
@@ -362,6 +365,7 @@ async def test_a_pushed_command_is_retried_under_the_same_key(rig):
     rig.status = 200
     assert await rig.pusher.push_due() == 1
     assert [r.headers["idempotency-key"] for r in rig.posts] == ["cmd-9"] * 2
+    assert [r.headers["x-telegram-user-id"] for r in rig.posts] == [str(USER)] * 2
 
 
 async def test_a_refused_command_is_never_pushed(rig):
