@@ -414,10 +414,11 @@ commands:
 
 `/start` in a private chat is onboarding, never checked against the command allow-list. The poller
 saves a `pending` row in `members` and queues the "waiting" reply in the same transaction as the
-update. A separate worker then reads the Contacts through the t6 API (`person list`),
-matches the person's handle (case-insensitive, `@` ignored) against `TelegramHandle` and
-`Aliases`, and queues an approval card for `onboarding.approver` with inline buttons. A slow or
-down API never holds up polling. `/start` in a group gets a "message me directly" reply with a
+update. A separate worker then reads the Contacts through the t6 API (`person list`) and asks
+the API to match the person (`person find`): the handle first, then the full name, up to 3
+candidates. The gateway does no matching of its own and never picks a candidate. It queues an
+approval card for `onboarding.approver` with inline buttons. A slow or down API never holds up
+polling. `/start` in a group gets a "message me directly" reply with a
 deep link. All user-facing text is in `sixto_gateway/strings.py`. Events go to the `audit` table.
 
 Taps on the card write through the t6 API as the approver who tapped (the request carries their
