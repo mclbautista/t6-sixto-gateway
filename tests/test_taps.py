@@ -29,7 +29,7 @@ ENV = {
     "SHIFT_SECRET": SHIFT_SECRET,
     **GATEWAY_ENV,
 }
-PUSH_URL = "http://100.64.0.9:8790/tap"
+PUSH_URL = "http://198.51.100.9:8790/tap"
 USER, CHAT = 555, 555
 
 

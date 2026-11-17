@@ -176,7 +176,7 @@ onboarding worker.
   sent**, then edits it; if that send fails, the edit fails too with an error naming the ref.
   Telegram's "message is not modified" (the message already shows exactly this) counts as sent.
 - **To a person, by Notion Contact.** Instead of `to`, send `{"contact": "<Contact page id or T6 ID>",
-  "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@juandc"}, "text": "..."}`.
+  "fallback": {"to": <group chat>, "topic": <optional>, "handle": "@example_handle"}, "text": "..."}`.
   If the Contact has an `approved` member (see /start onboarding), the message is queued to that
   person's DM. Otherwise it goes to the fallback chat and topic with `@handle` added at the start
   of the text. The lookup reads only the local `members` table, never Notion, and dashes in the
@@ -697,7 +697,7 @@ For Hermes, step by step. Stop at the first failed check and use the rollback be
 number you read in step 2. Set the shell variables first:
 
 ```sh
-MINI=192.168.88.151                      # the Mac mini
+MINI=<Mac mini address>                  # the Mac mini
 WATCHDOG_SECRET='<value from .env>'      # the same value in the gateway and watchdog .env
 ```
 Prerequisites: the gateway `.env` has `TELEGRAM_BOT_TOKEN` and `WATCHDOG_SECRET`; the gateway
