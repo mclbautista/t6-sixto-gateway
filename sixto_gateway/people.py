@@ -4,14 +4,17 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from t6.client import APIError, Client, Unavailable
 from t6.verbs import (
     Done,
     PersonCreateInput,
+    PersonFindInput,
+    PersonFindOutput,
     PersonGetInput,
     PersonGetOutput,
+    PersonKind,
     PersonListInput,
     PersonListOutput,
     PersonTelegramInput,
@@ -55,6 +58,15 @@ class ContactsDirectory(Protocol):
 
     async def get_contact(self, page_id: str) -> Contact:
         """One Contact, read fresh. Failures raise ``PeopleError``."""
+        ...
+
+    async def find(self, mention: str, suggest: bool = False) -> list[Contact]:
+        """The Contacts the API's ``person find`` offers for ``mention``, best first.
+
+        Without ``suggest``: the Contact it decided on, or the tied Contacts it left to a
+        person; nothing when it found no exact match. With ``suggest``: up to 3, the decided
+        Contact first. Failures raise ``PeopleError``.
+        """
         ...
 
     async def link_telegram(self, contact: Contact, user_id: int, operator: int) -> Contact:
@@ -119,6 +131,22 @@ class PeopleDirectory:
         result = await self._call(self._client.person_get, PersonGetInput(person_id=person_id))
         return self._contact(PersonGetOutput.model_validate(result).person)
 
+    async def find(self, mention: str, suggest: bool = False) -> list[Contact]:
+        result = await self._call(
+            self._client.person_find, PersonFindInput(mention=mention, suggest=suggest)
+        )
+        found = PersonFindOutput.model_validate(result)
+        if found.match is not None:
+            exact = [found.match]
+        elif found.method == "review" and found.score >= 1.0:  # exact matches that tie
+            exact = list(found.candidates)
+        else:
+            exact = []
+        if not suggest:
+            return [self._contact(p) for p in exact]
+        rest = [c for c in found.candidates if all(c.t6_id != e.t6_id for e in exact)]
+        return [self._contact(p) for p in [*exact, *rest][:3]]
+
     @staticmethod
     def _answer(result) -> dict[str, Any]:
         if isinstance(result, Done):
@@ -158,7 +186,7 @@ class PeopleDirectory:
     ) -> Contact:
         inputs = PersonCreateInput(
             name=name,
-            kind=kind,
+            kind=cast(PersonKind, kind),  # the card offers only the API's kinds
             telegram_handle=handle or None,
             telegram_id=user_id,
             note=note,

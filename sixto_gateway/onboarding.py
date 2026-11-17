@@ -22,7 +22,6 @@ from typing import Any
 from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, NewMember, NewTap
-from sixto_gateway.matching import closest_contacts, matches_handle
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.people import Contact, ContactsDirectory, PeopleDirectory, PeopleError, Refusal
 from sixto_gateway.store import Store
@@ -124,19 +123,16 @@ def id_fingerprint(telegram_id: str) -> str:
     return hashlib.sha256(telegram_id.encode()).hexdigest()[:6]
 
 
-def find_candidates(contacts: list[Contact], handle: str | None) -> list[Contact]:
-    """Contacts whose handle or an alias equals ``handle``. No handle, no candidates."""
-    if not handle:
-        return []
-    return [c for c in contacts if matches_handle(c, handle)]
-
-
-def find_candidates_for(contacts: list[Contact], member: dict[str, Any]) -> list[Contact]:
-    """Handle or alias matches; with none, the Contacts closest by name. Never picks one."""
-    exact = find_candidates(contacts, member["handle"])
-    if exact:
-        return exact
-    return closest_contacts(contacts, full_name(member))
+async def find_candidates_for(
+    directory: ContactsDirectory, member: dict[str, Any]
+) -> list[Contact]:
+    """What ``person find`` offers: by handle, else by name (up to 3). Never picks one."""
+    if member["handle"]:
+        exact = await directory.find(f"@{member['handle']}")
+        if exact:
+            return exact
+    name = full_name(member)
+    return await directory.find(name, suggest=True) if name else []
 
 
 def holders_of_id(contacts: list[Contact], user_id: int) -> list[Contact]:
@@ -237,17 +233,13 @@ def render_card(member: dict[str, Any], candidates: list[Contact]) -> dict[str, 
     """The approver's card as an outbound body (HTML text plus inline buttons)."""
     user_id = member["telegram_user_id"]
     lines = _card_header(member)
-    handle = member["handle"]
-    by_handle = (
-        bool(handle) and bool(candidates) and all(matches_handle(c, handle) for c in candidates)
-    )
-    single = len(candidates) == 1 and by_handle
+    single = len(candidates) == 1
     if not candidates:
         lines.append(strings.CARD_NO_MATCH)
     elif single:
         lines.append(strings.CARD_MATCH.format(link=_link(candidates[0])))
-    else:  # several matches, or only names to go on: nothing is picked for the approver
-        lines.append(strings.CARD_MATCHES if by_handle else strings.CARD_CLOSEST)
+    else:  # several matches: nothing is picked for the approver
+        lines.append(strings.CARD_MATCHES)
     keyboard: list[list[dict[str, str]]] = []
     for contact in candidates:
         if not single:
@@ -330,6 +322,8 @@ class OnboardingWorker:
                 continue
             try:
                 contacts = await self._list_contacts()
+                approved = self._auto_approve(member, contacts)
+                found = [] if approved else await find_candidates_for(self._contacts, member)
             except PeopleError as exc:
                 log.warning("contacts lookup for user %s failed: %s", user, exc)
                 failures = self._store.record_lookup_failure(user, str(exc))
@@ -344,10 +338,9 @@ class OnboardingWorker:
                     self._queue_wake.notify()
                     return True
                 continue
-            if self._auto_approve(member, contacts):
+            if approved:
                 self._queue_wake.notify()
                 return True
-            found = find_candidates_for(contacts, member)
             self._store.queue_approval_card(
                 user,
                 [c.page_id for c in found],
@@ -468,11 +461,10 @@ class OnboardingWorker:
 
     async def _reoffer(self, tap: dict[str, Any], member: dict[str, Any]) -> None:
         try:
-            contacts = await self._list_contacts()
+            found = await find_candidates_for(self._contacts, member)
         except PeopleError:
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        found = find_candidates_for(contacts, member)
         user = member["telegram_user_id"]
         self._store.set_candidates(user, [c.page_id for c in found], f"matches={len(found)}")
         await self._answer(tap)
@@ -571,12 +563,11 @@ class OnboardingWorker:
             await self._answer(tap)  # not a failed-lookup card any more
             return
         try:
-            contacts = await self._list_contacts()
+            found = await find_candidates_for(self._contacts, member)
         except PeopleError as exc:
             self._store.audit("lookup", None, f"user={user} retry failed: {exc}"[:300])
             await self._answer(tap, strings.TAP_NOTION_FAILED, alert=True)
             return
-        found = find_candidates_for(contacts, member)
         stored = self._store.set_candidates(
             user, [c.page_id for c in found], f"matches={len(found)}"
         )
