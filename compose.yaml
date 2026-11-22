@@ -36,7 +36,7 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8780:8780"                 # LAN only; never expose to the internet
+      - "${GATEWAY_BIND_IP:-127.0.0.1}:8780:8780"   # LAN only; never expose to the internet
     volumes:
       # A named volume, inside the Docker VM. Never bind-mount a host folder here: SQLite's
       # locks do not hold across a macOS bind mount (t6-jo-watchdog#131; README "Database
