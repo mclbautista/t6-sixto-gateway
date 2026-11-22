@@ -39,7 +39,7 @@ commands:                                       # /jo arrives in phase 5
     builtin: true
     allow: [chat_ids]
     description: Show this chat's id and topic id
-  project:                                      # pushed to t6core (README: "Project Codes and rotation")
+  project:                                      # pushed to t6core (README: "Project Codes and rotation"); Start Project is a button on its card, operator only in t6-core
     module: t6core
     allow: [operators]
     description: Project Codes and rotation
