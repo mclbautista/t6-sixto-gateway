@@ -27,7 +27,14 @@ OPERATOR = 123456789
 COORDINATOR = 123456789
 CONTACT = "0a1b2c3d-1111-2222-3333-444455556666"
 PAGE = "0a1b2c3d111122223333444455556666"
-CONTRACTS = ("review-done", "approval-card", "retry-card", "frameio-sign-in", "project-card")
+CONTRACTS = (
+    "review-done",
+    "approval-card",
+    "retry-card",
+    "frameio-sign-in",
+    "project-card",
+    "project-start-card",
+)
 
 
 def readme_contracts() -> dict[str, dict]:
@@ -182,6 +189,16 @@ async def test_project_card_reaches_the_operator_with_core_callbacks(client, env
     assert "Nothing changed" in sent["text"]
     assert [row[0]["callback_data"] for row in sent["keyboard"]] == [
         f"mod:t6core:op:{TOKEN}:{choice}" for choice in ("cclr", "chg", "bout", "skip")
+    ]
+
+
+async def test_project_start_card_reaches_the_operator_with_core_callbacks(client, env):
+    """The Start Project step of the /project card (t6-core#540)."""
+    sent = await send(client, env, readme_contracts()["project-start-card"])
+    assert sent["chat_id"] == OPERATOR and sent["parse_mode"] == "HTML"
+    assert "Project Start" in sent["text"]
+    assert [row[0]["callback_data"] for row in sent["keyboard"]] == [
+        f"mod:t6core:op:{TOKEN}:{choice}" for choice in ("stchk", "sbk")
     ]
 
 

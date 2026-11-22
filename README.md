@@ -353,6 +353,31 @@ keys `op-card:<token>` and `op-edit:<token>:<version>`:
 }
 ```
 
+**Start Project (t6-core#540).** A Project's card has **Start Project** for an operator; t6-core
+queues the Project's plan, then the same card moves on. These are ordinary `/edit`s of the card
+(same keys, same budget; the new choices `pst`, `stchk`, `stcf` and `sbk` are at most four bytes). The
+gateway sends the text and buttons as they are, forwards every tap, and knows nothing of Project Start.
+The step that waits for the plan:
+
+<!-- contract: project-start-card -->
+```json
+{
+  "to": 123456789,
+  "text": "<b>Project</b> <b>EX01</b> <code>t6p_0123456789abcdef01234567</code>\n<b>Project Start</b>\nThe plan is being built. Tap Check plan in a moment.",
+  "format": "html",
+  "idempotency_key": "op-card:AbCdEfGhIjKlMnOpQrStUv",
+  "buttons": [
+    [{"text": "Check plan", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:stchk"}],
+    [{"text": "Back", "payload": "op:AbCdEfGhIjKlMnOpQrStUv:sbk"}]
+  ]
+}
+```
+
+Start Project is operator only: it is t6-core's rule (`permission:operator`), so a tap from anyone
+else is refused there, whatever the gateway's allow-list says. Confirming asks for the `project start`
+Approval, whose own card (kind `approval`, see "Messages from t6-core") follows. Nothing else changes
+here: `/project` stays allowed for `operators` only, and no new command is pushed.
+
 The payload is `op:<22-character token>:<choice>`. The token is opaque; what the card is
 about lives in t6-core. A choice may be at most **27 bytes** (53 minus `op:`, the token and
 a colon).
