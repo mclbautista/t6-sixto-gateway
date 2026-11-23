@@ -13,6 +13,7 @@ from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker
 from sixto_gateway.people import ContactsDirectory
 from sixto_gateway.poller import Poller
+from sixto_gateway.project import ProjectCommands, ProjectWorker
 from sixto_gateway.push import PushWorker
 from sixto_gateway.retention import run_retention
 from sixto_gateway.sender import Sender
@@ -34,6 +35,7 @@ def start_workers(
     scrub: Callable[[str], str] = lambda text: text,
     *,
     contacts: ContactsDirectory,
+    projects: ProjectCommands,
     onboarding_wake: Notifier,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, asyncio.Task]:
@@ -47,6 +49,7 @@ def start_workers(
     }
     if config.telegram.polling:
         push_wake = Notifier()
+        project_wake = Notifier()
         poller = Poller(
             store,
             client,
@@ -56,12 +59,16 @@ def start_workers(
             liveness=liveness,
             onboarding_wake=onboarding_wake,
             push_wake=push_wake,
+            project_wake=project_wake,
         )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
         worker = OnboardingWorker(
             store, contacts, config, onboarding_wake, queue_wake, client=client
         )
         tasks["onboarding"] = asyncio.create_task(worker.run(stop))
+        tasks["projects"] = asyncio.create_task(
+            ProjectWorker(store, projects, project_wake, queue_wake).run(stop)
+        )
         tasks["summary"] = asyncio.create_task(
             SummaryWorker(store, config, queue_wake, clock).run(stop)
         )

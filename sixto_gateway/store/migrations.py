@@ -149,4 +149,17 @@ MIGRATIONS: list[str] = [
     UPDATE members SET contact_notion_id = LOWER(REPLACE(contact_page_id, '-', ''))
         WHERE contact_page_id IS NOT NULL AND contact_page_id NOT LIKE 't6n\\_%' ESCAPE '\\';
     """,
+    # 12: a ``/project`` subcommand the gateway answers itself (ticket #125), saved with its
+    # update and deleted when its reply is queued. ``argument`` is the command's input (a
+    # Project code), never a reply.
+    """
+    CREATE TABLE project_requests (
+        update_id INTEGER PRIMARY KEY,
+        from_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        argument TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    """,
 ]

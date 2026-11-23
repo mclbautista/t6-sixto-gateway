@@ -434,6 +434,16 @@ commands:
   delivered or answered.
 - Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
   (command name and sender id, never the arguments).
+- **`/project <code> notes`** is answered by the gateway itself, not by t6core, and skips the
+  allow-list: the t6 API decides who may read it (Closers and that Project's coordinators). In a
+  DM the gateway asks the API as the sender (`X-Telegram-User-Id`): `project resolve` for the
+  code (an unknown or unclear code is answered "I don't know the Project code ..."), then
+  `project notes-history` (t6-core #638). The reply lists the PM Notes lines newest first as
+  `<As-of date> · <line>`, a removed line ending in `(removed <date>)`, split across messages
+  between lines. An API refusal is sent as is. In a group it is silent (audited `command_refused`
+  with `not_dm`). The request (sender, chat and the code) is saved with the update and deleted
+  when its reply is queued; the reply is an ordinary send-queue row. Any other `/project` still
+  goes to its module.
 
 ## /start onboarding (first slice)
 

@@ -514,3 +514,77 @@ class _FakeAPIAs:
 
     def person_create(self, inputs):
         return self._api._write("create", self._user, inputs)
+
+
+PROJECT_ID = "t6p_" + "a" * 32
+
+
+class FakeProjectAPI:
+    """The t6 API reads behind ``/project <code> notes``: ``project resolve`` and
+    ``project notes-history``, answered per caller like the real API.
+
+    ``codes`` maps a typed code to the ``project resolve`` reply; ``history`` maps a T6 Project
+    ID to its lines; ``allowed`` is who may read the history (``None``: anyone);
+    ``unavailable`` makes every call answer ``Unavailable``.
+    """
+
+    def __init__(self):
+        self.codes: dict[str, dict] = {
+            "ABD": {
+                "match": {
+                    "id": PAGE_ID,
+                    "t6_id": PROJECT_ID,
+                    "name": "Example Show",
+                    "project_code": "ABD",
+                    "status": None,
+                    "rotation": "in",
+                },
+                "method": "exact_id",
+                "score": 1.0,
+                "needs_review": False,
+                "reason": None,
+                "candidates": [],
+            }
+        }
+        self.history: dict[str, list[dict]] = {PROJECT_ID: []}
+        self.allowed: set[int] | None = None
+        self.unavailable = False
+        self.calls: list[tuple[int, str, dict]] = []  # (as user, noun verb, body)
+
+    def as_user(self, telegram_user_id: int) -> _FakeProjectAPIAs:
+        return _FakeProjectAPIAs(self, telegram_user_id)
+
+
+class _FakeProjectAPIAs:
+    def __init__(self, api: FakeProjectAPI, telegram_user_id: int):
+        self._api, self._user = api, telegram_user_id
+
+    def project_resolve(self, inputs):
+        self._api.calls.append((self._user, "project resolve", inputs.model_dump()))
+        if self._api.unavailable:
+            return Unavailable("offline")
+        none = {
+            "match": None,
+            "method": "none",
+            "score": 0,
+            "needs_review": True,
+            "reason": None,
+            "candidates": [],
+        }
+        return Done(result=self._api.codes.get(inputs.text, none))
+
+    def call(self, noun, verb, inputs):
+        body = inputs.model_dump()
+        self._api.calls.append((self._user, f"{noun} {verb}", body))
+        assert (noun, verb) == ("project", "notes-history")
+        if self._api.unavailable:
+            return Unavailable("offline")
+        allowed = self._api.allowed
+        if allowed is not None and self._user not in allowed:
+            return Refused(
+                rule="coordinator",
+                reason="Only Closers and the Project's coordinators may read its PM Notes history",
+            )
+        if body["project"] not in self._api.history:
+            return Refused(rule="project", reason="Project not found")
+        return Done(result={"lines": self._api.history[body["project"]]})

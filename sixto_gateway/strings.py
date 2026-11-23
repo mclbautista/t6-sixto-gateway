@@ -31,6 +31,15 @@ WHEREAMI_TOPIC = "Topic id: <code>{topic_id}</code>"
 WHEREAMI_GENERAL_TOPIC = "Topic id: <code>1</code> (General)"
 WHEREAMI_NO_TOPIC = "Topic id: none (this group has no topics)"
 
+# --- for /project <code> notes (plain text) ---------------------------------------------------
+
+PROJECT_NOTES_TITLE = "PM Notes history for {code}"
+PROJECT_NOTES_LINE = "{as_of} · {text}"
+PROJECT_NOTES_REMOVED = " (removed {date})"
+PROJECT_NOTES_NONE = "No PM Notes history for {code} yet."
+PROJECT_UNKNOWN_CODE = "I don't know the Project code {code}."
+T6_NOT_ANSWERING = "T6 is not answering right now. Please try again in a few minutes."
+
 # --- for the approver's card ----------------------------------------------------------------
 
 CARD_TITLE = "New /start"
