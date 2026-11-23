@@ -10,6 +10,7 @@ from collections.abc import Callable
 from sixto_gateway.commands import decide_builtin, decide_command, is_builtin
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision
+from sixto_gateway.drives import decide_drive
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import decide_start
@@ -67,7 +68,9 @@ class Poller:
                 event_modules=tuple(self._store.chat_subscription_modules(update.chat_id)),
             )
         if update.callback_id is not None:
-            return decide_tap(self._config, update)
+            return decide_tap(self._config, update, self._store)
+        if (drive := decide_drive(self._config, update, self._store)) is not None:
+            return drive
         if update.command == "start":
             return decide_start(self._store, update)
         if update.command == "project" and (project := decide_project(update)) is not None:

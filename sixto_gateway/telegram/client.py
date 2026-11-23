@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import BytesIO
 from typing import Protocol
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,6 +29,10 @@ class TelegramClient(Protocol):
         self, offset: int, timeout: int, allowed_updates: list[str]
     ) -> list[IncomingUpdate]: ...
 
+    async def download_photo(self, file_id: str) -> bytes:
+        """Download a Telegram file without retaining it on disk."""
+        ...
+
     async def send_message(
         self,
         chat_id: int,
@@ -35,6 +40,7 @@ class TelegramClient(Protocol):
         text: str,
         parse_mode: str | None,
         keyboard: Keyboard | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int:
         """Send a text message (link previews off); returns the Telegram message id.
 
@@ -154,6 +160,12 @@ class AiogramTelegramClient:
         )
         return [u for update in updates if (u := normalize(update)) is not None]
 
+    async def download_photo(self, file_id: str) -> bytes:
+        with _translated_errors():
+            destination = BytesIO()
+            await self._bot.download(file_id, destination=destination)
+        return destination.getvalue()
+
     async def send_message(
         self,
         chat_id: int,
@@ -161,8 +173,9 @@ class AiogramTelegramClient:
         text: str,
         parse_mode: str | None,
         keyboard: Keyboard | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int:
-        from aiogram.types import LinkPreviewOptions
+        from aiogram.types import LinkPreviewOptions, ReplyParameters
 
         with _translated_errors():
             message = await self._bot.send_message(
@@ -173,6 +186,9 @@ class AiogramTelegramClient:
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 reply_markup=_keyboard_markup(keyboard),
+                reply_parameters=ReplyParameters(message_id=reply_to_message_id)
+                if reply_to_message_id is not None
+                else None,
             )
         return int(message.message_id)
 

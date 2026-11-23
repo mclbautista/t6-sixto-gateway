@@ -122,3 +122,12 @@ SUMMARY_NOT_MISSING = "Everyone expected has joined."
 
 def first_name_or_there(first_name: str | None) -> str:
     return (first_name or "").strip() or "there"
+
+
+# --- recording-channel captures ---------------------------------------------------------------
+
+DRIVE_PRACTICE = "Practice"
+DRIVE_RECORDED = "Recorded: {label}, {direction}, {person}"
+DRIVE_ASK_LABEL = "Please reply with the drive label or serial."
+DRIVE_UNDO = "UNDO"
+DRIVE_UNDONE = "Undone."

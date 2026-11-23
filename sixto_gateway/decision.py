@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote, unquote
 
 GATEWAY_MODULE = "gateway"  # owner of the gateway's own outbound rows (command refusals)
@@ -79,3 +80,4 @@ class Decision:
     answer_tap: str | None = None  # a routed tap: the gateway answers it, with this text or ""
     event_modules: tuple[str, ...] = ()
     project_request: ProjectRequest | None = None  # answered by the project worker
+    drive_request: dict[str, Any] | None = None

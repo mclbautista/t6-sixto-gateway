@@ -59,6 +59,33 @@ Make a module secret with `python -c "import secrets; print(secrets.token_urlsaf
    Items stay readable for the retention period, so re-reading is safe. A wrong or missing
    secret gets `401` and is logged and audited.
 
+## TRANSMITTAL drive captures
+
+Set `recording_channel.chat_id` and `recording_channel.topic_id` in deployed config to the
+recording group's chat ID and its TRANSMITTAL topic's `message_thread_id`. Both must be integers
+(a negative group ID and a positive topic ID); omit the block or leave both null to disable it.
+The gateway and t6 must agree: configure `T6_DRIVE_RECORDING_CHAT_ID` and
+`T6_DRIVE_RECORDING_TOPIC_ID` on the t6 API as well. The API secret must identify the gateway.
+
+The bot must receive every post in that group. In BotFather, use `/setprivacy`, select the bot,
+and choose **Disable**. If it was already a member, remove and re-add it for the setting to take
+effect, or make it a group administrator. Confirm that an ordinary member's photo post reaches
+the bot. Keep `message` and `callback_query` in `telegram.allowed_updates`.
+
+Only new photos whose chat **and** topic match become drive captures. The gateway downloads the
+largest size and passes the original caption and photo to t6 without parsing them. It saves work
+with the polling cursor, polls the capture outcome, and queues a reply to the post in the same
+topic. Resolved replies list each drive and carry one UNDO button; practice replies start with
+"Practice", taken from the API result. Ignored captures produce no reply. If t6 asks for the
+label, reply to the bot's question in that topic with the label or serial; the text goes unchanged
+to the same capture. UNDO calls t6 and edits the recorded reply, removing the button.
+
+No other chat's text or photos enter capture storage or the drive API. Existing gateway update
+storage and module routing elsewhere continue as before. Photo bytes are downloaded in memory;
+completed capture work drops its caption and file reference. Replies use the normal paced,
+retrying send queue. A crash after t6 accepts a call can replay that call on recovery; t6's
+capture key (chat and message ID) and undo semantics keep the effects idempotent.
+
 ## Chat subscriptions
 
 A module can replace its own subscriptions with `PUT /subscriptions`, using its bearer secret

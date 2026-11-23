@@ -107,12 +107,18 @@ class Sender:
                     pass
                 telegram_id = edit_target
             else:
+                reply_options = (
+                    {"reply_to_message_id": body["reply_to_message_id"]}
+                    if "reply_to_message_id" in body
+                    else {}
+                )
                 telegram_id = await self._client.send_message(
                     body["chat"],
                     body.get("topic"),
                     body["text"],
                     PARSE_MODES[body["format"]],
                     body.get("keyboard"),
+                    **reply_options,
                 )
         except Exception as exc:  # noqa: BLE001 - any failure is recorded, never raised
             self._handle_failure(row, exc)

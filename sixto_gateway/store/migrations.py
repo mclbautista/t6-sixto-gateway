@@ -179,4 +179,21 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (chat_id, message_id)
     );
     """,
+    # 14: recording-channel work is committed with the polling cursor.
+    """
+    CREATE TABLE drive_requests (
+        update_id INTEGER PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        topic_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        body TEXT NOT NULL,
+        capture_id TEXT,
+        state TEXT NOT NULL DEFAULT 'new',
+        outcome TEXT,
+        reply_ref INTEGER,
+        next_attempt_at REAL NOT NULL,
+        UNIQUE (chat_id, message_id, kind)
+    );
+    """,
 ]
