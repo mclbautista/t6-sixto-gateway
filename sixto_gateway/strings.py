@@ -31,6 +31,34 @@ WHEREAMI_TOPIC = "Topic id: <code>{topic_id}</code>"
 WHEREAMI_GENERAL_TOPIC = "Topic id: <code>1</code> (General)"
 WHEREAMI_NO_TOPIC = "Topic id: none (this group has no topics)"
 
+# --- for /project <code> notes (plain text) ---------------------------------------------------
+
+PROJECT_NOTES_TITLE = "PM Notes history for {code}"
+PROJECT_NOTES_LINE = "{as_of} · {text}"
+PROJECT_NOTES_REMOVED = " (removed {date})"
+PROJECT_NOTES_NONE = "No PM Notes history for {code} yet."
+PROJECT_UNKNOWN_CODE = "I don't know the Project code {code}."
+T6_NOT_ANSWERING = "T6 is not answering right now. Please try again in a few minutes."
+
+# --- for /project concerns (plain text) -----------------------------------------------------------
+
+CONCERNS_DM_ONLY = "/project concerns works in a direct message with me. Please message me there."
+CONCERNS_TITLE = "Open Concerns: {count}"
+CONCERNS_NONE = "No open Concerns."
+CONCERN_LINE = "{project} · {text}"
+CONCERN_DETAIL = "{owner}open {days} days"
+CONCERN_OWNER = "Owner {name} · "
+CONCERN_CLOSING = "Closing after PSR (by {name})"
+CONCERN_CLOSING_UNNAMED = "Closing after PSR"
+CONCERN_CONFIRM_QUESTION = "Close this Concern after the next PSR?"
+CONCERN_CLOSE_APPLIED = "That close was already applied, so it can no longer be undone."
+CONCERN_GONE = "That Concern is not open any more."
+TAP_EXPIRED = "That button has expired. Send /project concerns again."
+BUTTON_CLOSE = "Close"
+BUTTON_CONFIRM = "Confirm"
+BUTTON_CANCEL = "Cancel"
+BUTTON_UNDO = "Undo"
+
 # --- for the approver's card ----------------------------------------------------------------
 
 CARD_TITLE = "New /start"

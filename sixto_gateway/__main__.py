@@ -25,6 +25,7 @@ from sixto_gateway.liveness import Liveness
 from sixto_gateway.logsafe import Redactor, configure_logging
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.people import ContactsDirectory, PeopleDirectory
+from sixto_gateway.project import ProjectCommands
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.store import Store
 from sixto_gateway.store.db import StoreCorrupt, backup
@@ -63,12 +64,13 @@ async def serve(
     stop = asyncio.Event()
     bot = Bot(token=config.secrets.bot_token) if client is None else None
     client = client or AiogramTelegramClient(bot)
+    url, secret = config.t6_api_url, config.secrets.t6_api_secret
     if contacts is None:
-        url, secret = config.t6_api_url, config.secrets.t6_api_secret
         contacts = PeopleDirectory(
             Client(url, secret),
             lambda operator: Client(url, secret, telegram_user_id=operator),
         )
+    projects = ProjectCommands(lambda user: Client(url, secret, telegram_user_id=user), store)
     if config.telegram.polling:
         await _register_menus_bounded(store, client, config)
     workers = start_workers(
@@ -81,6 +83,7 @@ async def serve(
         stop,
         redactor_for(config).scrub,
         contacts=contacts,
+        projects=projects,
         onboarding_wake=Notifier(),
     )
     tasks = {"server": asyncio.create_task(server.serve()), **workers}

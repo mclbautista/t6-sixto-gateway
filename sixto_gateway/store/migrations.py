@@ -149,4 +149,34 @@ MIGRATIONS: list[str] = [
     UPDATE members SET contact_notion_id = LOWER(REPLACE(contact_page_id, '-', ''))
         WHERE contact_page_id IS NOT NULL AND contact_page_id NOT LIKE 't6n\\_%' ESCAPE '\\';
     """,
+    # 12: a ``/project`` subcommand the gateway answers itself (ticket #125), saved with its
+    # update and deleted when its reply is queued. ``argument`` is the command's input (a
+    # Project code), never a reply.
+    """
+    CREATE TABLE project_requests (
+        update_id INTEGER PRIMARY KEY,
+        from_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        argument TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    """,
+    # 13: a button tap of /project concerns (ticket #124) is saved as a project request (with the
+    # tapped message and the callback to answer), and the Close preview waits for its Confirm.
+    # A preview belongs to the person who made it; it holds an API token and key, never text.
+    """
+    ALTER TABLE project_requests ADD COLUMN callback_id TEXT;
+    ALTER TABLE project_requests ADD COLUMN message_id INTEGER;
+    CREATE TABLE concern_previews (
+        chat_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        from_id INTEGER NOT NULL,
+        concern TEXT NOT NULL,
+        token TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (chat_id, message_id)
+    );
+    """,
 ]

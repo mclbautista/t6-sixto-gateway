@@ -48,6 +48,18 @@ class NewTap:
 
 
 @dataclass(frozen=True)
+class ProjectRequest:
+    """A ``/project`` subcommand the gateway answers: saved for the project worker."""
+
+    from_id: int
+    chat_id: int
+    name: str  # the subcommand, for example "notes"
+    argument: str  # its input, for example the Project code (for a tap: its callback payload)
+    callback_id: str | None = None  # a button tap: the callback to answer
+    message_id: int | None = None  # a button tap: the message to edit
+
+
+@dataclass(frozen=True)
 class Decision:
     """Where an update goes, and what is saved or queued in the same transaction."""
 
@@ -66,3 +78,4 @@ class Decision:
     additional_modules: tuple[str, ...] = ()
     answer_tap: str | None = None  # a routed tap: the gateway answers it, with this text or ""
     event_modules: tuple[str, ...] = ()
+    project_request: ProjectRequest | None = None  # answered by the project worker

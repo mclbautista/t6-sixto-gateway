@@ -13,6 +13,7 @@ from sixto_gateway.decision import Decision
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import decide_start
+from sixto_gateway.project import decide_project
 from sixto_gateway.store import Store
 from sixto_gateway.taps import decide_tap
 from sixto_gateway.telegram.client import TelegramClient
@@ -34,6 +35,7 @@ class Poller:
         liveness: Liveness | None = None,
         onboarding_wake: Notifier | None = None,
         push_wake: Notifier | None = None,
+        project_wake: Notifier | None = None,
     ):
         self._store = store
         self._client = client
@@ -43,6 +45,7 @@ class Poller:
         self._queue_wake = queue_wake or Notifier()  # poked when a reply is queued
         self._onboarding_wake = onboarding_wake or Notifier()  # poked when a member is saved
         self._push_wake = push_wake or Notifier()  # poked when a tap is saved for a push module
+        self._project_wake = project_wake or Notifier()  # poked when a /project request is saved
         self.liveness = liveness or Liveness(clock)
 
     def decide(self, update: IncomingUpdate) -> Decision:
@@ -67,6 +70,8 @@ class Poller:
             return decide_tap(self._config, update)
         if update.command == "start":
             return decide_start(self._store, update)
+        if update.command == "project" and (project := decide_project(update)) is not None:
+            return project  # a subcommand the gateway answers; the API decides who may use it
         if update.command is not None and is_builtin(self._config, update):
             return decide_builtin(self._config, update)
         if update.command is not None and update.edited:
@@ -102,13 +107,14 @@ class Poller:
             self._store.next_offset(), telegram.poll_timeout, telegram.allowed_updates
         )
         self.liveness.record_poll()
-        delivered = queued = onboarding = pushed = False
+        delivered = queued = onboarding = pushed = project = False
         for update in updates:
             decision = self.decide(update)
             module = decision.module
             seq = self._store.save_update(update, decision, received_at=self._clock())
             queued = queued or decision.reply is not None
             onboarding = onboarding or decision.member is not None or decision.tap is not None
+            project = project or decision.project_request is not None
             log.info(
                 "update %s chat=%s topic=%s module=%s",
                 update.update_id,
@@ -128,6 +134,8 @@ class Poller:
             self._onboarding_wake.notify()
         if pushed:
             self._push_wake.notify()
+        if project:
+            self._project_wake.notify()
         return len(updates)
 
     async def _answer_tap(self, update: IncomingUpdate, text: str) -> None:

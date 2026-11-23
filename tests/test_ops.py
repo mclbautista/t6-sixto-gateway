@@ -13,6 +13,7 @@ from sixto_gateway.liveness import DEADMAN_SECONDS, Liveness, watch_deadman
 from sixto_gateway.logsafe import configure_logging
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.poller import Poller
+from sixto_gateway.project import ProjectCommands
 from sixto_gateway.retention import run_retention
 from sixto_gateway.runtime import start_workers
 from sixto_gateway.sender import Sender
@@ -24,6 +25,7 @@ from tests.fakes import (
     ONBOARDING_YAML,
     FakeClock,
     FakeContacts,
+    FakeProjectAPI,
     FakeTelegram,
     fixture_updates,
     moved,
@@ -324,6 +326,7 @@ async def test_with_polling_off_no_telegram_call_is_made_and_the_api_still_works
         liveness,
         stop,
         contacts=FakeContacts([]),
+        projects=ProjectCommands(FakeProjectAPI().as_user, store),
         onboarding_wake=Notifier(),
     )
     assert set(tasks) == {"retention"}  # no poller, sender or deadman
@@ -364,9 +367,18 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
         liveness,
         stop,
         contacts=FakeContacts([]),
+        projects=ProjectCommands(FakeProjectAPI().as_user, store),
         onboarding_wake=Notifier(),
     )
-    assert set(tasks) == {"retention", "poller", "sender", "deadman", "onboarding", "summary"}
+    assert set(tasks) == {
+        "retention",
+        "poller",
+        "sender",
+        "deadman",
+        "onboarding",
+        "summary",
+        "projects",
+    }
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait(tasks.values(), timeout=5)
