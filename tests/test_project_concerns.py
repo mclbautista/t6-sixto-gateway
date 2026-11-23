@@ -216,10 +216,11 @@ async def test_undo_after_the_close_was_applied_does_not_reopen_the_concern(rig)
 
 async def test_a_malformed_api_reply_is_answered_once_and_does_not_block_the_queue(rig):
     rig.api.history[PROJECT_ID] = [{"as_of": "2026-11-23", "text": "no removed key"}]
-    await rig.send(dm_message(9, COORDINATOR, "/project ABD notes"))
+    await rig.send(dm_message(1, COORDINATOR, "/project ABD notes"))
     assert strings.T6_NOT_ANSWERING in [m["text"] for m in bodies(rig, COORDINATOR)]
     assert rig.store.next_project_request() is None
-    assert "Open Concerns: 2" in [m["text"] for m in await listed(rig)]  # a later one is answered
+    await rig.send(dm_message(2, COORDINATOR, "/project concerns"))  # a later one is answered
+    assert "Open Concerns: 2" in [m["text"] for m in bodies(rig, COORDINATOR)]
 
 
 async def test_a_tap_in_a_group_is_not_answered(rig):
