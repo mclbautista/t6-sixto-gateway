@@ -42,6 +42,7 @@ log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 MESSAGE_LIMIT = 4096  # Telegram's limit, in UTF-16 code units
 TAP_PREFIX = "pc"  # callback data of a /project concerns button: pc:<action>:<Concern id>
+TOAST_LIMIT = 200  # Telegram refuses a longer answer to a button tap
 EXACT_CODE = {"exact_id", "normalized"}  # ``project resolve`` methods that are not a guess
 
 Reply = dict[str, Any]  # an outbound message body without its chat: text, format (, keyboard)
@@ -89,8 +90,8 @@ def decide_project_tap(update: IncomingUpdate) -> Decision | None:
     """The decision for a tap on a ``/project concerns`` button; None: not one of ours."""
     if not update.callback_data.startswith(f"{TAP_PREFIX}:"):
         return None
-    if update.callback_id is None or update.from_id is None:
-        return Decision(None)
+    if update.callback_id is None or update.from_id is None or update.chat_type != "private":
+        return Decision(None)  # DMs only: a copy of the buttons in a group does nothing
     return Decision(
         None,
         audit=("command_answered", None, f"command=project tap from={update.from_id}"),
@@ -219,11 +220,11 @@ class ProjectCommands:
         action, _, concern = payload.partition(":")
         try:
             if action == "c":  # Close: preview, then wait for Confirm
-                return await self._close(api, concern, chat_id, message_id, f"close:{key}")
+                return await self._close(api, user, concern, chat_id, message_id, f"close:{key}")
             if action == "y":
-                return await self._confirm(api, concern, chat_id, message_id)
+                return await self._confirm(api, user, concern, chat_id, message_id)
             if action == "x":  # Cancel: back to the Close button
-                self._store.drop_concern_preview(chat_id, message_id)
+                self._store.drop_concern_preview(chat_id, message_id, user)
                 return await self._show(api, concern)
             if action == "u":
                 return await self._undo(api, concern, f"undo:{key}")
@@ -231,22 +232,24 @@ class ProjectCommands:
             return Tap(answer.text, alert=True)
         return Tap(strings.TAP_EXPIRED, alert=True)
 
-    async def _close(self, api: Any, concern: str, chat: int, message: int, key: str) -> Tap:
+    async def _close(
+        self, api: Any, user: int, concern: str, chat: int, message: int, key: str
+    ) -> Tap:
         result = await _ask_write(
             api, "resolve", ConcernResolveInput(concern=concern, idempotency_key=key)
         )
         if not isinstance(result, Preview):
             raise _Answer(strings.T6_NOT_ANSWERING)
-        self._store.save_concern_preview(chat, message, concern, result.token, key)
+        self._store.save_concern_preview(chat, message, user, concern, result.token, key)
         item, pending = await _find(api, concern)
         text, _ = await _render(api, item, pending)
         keyboard = [[_button(strings.BUTTON_CONFIRM, "y", concern)]]
         keyboard[0].append(_button(strings.BUTTON_CANCEL, "x", concern))
         return Tap(None, f"{text}\n{strings.CONCERN_CONFIRM_QUESTION}", keyboard)
 
-    async def _confirm(self, api: Any, concern: str, chat: int, message: int) -> Tap:
+    async def _confirm(self, api: Any, user: int, concern: str, chat: int, message: int) -> Tap:
         saved = self._store.concern_preview(chat, message)
-        if saved is None or saved["concern"] != concern:
+        if saved is None or saved["concern"] != concern or saved["from_id"] != user:
             raise _Answer(strings.TAP_EXPIRED)
         try:
             result = await _ask_write(
@@ -259,16 +262,25 @@ class ProjectCommands:
                 ),
             )
         except _Answer as answer:  # a stale or refused preview is over: show what is true now
-            self._store.drop_concern_preview(chat, message)
+            self._store.drop_concern_preview(chat, message, user)
             return await self._show(api, concern, toast=answer.text)
-        self._store.drop_concern_preview(chat, message)
+        self._store.drop_concern_preview(chat, message, user)
         if not isinstance(result, Done):
             raise _Answer(strings.T6_NOT_ANSWERING)
         return await self._show(api, concern)
 
     async def _undo(self, api: Any, concern: str, key: str) -> Tap:
-        """Undo is its own confirmation: preview and confirm in one go."""
+        """Undo is its own confirmation: preview and confirm in one go.
+
+        Once the Monday run has applied the close the Concern is closed and a reopen would reopen
+        it for real, so read the state first. An open Concern without a pending close is left to
+        the API, which refuses it.
+        """
         try:
+            try:
+                await _find(api, concern)
+            except _Answer:  # no longer open: the close was applied
+                raise _Answer(strings.CONCERN_CLOSE_APPLIED) from None
             preview = await _ask_write(
                 api, "reopen", ConcernReopenInput(concern=concern, idempotency_key=key)
             )
@@ -399,9 +411,13 @@ class ProjectWorker:
         if request["name"] == "tap":
             await self._tap(request)
             return True
-        replies = await self._commands.answer(
-            request["from_id"], request["name"], request["argument"]
-        )
+        try:
+            replies = await self._commands.answer(
+                request["from_id"], request["name"], request["argument"]
+            )
+        except Exception:  # an unexpected API reply: say so once, never retry it forever
+            log.exception("project command failed")
+            replies = [_plain(strings.T6_NOT_ANSWERING)]
         self._store.answer_project_request(request["update_id"], request["chat_id"], replies)
         self._queue_wake.notify()
         return True
@@ -420,7 +436,8 @@ class ProjectWorker:
             log.exception("project tap failed")
             tap = Tap(strings.T6_NOT_ANSWERING, alert=True)
         try:
-            await self._client.answer_callback_query(request["callback_id"], tap.toast, tap.alert)
+            toast = tap.toast[:TOAST_LIMIT] if tap.toast else tap.toast
+            await self._client.answer_callback_query(request["callback_id"], toast, tap.alert)
         except Exception as exc:  # noqa: BLE001 - an old query id may have expired
             log.warning("answering callback %s failed: %s", request["callback_id"], exc)
         if tap.text is not None:

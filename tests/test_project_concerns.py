@@ -4,7 +4,7 @@ import pytest
 
 from sixto_gateway import strings
 from sixto_gateway.project import MESSAGE_LIMIT
-from tests.fakes import button_tap, dm_message, group_command
+from tests.fakes import PROJECT_ID, button_tap, dm_message, group_command
 from tests.test_project_notes import COORDINATOR, STRANGER, Rig
 
 C1 = "t6c_" + "1" * 32
@@ -188,5 +188,51 @@ async def test_a_long_list_is_split_into_whole_concerns_within_the_limit(rig):
 async def test_no_text_is_stored_beyond_the_reply_queue(rig):
     await tap(rig, 10, f"pc:c:{C1}")
     saved = rig.store.concern_preview(COORDINATOR, 100)
-    assert set(saved) == {"chat_id", "message_id", "concern", "token", "idempotency_key"}
+    assert set(saved) == {
+        "chat_id",
+        "message_id",
+        "from_id",
+        "concern",
+        "token",
+        "idempotency_key",
+        "created_at",
+    }
     assert all("Concern" not in (d or "") for _, _, d in rig.store.audit_events())
+
+
+async def test_undo_after_the_close_was_applied_does_not_reopen_the_concern(rig):
+    await tap(rig, 10, f"pc:c:{C1}")
+    await tap(rig, 11, f"pc:y:{C1}")
+    rig.api.concerns[C1].update(pending=False, closed=True)  # the Monday run applied it
+    await tap(rig, 12, f"pc:u:{C1}")
+    assert rig.api.concerns[C1]["closed"] is True
+    assert [v for _, v, _ in rig.api.calls if v == "concern reopen"] == []
+    assert rig.telegram.answers[-1] == {
+        "callback_id": "cb12",
+        "text": strings.CONCERN_CLOSE_APPLIED,
+        "alert": True,
+    }
+
+
+async def test_a_malformed_api_reply_is_answered_once_and_does_not_block_the_queue(rig):
+    rig.api.history[PROJECT_ID] = [{"as_of": "2026-11-23", "text": "no removed key"}]
+    await rig.send(dm_message(9, COORDINATOR, "/project ABD notes"))
+    assert strings.T6_NOT_ANSWERING in [m["text"] for m in bodies(rig, COORDINATOR)]
+    assert rig.store.next_project_request() is None
+    assert "Open Concerns: 2" in [m["text"] for m in await listed(rig)]  # a later one is answered
+
+
+async def test_a_tap_in_a_group_is_not_answered(rig):
+    await rig.send(button_tap(10, COORDINATOR, f"pc:c:{C1}", -1001234567890, 100, "supergroup"))
+    assert rig.api.calls == []
+    assert rig.store.concern_preview(-1001234567890, 100) is None
+    assert rig.store.next_project_request() is None
+
+
+async def test_a_confirm_from_another_user_than_the_preview_is_refused(rig):
+    await tap(rig, 10, f"pc:c:{C1}")
+    await rig.send(button_tap(11, STRANGER, f"pc:y:{C1}", COORDINATOR, 100))  # same chat/message
+    assert rig.telegram.answers[-1]["text"] == strings.TAP_EXPIRED
+    assert rig.api.concerns[C1]["pending"] is False
+    assert [b for _, v, b in rig.api.calls if v == "concern resolve" and b["confirm"]] == []
+    assert rig.store.concern_preview(COORDINATOR, 100)["from_id"] == COORDINATOR

@@ -92,7 +92,9 @@ def group_command(
     return raw
 
 
-def button_tap(update_id: int, user_id: int, data: str, chat: int, message_id: int) -> dict:
+def button_tap(
+    update_id: int, user_id: int, data: str, chat: int, message_id: int, chat_type: str = "private"
+) -> dict:
     """A tap on an inline button of a message the bot sent to ``chat``."""
     return {
         "update_id": update_id,
@@ -104,7 +106,7 @@ def button_tap(update_id: int, user_id: int, data: str, chat: int, message_id: i
             "message": {
                 "message_id": message_id,
                 "date": 1789700000,
-                "chat": {"id": chat, "type": "private", "first_name": "C"},
+                "chat": {"id": chat, "type": chat_type, "first_name": "C"},
                 "from": {"id": 1, "is_bot": True, "first_name": "Sixto"},
                 "text": "card",
             },
@@ -574,7 +576,11 @@ class FakeProjectAPI:
 
     def concern_call(self, user: int, verb: str, body: dict):
         if verb == "list":
-            shown = [{k: v for k, v in c.items() if k != "pending"} for c in self.concerns.values()]
+            shown = [
+                {k: v for k, v in c.items() if k != "pending"}
+                for c in self.concerns.values()
+                if not c.get("closed")
+            ]
             return Done(
                 result={
                     "concerns": [c for c in shown if not self.concerns[c["id"]]["pending"]],
@@ -588,7 +594,9 @@ class FakeProjectAPI:
             return Refused(rule="concern", reason="Concern not found")
         if body["concern"] in self.rule_made:
             return Refused(rule="rule_made", reason="Date-sanity Concerns follow data only")
-        if item["pending"] == (
+        if item.get("closed") and verb == "reopen":  # a normal reopen of a closed Concern
+            pass
+        elif item["pending"] == (
             verb == "resolve"
         ):  # resolve on a pending one, reopen on an open one
             return Refused(rule="state", reason="Concern cannot make that transition")
@@ -600,6 +608,7 @@ class FakeProjectAPI:
         if self._tokens.get(confirm) != (verb, body["concern"], key):
             return Refused(rule="token_used", reason="Preview token is not valid")
         item["pending"] = verb == "resolve"
+        item["closed"] = False
         if item["pending"]:
             item.update(close_by="t6n_closer", close_by_name=self.names.get(user, "Cy"))
         return Done(result={"action": verb, "concern": body["concern"]})
