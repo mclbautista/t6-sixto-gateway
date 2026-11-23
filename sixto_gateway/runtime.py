@@ -7,7 +7,10 @@ import logging
 import time
 from collections.abc import Callable
 
+from t6.client import Client
+
 from sixto_gateway.config import Config
+from sixto_gateway.drives import DriveWorker
 from sixto_gateway.liveness import Liveness, watch_deadman
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker
@@ -62,6 +65,16 @@ def start_workers(
             project_wake=project_wake,
         )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
+        if config.recording_channel.chat_id is not None:
+            tasks["drives"] = asyncio.create_task(
+                DriveWorker(
+                    store,
+                    client,
+                    Client(config.t6_api_url, config.secrets.t6_api_secret),
+                    queue_wake,
+                    clock,
+                ).run(stop)
+            )
         worker = OnboardingWorker(
             store, contacts, config, onboarding_wake, queue_wake, client=client
         )

@@ -174,6 +174,17 @@ class Secrets:
     __str__ = __repr__
 
 
+class RecordingChannelConfig(_Model):
+    chat_id: Annotated[StrictInt, Field(lt=0)] | None = None
+    topic_id: Annotated[StrictInt, Field(gt=0)] | None = None
+
+    @model_validator(mode="after")
+    def _channel_has_both_ids(self) -> Self:
+        if (self.chat_id is None) != (self.topic_id is None):
+            raise ValueError("recording_channel needs both chat_id and topic_id")
+        return self
+
+
 class Config(_Model):
     listen: ListenConfig = ListenConfig()
     telegram: TelegramConfig = TelegramConfig()
@@ -184,6 +195,7 @@ class Config(_Model):
     groups: dict[str, list[StrictInt]] = {}
     routes: list[RouteConfig] = []
     onboarding: OnboardingConfig
+    recording_channel: RecordingChannelConfig = RecordingChannelConfig()
 
     # Attached by load_config; not part of the YAML schema.
     _secrets: Secrets | None = None

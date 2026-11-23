@@ -346,6 +346,21 @@ class Store:
                         received_at,
                     ),
                 )
+            if inserted and decision.drive_request is not None:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO drive_requests"
+                    " (update_id, chat_id, topic_id, message_id, kind, body, next_attempt_at)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (
+                        update.update_id,
+                        update.chat_id,
+                        update.topic_id,
+                        update.message_id,
+                        decision.drive_request.get("kind", "photo"),
+                        json.dumps(decision.drive_request),
+                        received_at,
+                    ),
+                )
             if inserted and decision.reply is not None:
                 self._insert_outbound(
                     GATEWAY_MODULE,
@@ -1138,6 +1153,70 @@ class Store:
     def audit_events(self) -> list[tuple[str, str | None, str | None]]:
         rows = self._db.execute("SELECT event, module, detail FROM audit ORDER BY id").fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    def drive_reply(self, chat: int, topic: int | None, message: int) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT d.* FROM drive_requests d JOIN outbound o ON o.id = d.reply_ref"
+            " WHERE d.chat_id = ? AND d.topic_id = ? AND o.telegram_message_id = ?"
+            " AND o.state = 'sent' ORDER BY d.update_id DESC LIMIT 1",
+            (chat, topic, message),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def next_drive_request(self, now: float) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT * FROM drive_requests WHERE state != 'done' AND next_attempt_at <= ?"
+            " ORDER BY next_attempt_at, update_id LIMIT 1",
+            (now,),
+        ).fetchone()
+        return {**dict(row), "body": json.loads(row["body"])} if row else None
+
+    def defer_drive_request(self, update_id: int, at: float) -> None:
+        self._db.execute(
+            "UPDATE drive_requests SET next_attempt_at = ? WHERE update_id = ?",
+            (at, update_id),
+        )
+
+    def wait_for_drive(self, update_id: int, capture: str, at: float) -> None:
+        self._db.execute(
+            "UPDATE drive_requests SET capture_id = ?, state = 'waiting', next_attempt_at = ?"
+            " WHERE update_id = ?",
+            (capture, at, update_id),
+        )
+
+    def finish_drive_request(
+        self, request: dict[str, Any], outcome: str, reply: dict[str, Any] | None
+    ) -> None:
+        with self._transaction():
+            ref = None
+            if reply is not None:
+                undo = request["kind"] == "undo"
+                body = {
+                    "chat": request["chat_id"],
+                    "topic": request["topic_id"],
+                    "format": "plain",
+                    **reply,
+                }
+                if undo:
+                    body["edit_of"] = request["body"]["edit_of"]
+                    self._db.execute(
+                        "UPDATE drive_requests SET outcome = 'undone' WHERE capture_id = ?",
+                        (request["body"]["capture"],),
+                    )
+                else:
+                    body["reply_to_message_id"] = request["message_id"]
+                ref = self._insert_outbound(
+                    GATEWAY_MODULE,
+                    "edit" if undo else "message",
+                    str(request["chat_id"]),
+                    body,
+                    f"drive:{request['update_id']}",
+                )
+            self._db.execute(
+                "UPDATE drive_requests SET state = 'done', outcome = ?, reply_ref = ?, body = '{}'"
+                " WHERE update_id = ?",
+                (outcome, ref, request["update_id"]),
+            )
 
 
 def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any]:

@@ -162,7 +162,7 @@ def _normalize_tap(update: Any, query: Any) -> IncomingUpdate | None:
     return IncomingUpdate(
         update_id=update.update_id,
         chat_id=message.chat.id,
-        topic_id=None,
+        topic_id=getattr(message, "message_thread_id", None),
         message_id=message.message_id,
         from_id=sender.id,
         from_username=sender.username,

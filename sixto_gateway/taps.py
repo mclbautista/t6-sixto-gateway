@@ -11,13 +11,17 @@ from __future__ import annotations
 from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, parse_module_callback
+from sixto_gateway.drives import decide_drive_tap
 from sixto_gateway.onboarding import decide_tap as decide_onboarding_tap
 from sixto_gateway.project import decide_project_tap
+from sixto_gateway.store import Store
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
 
-def decide_tap(config: Config, update: IncomingUpdate) -> Decision:
+def decide_tap(config: Config, update: IncomingUpdate, store: Store | None = None) -> Decision:
     """Route a tap to its module, or leave it to onboarding."""
+    if store is not None and (drive := decide_drive_tap(config, update, store)) is not None:
+        return drive
     if (project := decide_project_tap(update)) is not None:
         return project
     parsed = parse_module_callback(update.callback_data)

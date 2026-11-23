@@ -129,6 +129,7 @@ class FakeTelegram:
     """Serves raw updates through the real aiogram models and the real normalizer."""
 
     def __init__(self, raw_updates: list[dict], clock: FakeClock | None = None):
+        self.downloads: list[str] = []
         self.raw_updates = raw_updates
         self.clock = clock
         self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
@@ -144,6 +145,10 @@ class FakeTelegram:
         self.menu_calls: list[tuple[str, int | None, list[tuple[str, str]]]] = []
         self.menu_failures: set[int] = set()  # user ids Telegram refuses ("chat not found")
 
+    async def download_photo(self, file_id: str) -> bytes:
+        self.downloads.append(file_id)
+        return b"largest photo bytes"
+
     async def send_message(
         self,
         chat_id: int,
@@ -151,6 +156,7 @@ class FakeTelegram:
         text: str,
         parse_mode: str | None,
         keyboard: list[list[dict[str, str]]] | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int:
         self._maybe_fail()
         self._next_message_id += 1
@@ -163,6 +169,7 @@ class FakeTelegram:
                 "text": text,
                 "parse_mode": parse_mode,
                 "keyboard": keyboard,
+                "reply_to_message_id": reply_to_message_id,
                 "message_id": self._next_message_id,
             }
         )

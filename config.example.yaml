@@ -7,6 +7,11 @@ telegram:
   poll_timeout: 50                              # seconds, Telegram long poll (0..50)
   allowed_updates: [message, edited_message, callback_query, chat_member]    # callback_query: card buttons
   polling: true                                 # false = serve the API only (cutover step 1)
+# Optional TRANSMITTAL recording channel. Leave both null to disable capture.
+# Replace both placeholders with the group's integer chat ID and topic ID in deployed config.
+recording_channel:
+  chat_id: null                                # FILL IN: <RECORDING_CHAT_ID>
+  topic_id: null                               # FILL IN: <RECORDING_TOPIC_ID>
 onboarding:
   approver: 100000001                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
