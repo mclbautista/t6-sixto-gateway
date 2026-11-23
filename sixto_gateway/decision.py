@@ -54,7 +54,9 @@ class ProjectRequest:
     from_id: int
     chat_id: int
     name: str  # the subcommand, for example "notes"
-    argument: str  # its input, for example the Project code
+    argument: str  # its input, for example the Project code (for a tap: its callback payload)
+    callback_id: str | None = None  # a button tap: the callback to answer
+    message_id: int | None = None  # a button tap: the message to edit
 
 
 @dataclass(frozen=True)

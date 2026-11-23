@@ -74,7 +74,11 @@ class Rig:
             project_wake=self.project_wake,
         )
         self.worker = ProjectWorker(
-            self.store, ProjectCommands(self.api.as_user), self.project_wake, Notifier()
+            self.store,
+            ProjectCommands(self.api.as_user, self.store),
+            self.project_wake,
+            Notifier(),
+            self.telegram,
         )
 
     async def send(self, raw):

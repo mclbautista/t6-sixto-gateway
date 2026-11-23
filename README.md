@@ -444,6 +444,15 @@ commands:
   with `not_dm`). The request (sender, chat and the code) is saved with the update and deleted
   when its reply is queued; the reply is an ordinary send-queue row. Any other `/project` still
   goes to its module.
+- **`/project concerns`** (DM only; in a group it answers one line pointing to the DM) lists the
+  open Concerns from `concern list --open`, one message each: `<Project> · <text>`, owner and
+  open days, with **Close**. Concerns in `pending` show "Closing after PSR (by <name>)" with
+  **Undo**. A tap (`pc:<c|y|x|u>:<Concern id>`) is saved with its update like a request and
+  answered by the same worker, as the person who tapped: Close asks `concern resolve` for a
+  preview and edits the message to **Confirm** / **Cancel**; Confirm sends the preview's token
+  (kept in `concern_previews`, with its idempotency key, until used); Undo is `concern reopen`
+  (preview and confirm in one tap). The API decides who may close; its refusal (`closer`,
+  `rule_made`, `state`, `permission`) is shown as a popup as is. No Concern text is stored.
 
 ## /start onboarding (first slice)
 

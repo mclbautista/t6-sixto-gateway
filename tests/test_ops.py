@@ -326,7 +326,7 @@ async def test_with_polling_off_no_telegram_call_is_made_and_the_api_still_works
         liveness,
         stop,
         contacts=FakeContacts([]),
-        projects=ProjectCommands(FakeProjectAPI().as_user),
+        projects=ProjectCommands(FakeProjectAPI().as_user, store),
         onboarding_wake=Notifier(),
     )
     assert set(tasks) == {"retention"}  # no poller, sender or deadman
@@ -367,7 +367,7 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
         liveness,
         stop,
         contacts=FakeContacts([]),
-        projects=ProjectCommands(FakeProjectAPI().as_user),
+        projects=ProjectCommands(FakeProjectAPI().as_user, store),
         onboarding_wake=Notifier(),
     )
     assert set(tasks) == {

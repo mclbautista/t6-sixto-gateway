@@ -517,6 +517,7 @@ class _FakeAPIAs:
 
 
 PROJECT_ID = "t6p_" + "a" * 32
+OWNER_ID = "t6n_" + "b" * 32
 
 
 class FakeProjectAPI:
@@ -550,6 +551,58 @@ class FakeProjectAPI:
         self.allowed: set[int] | None = None
         self.unavailable = False
         self.calls: list[tuple[int, str, dict]] = []  # (as user, noun verb, body)
+        # /project concerns: ``concern list`` / ``resolve`` / ``reopen`` as core#639 describes them
+        self.concerns: dict[str, dict] = {}  # id -> list item (plus "pending": bool)
+        self.closers: set[int] | None = None  # who may close (None: anyone)
+        self.rule_made: set[str] = set()  # date-sanity Concerns: closed and reopened by data only
+        self.names: dict[str, str] = {OWNER_ID: "Pat"}
+        self._tokens: dict[str, tuple[str, str, str]] = {}  # token -> (verb, concern, key)
+
+    def add_concern(self, concern_id: str, text: str = "Waiting on lab", **fields) -> dict:
+        item = {
+            "id": concern_id,
+            "project_id": PROJECT_ID,
+            "owner_id": OWNER_ID,
+            "waiting_on": "lab",
+            "text": text,
+            "age_seconds": 4 * 86400 + 5,
+            "pending": False,
+            **fields,
+        }
+        self.concerns[concern_id] = item
+        return item
+
+    def concern_call(self, user: int, verb: str, body: dict):
+        if verb == "list":
+            shown = [{k: v for k, v in c.items() if k != "pending"} for c in self.concerns.values()]
+            return Done(
+                result={
+                    "concerns": [c for c in shown if not self.concerns[c["id"]]["pending"]],
+                    "pending": [c for c in shown if self.concerns[c["id"]]["pending"]],
+                }
+            )
+        if verb == "resolve" and self.closers is not None and user not in self.closers:
+            return Refused(rule="closer", reason="Only Closers may close a Concern")
+        item = self.concerns.get(body["concern"])
+        if item is None:
+            return Refused(rule="concern", reason="Concern not found")
+        if body["concern"] in self.rule_made:
+            return Refused(rule="rule_made", reason="Date-sanity Concerns follow data only")
+        if item["pending"] == (
+            verb == "resolve"
+        ):  # resolve on a pending one, reopen on an open one
+            return Refused(rule="state", reason="Concern cannot make that transition")
+        key, confirm = body["idempotency_key"], body["confirm"]
+        if confirm is None:
+            token = f"token-{len(self._tokens)}"
+            self._tokens[token] = (verb, body["concern"], key)
+            return Preview(plan={}, token=token)
+        if self._tokens.get(confirm) != (verb, body["concern"], key):
+            return Refused(rule="token_used", reason="Preview token is not valid")
+        item["pending"] = verb == "resolve"
+        if item["pending"]:
+            item.update(close_by="t6n_closer", close_by_name=self.names.get(user, "Cy"))
+        return Done(result={"action": verb, "concern": body["concern"]})
 
     def as_user(self, telegram_user_id: int) -> _FakeProjectAPIAs:
         return _FakeProjectAPIAs(self, telegram_user_id)
@@ -576,9 +629,15 @@ class _FakeProjectAPIAs:
     def call(self, noun, verb, inputs):
         body = inputs.model_dump()
         self._api.calls.append((self._user, f"{noun} {verb}", body))
-        assert (noun, verb) == ("project", "notes-history")
         if self._api.unavailable:
             return Unavailable("offline")
+        if noun == "concern":
+            return self._api.concern_call(self._user, verb, body)
+        if (noun, verb) == ("project", "get"):
+            return Done(result={"project": {"project_code": "ABD", "name": "Example Show"}})
+        if (noun, verb) == ("person", "get"):
+            return Done(result={"person": {"name": self._api.names.get(body["person_id"], "Pat")}})
+        assert (noun, verb) == ("project", "notes-history")
         allowed = self._api.allowed
         if allowed is not None and self._user not in allowed:
             return Refused(
