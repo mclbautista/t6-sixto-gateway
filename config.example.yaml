@@ -12,6 +12,9 @@ telegram:
 recording_channel:
   chat_id: null                                # FILL IN: <RECORDING_CHAT_ID>
   topic_id: null                               # FILL IN: <RECORDING_TOPIC_ID>
+  # Optional: once every 24 h the local-check drop count is posted here. Leave null to skip it.
+  debug_chat_id: null
+  debug_topic_id: null
 onboarding:
   approver: 100000001                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver
@@ -67,6 +70,9 @@ groups:
   # give anyone operator rights in t6: those are the Person permission `operator` in the t6 registry.
   # Keep the two lists in step by hand.
   operators: [100000001]
+  # Telegram user ids of the TRANSMITTAL custodians. With the photo's poster, they alone may answer
+  # Sixto's question about a capture and undo a recorded reply. Anyone else is ignored.
+  custodians: [100000002]                      # FILL IN: custodian Telegram user ids
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver
     - 100000002                                 # Moonfern

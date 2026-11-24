@@ -77,8 +77,32 @@ largest size and passes the original caption and photo to t6 without parsing the
 with the polling cursor, polls the capture outcome, and queues a reply to the post in the same
 topic. Resolved replies list each drive and carry one UNDO button; practice replies start with
 "Practice", taken from the API result. Ignored captures produce no reply. If t6 asks for the
-label, reply to the bot's question in that topic with the label or serial; the text goes unchanged
-to the same capture. UNDO calls t6 and edits the recorded reply, removing the button.
+label, reply to the bot's question in that topic; the text goes unchanged to the same capture.
+Sixto asks at most one question per capture, only when t6 allows it (`may_ask`), and the wording
+follows t6's `reason` (missing IN/OUT, unreadable label, no matching drive). One answer goes to
+t6; if it still fails, Sixto stays silent.
+
+List the Telegram user IDs of the TRANSMITTAL custodians in the `custodians` group
+(`groups.custodians` in config). Only the photo's poster or a custodian counts: answers and UNDO
+from anyone else are ignored (an UNDO tap gets the pop-up "Only the poster or the custodian can
+undo"). UNDO calls t6 and edits the recorded reply, removing the button. Replying `undo` (the whole
+text, any case) to the recorded reply or to the photo does the same. When t6's `undo_until` passes,
+the gateway edits the recorded reply to remove the button; a later text undo is ignored silently,
+a later tap gets the pop-up "Undo window has ended", and a t6 `undo_window` refusal sends nothing.
+
+Local check: a new message in the recording topic goes to t6 only if it has a photo or its
+first word is IN or OUT in any case followed by a space, colon, dash or the end (the same rule as
+t6). Anything else (commands excepted) is dropped: no t6 call, no reply, and counted in the
+database, so restarts do not lose the count. Replies to Sixto from the poster or a custodian are
+not checked. A text-only pass goes to t6 without a photo; if t6 answers with the reason
+`no_photo`, Sixto replies once "@Ate Angel Placed in the Drives app for your review." (a Telegram
+mention of the first `custodians` member, plain text without one) and no UNDO button. A caption
+edit of a post whose capture is pending or in exception is sent to t6 as an edit; if it then
+resolves, Sixto edits its existing reply into the recorded reply with UNDO, otherwise it says
+nothing. Edits of resolved, undone or ignored captures are ignored. Set
+`recording_channel.debug_chat_id` (and `debug_topic_id`) to have the gateway post "TRANSMITTAL
+local check: N messages dropped in the last 24 h" there once every 24 hours and reset the count;
+leave them unset to skip the report.
 
 No other chat's text or photos enter capture storage or the drive API. Existing gateway update
 storage and module routing elsewhere continue as before. Photo bytes are downloaded in memory;

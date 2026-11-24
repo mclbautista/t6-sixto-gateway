@@ -177,6 +177,8 @@ class Secrets:
 class RecordingChannelConfig(_Model):
     chat_id: Annotated[StrictInt, Field(lt=0)] | None = None
     topic_id: Annotated[StrictInt, Field(gt=0)] | None = None
+    debug_chat_id: Annotated[StrictInt, Field(lt=0)] | None = None  # daily local-check drop count
+    debug_topic_id: Annotated[StrictInt, Field(gt=0)] | None = None
 
     @model_validator(mode="after")
     def _channel_has_both_ids(self) -> Self:

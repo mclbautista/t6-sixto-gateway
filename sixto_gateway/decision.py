@@ -81,3 +81,4 @@ class Decision:
     event_modules: tuple[str, ...] = ()
     project_request: ProjectRequest | None = None  # answered by the project worker
     drive_request: dict[str, Any] | None = None
+    drive_dropped: bool = False  # the recording channel's local check dropped this message
