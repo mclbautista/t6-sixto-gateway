@@ -1191,6 +1191,17 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def drive_answer_taken(self, capture: str) -> bool:
+        """An answer for this capture is already queued or sent: one answer goes to t6."""
+        return (
+            self._db.execute(
+                "SELECT 1 FROM drive_requests WHERE kind = 'label'"
+                " AND (capture_id = ? OR json_extract(body, '$.capture') = ?) LIMIT 1",
+                (capture, capture),
+            ).fetchone()
+            is not None
+        )
+
     def drive_capture_unresolved(self, post: dict[str, Any]) -> bool:
         """Still pending, or in exception: a caption edit may change the outcome."""
         if post["state"] != "done" and post["capture_id"] is None:

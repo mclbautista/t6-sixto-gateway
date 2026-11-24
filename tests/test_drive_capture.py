@@ -762,3 +762,95 @@ async def test_drop_count_survives_restart_and_unset_debug_topic_posts_nothing(r
     rig.clock.advance(200000)
     reporter.send_due()
     assert rig.store._db.execute("SELECT count(*) FROM outbound").fetchone()[0] == 0
+
+
+async def question_rig(rig):
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="missing_direction", may_ask=True)
+    await rig.resolve()
+    return rig.telegram.sent[0]["message_id"]
+
+
+async def test_banter_under_the_question_from_others_is_ignored_even_with_in_or_out_first(rig):
+    ask_id = await question_rig(rig)
+    for n, text in enumerate(["in a meeting, sorry", "OUT of curiosity: who is this?", "lol"]):
+        await rig.send(reply_to(text_post(text, 60 + n, user=7002), ask_id))
+    await rig.resolve()
+    assert len(rig.api.calls) == 1 and len(rig.telegram.sent) == 1
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
+
+
+async def test_two_quick_poster_replies_send_only_one_answer_to_t6(rig):
+    ask_id = await question_rig(rig)
+    for n in (61, 62):  # both arrive before the worker has handled the first
+        rig.telegram.push(reply_to(text_post("wait what", n), ask_id))
+    await rig.poller.poll_once()
+    await rig.worker.process_next()
+    rig.clock.advance(5)
+    await rig.worker.process_next()
+    assert len(rig.api.calls) == 2  # the post, then one answer
+    assert len(rig.telegram.sent) == 1
+
+
+async def test_reply_to_the_text_only_note_is_not_an_answer(rig):
+    await rig.send(text_post("OUT Angel D-123"))
+    rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
+    await rig.resolve()
+    await rig.send(reply_to(text_post("ok po", 63, user=7003), rig.telegram.sent[0]["message_id"]))
+    assert len(rig.api.calls) == 1 and len(rig.telegram.sent) == 1
+
+
+async def test_incident_sequence_gives_one_question_and_no_further_messages(rig):
+    ask_id = await question_rig(rig)
+    await rig.send(reply_to(text_post("in a bit", 64, user=7002), ask_id))
+    await rig.send(reply_to(text_post("haha", 65, user=7004), ask_id))
+    await rig.send(reply_to(text_post("sorry typo", 66), ask_id))
+    rig.api.outcome.update(reason="missing_direction", may_ask=False)
+    await rig.resolve()
+    await rig.send(edited(photo(), "OUT Example Person"))
+    rig.api.outcome.update(state="exception", may_ask=False)
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
+
+
+async def test_edit_of_chatter_in_the_recording_channel_reaches_no_module(rig):
+    from aiogram.types import Update
+
+    from sixto_gateway.config import RouteConfig
+    from sixto_gateway.telegram.normalize import normalize
+
+    module = next(iter(rig.config.modules))
+    rig.config.routes.append(RouteConfig(chat=-900001, module=module))
+    decision = rig.poller.decide(
+        normalize(Update.model_validate(edited(text_post("hello", 70), "hello again")))
+    )
+    assert decision.module is None and decision.additional_modules == ()
+
+
+def test_migration_backfills_poster_of_in_flight_photo_requests(tmp_path):
+    import json
+    import sqlite3
+
+    from sixto_gateway.store import Store
+    from sixto_gateway.store.migrations import MIGRATIONS
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    for script in MIGRATIONS[:14]:
+        db.executescript(script)
+    db.execute("PRAGMA user_version = 14")
+    for update_id, state, body in [(1, "waiting", {"sender_telegram_id": 7001}), (2, "done", {})]:
+        db.execute(
+            "INSERT INTO drive_requests (update_id, chat_id, topic_id, message_id, kind, body,"
+            " state, next_attempt_at) VALUES (?, -1, 1, ?, 'photo', ?, ?, 0)",
+            (update_id, update_id, json.dumps(body), state),
+        )
+    db.commit()
+    db.close()
+    store = Store(path, lambda: 0.0)
+    rows = store._db.execute(
+        "SELECT update_id, poster_id FROM drive_requests ORDER BY 1"
+    ).fetchall()
+    assert [tuple(r) for r in rows] == [(1, 7001), (2, None)]
+    assert store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
+    store.close()

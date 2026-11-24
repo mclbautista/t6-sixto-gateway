@@ -40,6 +40,10 @@ def _may_act(config: Config, original: dict[str, Any], user: int | None) -> bool
     )
 
 
+def message_has_photo(update: IncomingUpdate) -> bool:
+    return bool(update.raw.get("message", {}).get("photo"))
+
+
 def _undo_request(original: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "undo", "capture": original["capture_id"], "edit_of": original["reply_ref"]}
 
@@ -72,11 +76,18 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
             if _may_act(config, original, update.from_id) and not _window_ended(store, original):
                 return Decision(None, drive_request=_undo_request(original))
             return None
+        asked = (
+            original is not None
+            and original["kind"] != "text"  # a text-only post's note is not a question
+            and original["outcome"] in ("exception", "answered")
+        )
         if (
             original is not None
+            and asked
             and original["outcome"] == "exception"
             and update.text
             and _may_act(config, original, update.from_id)
+            and not store.drive_answer_taken(original["capture_id"])
         ):
             return Decision(
                 None,
@@ -88,6 +99,8 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
                 },
             )
         replied_by_member = original is not None and _may_act(config, original, update.from_id)
+        if asked and not replied_by_member and not message_has_photo(update):
+            return Decision(None)  # banter under the question: ignored, not even a new post
     if replied_by_member or update.command is not None or update.from_id is None:
         return None  # not subject to the local check
     message = update.raw.get("message", {})
@@ -121,7 +134,9 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
 def _decide_edit(update: IncomingUpdate, store: Store) -> Decision | None:
     """A caption edit of a post whose capture is pending or in exception goes to t6."""
     post = store.drive_post(update.chat_id, update.topic_id, update.message_id)
-    if post is None or not store.drive_capture_unresolved(post):
+    if post is None:
+        return Decision(None)  # an edit of chatter never reaches a module either
+    if not store.drive_capture_unresolved(post):
         return None
     return Decision(
         None,

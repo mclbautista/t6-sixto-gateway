@@ -201,6 +201,8 @@ MIGRATIONS: list[str] = [
     ALTER TABLE drive_requests ADD COLUMN poster_id INTEGER;
     ALTER TABLE drive_requests ADD COLUMN undo_until REAL;
     ALTER TABLE drive_requests ADD COLUMN button_removed INTEGER NOT NULL DEFAULT 0;
+    UPDATE drive_requests SET poster_id = json_extract(body, '$.sender_telegram_id')
+        WHERE state != 'done' AND kind = 'photo';
     """,
     # 16: messages the recording channel's local check dropped since the last daily report.
     """
