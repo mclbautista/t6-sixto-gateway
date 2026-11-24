@@ -10,7 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "PyYAML>=6.0",
     "httpx>=0.27",
-    "t6 @ git+https://github.com/mclbautista/t6-core.git@741818ef68b0837e0ccf519fde52d227188548b6",
+    "t6 @ git+https://github.com/mclbautista/t6-core.git@2c0e0eb7590ba63cc48b7105975e1c646d4f2bb8",
 ]
 
 [project.optional-dependencies]
