@@ -67,6 +67,9 @@ groups:
   # give anyone operator rights in t6: those are the Person permission `operator` in the t6 registry.
   # Keep the two lists in step by hand.
   operators: [100000001]
+  # Telegram user ids of the TRANSMITTAL custodians. With the photo's poster, they alone may answer
+  # Sixto's question about a capture and undo a recorded reply. Anyone else is ignored.
+  custodians: [100000002]                      # FILL IN: custodian Telegram user ids
   chat_ids:                                     # who may ask /whereami
     - 100000001                                 # Example approver
     - 100000002                                 # Moonfern

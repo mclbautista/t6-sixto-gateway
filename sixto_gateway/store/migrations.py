@@ -196,4 +196,10 @@ MIGRATIONS: list[str] = [
         UNIQUE (chat_id, message_id, kind)
     );
     """,
+    # 15: who posted the photo, and when the undo window of the recorded reply ends.
+    """
+    ALTER TABLE drive_requests ADD COLUMN poster_id INTEGER;
+    ALTER TABLE drive_requests ADD COLUMN undo_until REAL;
+    ALTER TABLE drive_requests ADD COLUMN button_removed INTEGER NOT NULL DEFAULT 0;
+    """,
 ]

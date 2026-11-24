@@ -70,7 +70,10 @@ class Rig:
         self.clock = FakeClock()
         self.config = load(
             tmp_path,
-            lambda d: d.update(recording_channel={"chat_id": -900001, "topic_id": 4801}, routes=[]),
+            lambda d: (
+                d.update(recording_channel={"chat_id": -900001, "topic_id": 4801}, routes=[]),
+                d["groups"].update(custodians=[7003]),
+            ),
         )
         self.database = tmp_path / "gateway.db"
         self.store = Store(self.database, self.clock)
@@ -207,12 +210,12 @@ async def test_ask_for_label_and_follow_up_resolve_the_same_capture(rig):
     from tests.fakes import group_command
 
     await rig.send(photo())
-    rig.api.outcome.update(state="exception")
+    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
     await rig.resolve()
     assert rig.telegram.sent[0]["text"] == "Practice\nPlease reply with the drive label or serial."
     ask_id = rig.telegram.sent[0]["message_id"]
     assert rig.telegram.sent[0]["keyboard"] is None
-    followup = group_command(20, 7002, " EX-01 ", -900001, 4801)
+    followup = group_command(20, 7001, " EX-01 ", -900001, 4801)
     followup["message"]["reply_to_message"] = {
         "message_id": ask_id,
         "date": 1789700000,
@@ -257,7 +260,7 @@ async def test_undo_tap_calls_api_once_and_edits_the_recorded_reply(rig):
     await rig.resolve()
     reply = rig.telegram.sent[0]
     data = reply["keyboard"][0][0]["callback_data"]
-    tap = button_tap(30, 7002, data, -900001, reply["message_id"], "supergroup")
+    tap = button_tap(30, 7001, data, -900001, reply["message_id"], "supergroup")
     tap["callback_query"]["message"]["message_thread_id"] = 4801
     await rig.send(tap)
     await rig.resolve()
@@ -330,7 +333,7 @@ async def test_followups_from_another_topic_or_to_another_message_are_not_captur
     from tests.fakes import group_command
 
     await rig.send(photo())
-    rig.api.outcome.update(state="exception")
+    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
     await rig.resolve()
     ask_id = rig.telegram.sent[0]["message_id"]
     for update_id, topic, reply_id in [(20, 4802, ask_id), (21, 4801, 8888)]:
@@ -391,3 +394,175 @@ async def test_telegram_adapter_sets_reply_and_topic_and_downloads_in_memory():
     assert bot.sent["chat_id"] == -900001
     assert bot.sent["message_thread_id"] == 4801
     assert bot.sent["reply_parameters"].message_id == 10
+
+
+def reply_to(raw, message_id):
+    raw["message"]["reply_to_message"] = {
+        "message_id": message_id,
+        "date": 1789700000,
+        "chat": raw["message"]["chat"],
+    }
+    return raw
+
+
+def tap_of(rig, update_id, user, reply):
+    from tests.fakes import button_tap
+
+    data = reply["keyboard"][0][0]["callback_data"]
+    tap = button_tap(update_id, user, data, -900001, reply["message_id"], "supergroup")
+    tap["callback_query"]["message"]["message_thread_id"] = 4801
+    return tap
+
+
+def undoable(rig):
+    from t6.verbs import Done, Refused
+
+    rig.api.undos = []
+    rig.api.undo_refusal = None
+
+    def undo(inputs):
+        rig.api.undos.append(inputs)
+        if rig.api.undo_refusal:
+            return Refused(rule="undo_window", reason="Undo window has ended")
+        return Done(result={**rig.api.outcome, "state": "undone"})
+
+    rig.api.drive_capture_undo = undo
+
+
+async def resolved_reply(rig, **extra):
+    await rig.send(photo())
+    rig.api.outcome.update(
+        state="resolved",
+        lines=[{"label": "EX-01", "direction": "OUT", "person": "Example Person"}],
+        **extra,
+    )
+    await rig.resolve()
+    return rig.telegram.sent[0]
+
+
+@pytest.mark.parametrize(
+    ("reason", "text"),
+    [
+        (
+            "missing_direction",
+            "Practice\nPlease reply with IN or OUT and the person, like OUT <person>.",
+        ),
+        ("unreadable_label", "Practice\nPlease reply with the drive label or serial."),
+        (
+            "no_drive_match",
+            "Practice\nI could not find that label or serial. Please reply with the correct one.",
+        ),
+    ],
+)
+async def test_question_text_follows_the_exception_reason(rig, reason, text):
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason=reason, may_ask=True)
+    await rig.resolve()
+    assert [m["text"] for m in rig.telegram.sent] == [text]
+
+
+async def test_exception_that_may_not_ask_gets_no_question(rig):
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="no_drive_match", may_ask=False)
+    await rig.resolve()
+    assert rig.telegram.sent == []
+
+
+async def test_only_poster_or_custodian_answers_count_and_an_answer_goes_once(rig):
+    from tests.fakes import group_command
+
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
+    await rig.resolve()
+    ask_id = rig.telegram.sent[0]["message_id"]
+    await rig.send(reply_to(group_command(20, 7002, "EX-01", -900001, 4801), ask_id))
+    assert len(rig.api.calls) == 1 and rig.telegram.sent[1:] == []
+    # The custodian answers; t6 still cannot resolve it, so nothing more is said.
+    rig.api.outcome.update(reason="no_drive_match", may_ask=False)
+    await rig.send(reply_to(group_command(21, 7003, "EX-01", -900001, 4801), ask_id))
+    assert len(rig.api.calls) == 2
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    await rig.send(reply_to(group_command(22, 7001, "EX-02", -900001, 4801), ask_id))
+    assert len(rig.api.calls) == 2
+
+
+async def test_undo_tap_from_someone_else_gets_a_popup_and_nothing_else(rig):
+    undoable(rig)
+    reply = await resolved_reply(rig)
+    await rig.send(tap_of(rig, 30, 7002, reply))
+    await rig.resolve()
+    assert rig.api.undos == []
+    assert rig.telegram.answers[-1]["text"] == "Only the poster or the custodian can undo"
+    assert rig.telegram.edits == []
+    await rig.send(tap_of(rig, 31, 7003, reply))
+    await rig.resolve()
+    assert len(rig.api.undos) == 1
+
+
+@pytest.mark.parametrize("target", ["reply", "photo"])
+@pytest.mark.parametrize("user", [7001, 7003])
+async def test_text_undo_acts_as_the_button(rig, target, user):
+    from tests.fakes import group_command
+
+    undoable(rig)
+    reply = await resolved_reply(rig)
+    target_id = reply["message_id"] if target == "reply" else 10
+    await rig.send(reply_to(group_command(40, user, " Undo ", -900001, 4801), target_id))
+    await rig.resolve()
+    assert [u.capture for u in rig.api.undos] == ["cap-example"]
+    assert rig.telegram.edits[-1]["text"] == "Practice\nUndone."
+    assert rig.telegram.edits[-1]["message_id"] == reply["message_id"]
+    assert rig.telegram.edits[-1]["keyboard"] is None
+
+
+async def test_text_undo_from_others_or_other_wording_is_ignored(rig):
+    from tests.fakes import group_command
+
+    undoable(rig)
+    reply = await resolved_reply(rig)
+    mid = reply["message_id"]
+    await rig.send(reply_to(group_command(40, 7002, "undo", -900001, 4801), mid))
+    await rig.send(reply_to(group_command(41, 7001, "please undo", -900001, 4801), mid))
+    await rig.send(group_command(42, 7001, "undo", -900001, 4801))
+    await rig.resolve()
+    assert rig.api.undos == [] and rig.telegram.edits == []
+    assert len(rig.telegram.sent) == 1
+
+
+async def test_button_is_removed_when_the_undo_window_ends_and_late_undo_is_silent(rig):
+    from datetime import UTC, datetime
+
+    from tests.fakes import group_command
+
+    undoable(rig)
+    until = datetime.fromtimestamp(rig.clock() + 3600, UTC).isoformat()
+    reply = await resolved_reply(rig, undo_until=until)
+    assert rig.telegram.edits == []
+    rig.clock.advance(3500)
+    await rig.resolve()
+    assert rig.telegram.edits == []
+    rig.clock.advance(200)
+    await rig.resolve()
+    assert len(rig.telegram.edits) == 1
+    edit = rig.telegram.edits[0]
+    assert edit["message_id"] == reply["message_id"]
+    assert edit["text"] == reply["text"] and edit["keyboard"] is None
+    rig.clock.advance(60)
+    await rig.resolve()
+    assert len(rig.telegram.edits) == 1
+    await rig.send(reply_to(group_command(40, 7001, "undo", -900001, 4801), reply["message_id"]))
+    await rig.send(tap_of(rig, 41, 7001, reply))
+    await rig.resolve()
+    assert rig.api.undos == [] and len(rig.telegram.sent) == 1
+    assert rig.telegram.answers[-1]["text"] == "Undo window has ended"
+
+
+async def test_undo_window_refusal_from_t6_produces_no_message(rig):
+    undoable(rig)
+    rig.api.undo_refusal = True
+    reply = await resolved_reply(rig)
+    await rig.send(tap_of(rig, 30, 7001, reply))
+    await rig.resolve()
+    assert len(rig.api.undos) == 1
+    assert rig.telegram.edits == [] and len(rig.telegram.sent) == 1

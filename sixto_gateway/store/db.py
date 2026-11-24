@@ -349,8 +349,9 @@ class Store:
             if inserted and decision.drive_request is not None:
                 self._db.execute(
                     "INSERT OR IGNORE INTO drive_requests"
-                    " (update_id, chat_id, topic_id, message_id, kind, body, next_attempt_at)"
-                    " VALUES (?,?,?,?,?,?,?)",
+                    " (update_id, chat_id, topic_id, message_id, kind, body, next_attempt_at,"
+                    " poster_id)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
                     (
                         update.update_id,
                         update.chat_id,
@@ -359,6 +360,7 @@ class Store:
                         decision.drive_request.get("kind", "photo"),
                         json.dumps(decision.drive_request),
                         received_at,
+                        decision.drive_request.get("poster_id"),
                     ),
                 )
             if inserted and decision.reply is not None:
@@ -1163,6 +1165,53 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def drive_reply_to_photo(
+        self, chat: int, topic: int | None, message: int
+    ) -> dict[str, Any] | None:
+        """The recorded (resolved, sent) reply of the capture that started at this photo."""
+        row = self._db.execute(
+            "SELECT d.* FROM drive_requests p JOIN drive_requests d ON d.capture_id = p.capture_id"
+            " JOIN outbound o ON o.id = d.reply_ref"
+            " WHERE p.chat_id = ? AND p.topic_id = ? AND p.message_id = ? AND p.kind = 'photo'"
+            " AND d.outcome = 'resolved' AND o.state = 'sent' ORDER BY d.update_id DESC LIMIT 1",
+            (chat, topic, message),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def remove_expired_undo_buttons(self, now: float) -> None:
+        """Edit each recorded reply whose undo window has ended into the same text, no button."""
+        with self._transaction():
+            rows = self._db.execute(
+                "SELECT d.update_id, d.chat_id, d.topic_id, d.reply_ref FROM drive_requests d"
+                " JOIN outbound o ON o.id = d.reply_ref"
+                " WHERE d.outcome = 'resolved' AND d.button_removed = 0 AND d.undo_until <= ?"
+                " AND o.state = 'sent'",
+                (now,),
+            ).fetchall()
+            for row in rows:
+                original = self.outbound_row(row["reply_ref"])
+                assert original is not None
+                self._insert_outbound(
+                    GATEWAY_MODULE,
+                    "edit",
+                    str(row["chat_id"]),
+                    {
+                        "chat": row["chat_id"],
+                        "topic": row["topic_id"],
+                        "format": "plain",
+                        "text": original["body"]["text"],
+                        "edit_of": row["reply_ref"],
+                    },
+                    f"drive-expire:{row['update_id']}",
+                )
+                self._db.execute(
+                    "UPDATE drive_requests SET button_removed = 1 WHERE update_id = ?",
+                    (row["update_id"],),
+                )
+
+    def now(self) -> float:
+        return self._clock()
+
     def next_drive_request(self, now: float) -> dict[str, Any] | None:
         row = self._db.execute(
             "SELECT * FROM drive_requests WHERE state != 'done' AND next_attempt_at <= ?"
@@ -1185,10 +1234,20 @@ class Store:
         )
 
     def finish_drive_request(
-        self, request: dict[str, Any], outcome: str, reply: dict[str, Any] | None
+        self,
+        request: dict[str, Any],
+        outcome: str,
+        reply: dict[str, Any] | None,
+        undo_until: float | None = None,
     ) -> None:
         with self._transaction():
             ref = None
+            if request["kind"] == "label":  # a question is answered once
+                self._db.execute(
+                    "UPDATE drive_requests SET outcome = 'answered'"
+                    " WHERE capture_id = ? AND outcome = 'exception' AND update_id != ?",
+                    (request["body"]["capture"], request["update_id"]),
+                )
             if reply is not None:
                 undo = request["kind"] == "undo"
                 body = {
@@ -1213,9 +1272,9 @@ class Store:
                     f"drive:{request['update_id']}",
                 )
             self._db.execute(
-                "UPDATE drive_requests SET state = 'done', outcome = ?, reply_ref = ?, body = '{}'"
-                " WHERE update_id = ?",
-                (outcome, ref, request["update_id"]),
+                "UPDATE drive_requests SET state = 'done', outcome = ?, reply_ref = ?, body = '{}',"
+                " undo_until = ? WHERE update_id = ?",
+                (outcome, ref, undo_until, request["update_id"]),
             )
 
 

@@ -23,6 +23,26 @@ from sixto_gateway.telegram.normalize import IncomingUpdate
 
 log = logging.getLogger(__name__)
 RETRY_SECONDS = 5.0
+QUESTIONS = {
+    "missing_direction": strings.DRIVE_ASK_DIRECTION,
+    "unreadable_label": strings.DRIVE_ASK_LABEL,
+    "no_drive_match": strings.DRIVE_ASK_NO_MATCH,
+}
+
+
+def _may_act(config: Config, original: dict[str, Any], user: int | None) -> bool:
+    """Only the poster of the photo or a custodian speaks for a capture."""
+    return user is not None and (
+        user == original["poster_id"] or user in config.groups.get("custodians", [])
+    )
+
+
+def _undo_request(original: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "undo", "capture": original["capture_id"], "edit_of": original["reply_ref"]}
+
+
+def _window_ended(store: Store, original: dict[str, Any]) -> bool:
+    return original["undo_until"] is not None and store.now() >= original["undo_until"]
 
 
 def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decision | None:
@@ -34,13 +54,31 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
         return None
     if not update.edited and update.from_id is not None and update.reply_to_message_id:
         original = store.drive_reply(update.chat_id, update.topic_id, update.reply_to_message_id)
-        if original is not None and original["outcome"] == "exception" and update.text:
+        if original is None:
+            original = store.drive_reply_to_photo(
+                update.chat_id, update.topic_id, update.reply_to_message_id
+            )
+        if (
+            original is not None
+            and update.text.strip().lower() == "undo"
+            and original["outcome"] == "resolved"
+        ):
+            if _may_act(config, original, update.from_id) and not _window_ended(store, original):
+                return Decision(None, drive_request=_undo_request(original))
+            return None
+        if (
+            original is not None
+            and original["outcome"] == "exception"
+            and update.text
+            and _may_act(config, original, update.from_id)
+        ):
             return Decision(
                 None,
                 drive_request={
                     "kind": "label",
                     "capture": original["capture_id"],
                     "text": update.text,
+                    "poster_id": original["poster_id"],
                 },
             )
     message = update.raw.get("message", {})
@@ -54,6 +92,7 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
             "file_id": largest["file_id"],
             "text": update.text,
             "sender_telegram_id": update.from_id,
+            "poster_id": update.from_id,
             "posted_at": message["date"],
         },
     )
@@ -72,15 +111,11 @@ def decide_drive_tap(config: Config, update: IncomingUpdate, store: Store) -> De
         or update.callback_data != f"dc:u:{original['update_id']}"
     ):
         return Decision(None, answer_tap=strings.TAP_UNKNOWN_MODULE)
-    return Decision(
-        None,
-        answer_tap="",
-        drive_request={
-            "kind": "undo",
-            "capture": original["capture_id"],
-            "edit_of": original["reply_ref"],
-        },
-    )
+    if not _may_act(config, original, update.from_id):
+        return Decision(None, answer_tap=strings.TAP_UNDO_NOT_ALLOWED)
+    if _window_ended(store, original):
+        return Decision(None, answer_tap=strings.TAP_UNDO_ENDED)
+    return Decision(None, answer_tap="", drive_request=_undo_request(original))
 
 
 class DriveWorker:
@@ -96,6 +131,7 @@ class DriveWorker:
         self._queue_wake, self._clock = queue_wake, clock
 
     async def process_next(self) -> bool:
+        self._store.remove_expired_undo_buttons(self._clock())
         request = self._store.next_drive_request(self._clock())
         if request is None:
             return False
@@ -151,6 +187,11 @@ class DriveWorker:
                     ]
                     if outcome.practice:
                         lines.insert(0, strings.DRIVE_PRACTICE)
+                    undo_until = (
+                        datetime.fromisoformat(outcome.undo_until).timestamp()
+                        if outcome.undo_until
+                        else None
+                    )
                     self._store.finish_drive_request(
                         request,
                         outcome.state,
@@ -165,10 +206,13 @@ class DriveWorker:
                                 ]
                             ],
                         },
+                        undo_until,
                     )
                     self._queue_wake.notify()
+                elif outcome.state == "exception" and not outcome.may_ask:
+                    self._store.finish_drive_request(request, outcome.state, None)
                 elif outcome.state == "exception":
-                    text = strings.DRIVE_ASK_LABEL
+                    text = QUESTIONS.get(outcome.reason or "", strings.DRIVE_ASK_LABEL)
                     if outcome.practice:
                         text = strings.DRIVE_PRACTICE + "\n" + text
                     self._store.finish_drive_request(request, outcome.state, {"text": text})
