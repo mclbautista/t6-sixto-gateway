@@ -173,11 +173,11 @@ class LeadListInput(BaseModel):
     """``lead list`` (t6-core #709)."""
 
 
-LEAD_ROLES = (  # the client roles of a Lead, as the API lists them
-    ("lead_owner_ids", strings.LEAD_OWNER),
-    ("delegate_producer_ids", strings.LEAD_DELEGATE),
-    ("line_producer_ids", strings.LEAD_LINE),
-    ("prod_coor_supe_ids", strings.LEAD_COOR),
+LEAD_ROLES = (  # the client roles of a Lead, as the API lists them (names)
+    ("lead_owners", strings.LEAD_OWNER),
+    ("delegate_producers", strings.LEAD_DELEGATE),
+    ("line_producers", strings.LEAD_LINE),
+    ("prod_coor_supes", strings.LEAD_COOR),
 )
 
 
@@ -260,31 +260,23 @@ class ProjectCommands:
         return [_plain(done["message"])]
 
     async def _leads(self, api: Any, _: str) -> list[Reply]:
-        # ``lead list`` (t6-core #709). Once the t6 pin has it, this is ``api.lead_list(...)``.
+        # ``lead list`` (t6-core #709, names #705). Once the t6 pin has it: ``api.lead_list(...)``.
         found = await _ask(lambda inputs: api.call("lead", "list", inputs), LeadListInput())
         leads = found["leads"]
         if not leads:
             return [_plain(strings.LEADS_NONE)]
-        names: dict[str, str | None] = {}
         rows = [strings.LEADS_TITLE.format(count=len(leads))]
         for lead in leads:
             head = strings.LEAD_LINE_HEAD.format(name=lead["name"], stage=lead["stage"])
             if lead.get("days_in_stage") is not None:
                 head += strings.LEAD_DAYS.format(days=lead["days_in_stage"])
             rows.append(head)
+            if lead.get("studio"):
+                rows.append(f"{strings.LEAD_STUDIO}: {lead['studio']}")
             for field, label in LEAD_ROLES:
-                people = [await self._person(api, names, i) for i in lead.get(field) or []]
-                if named := [n for n in people if n]:
+                if named := lead.get(field):
                     rows.append(f"{label}: {', '.join(named)}")
         return [_plain(text) for text in split_message(rows)]
-
-    @staticmethod
-    async def _person(api: Any, names: dict[str, str | None], person_id: str) -> str | None:
-        """A Person's name, asked once per list; None when the API will not say."""
-        if person_id not in names:
-            found = await _read(api, "person", PersonGetInput(person_id=person_id))
-            names[person_id] = found["person"]["name"] if found else None
-        return names[person_id]
 
     async def _concerns(self, api: Any, _: str) -> list[Reply]:
         """Every open Concern in its own message, so a button edits its own Concern only."""

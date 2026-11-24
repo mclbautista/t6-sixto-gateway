@@ -16,6 +16,11 @@ LEAD = {
     "delegate_producer_ids": [],
     "line_producer_ids": ["t6n_" + "c" * 32],
     "prod_coor_supe_ids": [],
+    "lead_owners": ["Ana Cruz"],
+    "studio": "Example Studio",
+    "delegate_producers": [],
+    "line_producers": ["Bea Lim", "Cy Tan"],
+    "prod_coor_supes": ["Dee Ong"],
     "days_in_stage": 3,
 }
 
@@ -54,15 +59,23 @@ async def test_unsnooze_shows_the_api_message(rig):
 
 
 async def test_leads_lists_open_leads_with_names(rig):
-    rig.api.leads = [LEAD, {**LEAD, "name": "Other", "lead_owner_ids": [], "days_in_stage": None}]
+    rig.api.leads = [
+        LEAD,
+        {**LEAD, "name": "Other", "lead_owners": [], "studio": None, "days_in_stage": None},
+    ]
     await rig.send(dm_message(9, COORDINATOR, "/leads"))
     sent = rig.replies(COORDINATOR)
     assert sent[0].startswith("Open Leads: 2\n")
     assert "Example Show · Proposal Made · 3 days in stage" in sent[0]
-    assert "Lead Owner: Pat" in sent[0]
-    assert "Line Producer: Pat" in sent[0]  # the fake names everyone Pat
+    assert "Lead Owner: Ana Cruz" in sent[0]
+    assert "Studio: Example Studio" in sent[0]
+    assert "Line Producer: Bea Lim, Cy Tan" in sent[0]
+    assert "Prod Coor/Supe: Dee Ong" in sent[0]
+    assert "Delegate Producer" not in sent[0]
+    assert sent[0].count("Studio:") == 1  # the other Lead has none
     assert "Other · Proposal Made\n" in sent[0] + "\n"  # no day count when none is recorded
     assert (COORDINATOR, "lead list", {}) in rig.api.calls
+    assert not any(call[1] == "person get" for call in rig.api.calls)
 
 
 async def test_no_open_leads_says_so(rig):

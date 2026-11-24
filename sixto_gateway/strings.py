@@ -50,7 +50,8 @@ LEAD_DAYS = " · {days} days in stage"
 LEAD_OWNER = "Lead Owner"
 LEAD_DELEGATE = "Delegate Producer"
 LEAD_LINE = "Line Producer"
-LEAD_COOR = "Production Coordinator/Supervisor"
+LEAD_COOR = "Prod Coor/Supe"
+LEAD_STUDIO = "Studio"
 
 # --- for /project concerns (plain text) -----------------------------------------------------------
 
