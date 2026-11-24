@@ -14,7 +14,7 @@ from sixto_gateway.drives import decide_drive
 from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import decide_start
-from sixto_gateway.project import decide_project
+from sixto_gateway.project import CRM_COMMANDS, decide_project
 from sixto_gateway.store import Store
 from sixto_gateway.taps import decide_tap
 from sixto_gateway.telegram.client import TelegramClient
@@ -73,7 +73,7 @@ class Poller:
             return drive
         if update.command == "start":
             return decide_start(self._store, update)
-        if update.command == "project" and (project := decide_project(update)) is not None:
+        if update.command in CRM_COMMANDS and (project := decide_project(update)) is not None:
             return project  # a subcommand the gateway answers; the API decides who may use it
         if update.command is not None and is_builtin(self._config, update):
             return decide_builtin(self._config, update)

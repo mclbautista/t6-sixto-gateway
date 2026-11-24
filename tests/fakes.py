@@ -565,6 +565,7 @@ class FakeProjectAPI:
         self.closers: set[int] | None = None  # who may close (None: anyone)
         self.rule_made: set[str] = set()  # date-sanity Concerns: closed and reopened by data only
         self.names: dict[str, str] = {OWNER_ID: "Pat"}
+        self.leads: list[dict] = []  # /leads: the ``lead list`` reply
         self._tokens: dict[str, tuple[str, str, str]] = {}  # token -> (verb, concern, key)
 
     def add_concern(self, concern_id: str, text: str = "Waiting on lab", **fields) -> dict:
@@ -620,6 +621,29 @@ class FakeProjectAPI:
             item.update(close_by="t6n_closer", close_by_name=self.names.get(user, "Cy"))
         return Done(result={"action": verb, "concern": body["concern"]})
 
+    def crm_call(self, user: int, verb: str, body: dict):
+        """``crm snooze`` / ``crm unsnooze`` as t6-core describes them."""
+        if verb == "unsnooze":
+            return Done(
+                result={
+                    "person_id": "p",
+                    "was_snoozed": True,
+                    "message": "Your CRM reminders are back on.",
+                }
+            )
+        if not body["until"]:
+            return Refused(rule="until", reason="Say until when: /crm snooze <date>.")
+        if body["until"] > "2026-12-24":
+            return Refused(rule="until", reason="A snooze can last 30 days at most.")
+        return Done(
+            result={
+                "person_id": "p",
+                "until": body["until"],
+                "returns_on": "2026-12-02",
+                "message": f"Snoozed through {body['until']}. Reminders return on 2026-12-02.",
+            }
+        )
+
     def as_user(self, telegram_user_id: int) -> _FakeProjectAPIAs:
         return _FakeProjectAPIAs(self, telegram_user_id)
 
@@ -653,6 +677,10 @@ class _FakeProjectAPIAs:
             return Done(result={"project": {"project_code": "ABD", "name": "Example Show"}})
         if (noun, verb) == ("person", "get"):
             return Done(result={"person": {"name": self._api.names.get(body["person_id"], "Pat")}})
+        if noun == "crm":
+            return self._api.crm_call(self._user, verb, body)
+        if (noun, verb) == ("lead", "list"):
+            return Done(result={"leads": self._api.leads})
         assert (noun, verb) == ("project", "notes-history")
         allowed = self._api.allowed
         if allowed is not None and self._user not in allowed:

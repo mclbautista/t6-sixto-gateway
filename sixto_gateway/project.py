@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel
 from t6.client import APIError
 from t6.verbs import (
     ConcernListInput,
@@ -45,6 +46,8 @@ TAP_PREFIX = "pc"  # callback data of a /project concerns button: pc:<action>:<C
 TOAST_LIMIT = 200  # Telegram refuses a longer answer to a button tap
 EXACT_CODE = {"exact_id", "normalized"}  # ``project resolve`` methods that are not a guess
 
+CRM_COMMANDS = ("project", "crm", "leads")  # the commands this module answers
+
 Reply = dict[str, Any]  # an outbound message body without its chat: text, format (, keyboard)
 
 
@@ -62,21 +65,40 @@ def parse_subcommand(args: str) -> tuple[str, str] | None:
     return None
 
 
+def parse_crm(command: str | None, args: str) -> tuple[str, str] | None:
+    """``(name, argument)`` for ``/crm snooze <date>``, ``/crm unsnooze``, ``/leads``, else None."""
+    words = args.split(maxsplit=1)
+    if command == "leads" and not words:
+        return "leads", ""
+    if command == "crm" and words and words[0].casefold() == "snooze":
+        return "snooze", words[1].strip() if len(words) > 1 else ""
+    if command == "crm" and len(words) == 1 and words[0].casefold() == "unsnooze":
+        return "unsnooze", ""
+    return None
+
+
 def decide_project(update: IncomingUpdate) -> Decision | None:
-    """The decision for a ``/project`` the gateway answers; None leaves it to the module."""
-    found = parse_subcommand(update.command_args)
+    """The decision for a ``/project``, ``/crm`` or ``/leads`` the gateway answers; None leaves
+    it to the module (or, for ``/crm`` and ``/leads``, to the command allow-list)."""
+    if update.command == "project":
+        found = parse_subcommand(update.command_args)
+    else:
+        found = parse_crm(update.command, update.command_args)
     if found is None:
         return None
     if update.edited or update.from_id is None:  # an edit is never a new command
         return Decision(None)
     name, argument = found
-    detail = f"command=project {name} from={update.from_id}"  # never the argument
-    if update.chat_type != "private" and name == "concerns":  # a one-line pointer to the DM
-        return Decision(
-            None,
-            audit=("command_refused", None, f"{detail} not_dm"),
-            reply=strings.CONCERNS_DM_ONLY,
+    shown = update.command if name == update.command else f"{update.command} {name}"
+    detail = f"command={shown} from={update.from_id}"  # never the argument
+    if update.chat_type != "private" and (name == "concerns" or update.command != "project"):
+        # a one-line pointer to the DM
+        pointer = (
+            strings.CONCERNS_DM_ONLY
+            if name == "concerns"
+            else strings.CRM_DM_ONLY.format(command=update.command)
         )
+        return Decision(None, audit=("command_refused", None, f"{detail} not_dm"), reply=pointer)
     if update.chat_type != "private":  # DMs only; a group refusal is silent
         return Decision(None, audit=("command_refused", None, f"{detail} not_dm"))
     return Decision(
@@ -137,6 +159,28 @@ def render_notes(code: str, lines: list[dict[str, Any]]) -> list[str]:
     return split_message([strings.PROJECT_NOTES_TITLE.format(code=code), *rows])
 
 
+class CrmSnoozeInput(BaseModel):
+    """``crm snooze`` (t6-core #716); the pinned t6 has no typed method for it yet."""
+
+    until: str | None = None
+
+
+class CrmUnsnoozeInput(BaseModel):
+    """``crm unsnooze`` (t6-core #716)."""
+
+
+class LeadListInput(BaseModel):
+    """``lead list`` (t6-core #709)."""
+
+
+LEAD_ROLES = (  # the client roles of a Lead, as the API lists them
+    ("lead_owner_ids", strings.LEAD_OWNER),
+    ("delegate_producer_ids", strings.LEAD_DELEGATE),
+    ("line_producer_ids", strings.LEAD_LINE),
+    ("prod_coor_supe_ids", strings.LEAD_COOR),
+)
+
+
 class _Answer(Exception):
     """Stop here and send this text instead (a refusal, an unknown code, the API down)."""
 
@@ -167,6 +211,9 @@ class ProjectCommands:
         self._handlers: dict[str, Callable[[Any, str], Awaitable[list[Reply]]]] = {
             "notes": self._notes,
             "concerns": self._concerns,
+            "snooze": self._snooze,
+            "unsnooze": self._unsnooze,
+            "leads": self._leads,
         }
 
     async def answer(self, user: int, name: str, argument: str) -> list[Reply]:
@@ -198,6 +245,46 @@ class ProjectCommands:
         )
         shown = project.get("project_code") or code
         return [_plain(text) for text in render_notes(shown, history["lines"])]
+
+    async def _snooze(self, api: Any, until: str) -> list[Reply]:
+        # ``crm snooze`` (t6-core #716): the API checks the date and words every refusal.
+        # Once the t6 pin has it, this is ``api.crm_snooze(...)``.
+        done = await _ask(
+            lambda inputs: api.call("crm", "snooze", inputs), CrmSnoozeInput(until=until or None)
+        )
+        return [_plain(done["message"])]
+
+    async def _unsnooze(self, api: Any, _: str) -> list[Reply]:
+        # Once the t6 pin has ``crm unsnooze``, this is ``api.crm_unsnooze(...)``.
+        done = await _ask(lambda inputs: api.call("crm", "unsnooze", inputs), CrmUnsnoozeInput())
+        return [_plain(done["message"])]
+
+    async def _leads(self, api: Any, _: str) -> list[Reply]:
+        # ``lead list`` (t6-core #709). Once the t6 pin has it, this is ``api.lead_list(...)``.
+        found = await _ask(lambda inputs: api.call("lead", "list", inputs), LeadListInput())
+        leads = found["leads"]
+        if not leads:
+            return [_plain(strings.LEADS_NONE)]
+        names: dict[str, str | None] = {}
+        rows = [strings.LEADS_TITLE.format(count=len(leads))]
+        for lead in leads:
+            head = strings.LEAD_LINE_HEAD.format(name=lead["name"], stage=lead["stage"])
+            if lead.get("days_in_stage") is not None:
+                head += strings.LEAD_DAYS.format(days=lead["days_in_stage"])
+            rows.append(head)
+            for field, label in LEAD_ROLES:
+                people = [await self._person(api, names, i) for i in lead.get(field) or []]
+                if named := [n for n in people if n]:
+                    rows.append(f"{label}: {', '.join(named)}")
+        return [_plain(text) for text in split_message(rows)]
+
+    @staticmethod
+    async def _person(api: Any, names: dict[str, str | None], person_id: str) -> str | None:
+        """A Person's name, asked once per list; None when the API will not say."""
+        if person_id not in names:
+            found = await _read(api, "person", PersonGetInput(person_id=person_id))
+            names[person_id] = found["person"]["name"] if found else None
+        return names[person_id]
 
     async def _concerns(self, api: Any, _: str) -> list[Reply]:
         """Every open Concern in its own message, so a button edits its own Concern only."""

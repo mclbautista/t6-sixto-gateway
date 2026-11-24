@@ -504,6 +504,14 @@ commands:
   (kept in `concern_previews`, with its idempotency key, until used); Undo is `concern reopen`
   (preview and confirm in one tap). The API decides who may close; its refusal (`closer`,
   `rule_made`, `state`, `permission`) is shown as a popup as is. No Concern text is stored.
+- **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
+  by the gateway like `/project concerns`, in a DM only (in a group: one line pointing to the DM),
+  asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the
+  typed text as `until` (empty if none); `crm snooze` and `crm unsnooze` show the API's `message`,
+  and a refusal (no date, over 30 days) is shown as is. `/leads` calls `lead list` and shows each
+  open Lead as `<name> · <stage> · <n> days in stage` with its Lead Owner and client roles by name
+  (the Studio is not shown: the API gives only its page id). These verbs are called generically
+  (`api.call`) until the t6 pin has them. No menu entry: they work without one.
 
 ## /start onboarding (first slice)
 

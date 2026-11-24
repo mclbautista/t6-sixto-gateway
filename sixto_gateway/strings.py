@@ -40,6 +40,18 @@ PROJECT_NOTES_NONE = "No PM Notes history for {code} yet."
 PROJECT_UNKNOWN_CODE = "I don't know the Project code {code}."
 T6_NOT_ANSWERING = "T6 is not answering right now. Please try again in a few minutes."
 
+# --- for /crm snooze, /crm unsnooze and /leads (plain text; the API words its own answers) -----
+
+CRM_DM_ONLY = "/{command} works in a direct message with me. Please message me there."
+LEADS_TITLE = "Open Leads: {count}"
+LEADS_NONE = "No open Leads."
+LEAD_LINE_HEAD = "{name} · {stage}"
+LEAD_DAYS = " · {days} days in stage"
+LEAD_OWNER = "Lead Owner"
+LEAD_DELEGATE = "Delegate Producer"
+LEAD_LINE = "Line Producer"
+LEAD_COOR = "Production Coordinator/Supervisor"
+
 # --- for /project concerns (plain text) -----------------------------------------------------------
 
 CONCERNS_DM_ONLY = "/project concerns works in a direct message with me. Please message me there."
