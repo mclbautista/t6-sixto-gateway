@@ -135,3 +135,8 @@ DRIVE_UNDO = "UNDO"
 TAP_UNDO_NOT_ALLOWED = "Only the poster or the custodian can undo"
 TAP_UNDO_ENDED = "Undo window has ended"
 DRIVE_UNDONE = "Undone."
+DRIVE_NO_PHOTO = (
+    '<a href="tg://user?id={custodian}">Ate Angel</a> Placed in the Drives app for your review.'
+)
+DRIVE_NO_PHOTO_NO_CUSTODIAN = "Placed in the Drives app for review."
+DRIVE_DROPS = "TRANSMITTAL local check: {count} messages dropped in the last 24 h"

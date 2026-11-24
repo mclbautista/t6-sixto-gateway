@@ -202,4 +202,13 @@ MIGRATIONS: list[str] = [
     ALTER TABLE drive_requests ADD COLUMN undo_until REAL;
     ALTER TABLE drive_requests ADD COLUMN button_removed INTEGER NOT NULL DEFAULT 0;
     """,
+    # 16: messages the recording channel's local check dropped since the last daily report.
+    """
+    CREATE TABLE drive_drops (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        dropped INTEGER NOT NULL,
+        reported_at REAL
+    );
+    INSERT INTO drive_drops (id, dropped, reported_at) VALUES (1, 0, NULL);
+    """,
 ]

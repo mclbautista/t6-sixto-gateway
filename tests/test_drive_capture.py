@@ -80,7 +80,9 @@ class Rig:
         self.telegram = FakeTelegram([], self.clock)
         self.api = FakeDriveAPI()
         self.poller = Poller(self.store, self.telegram, self.config, Notifier(), self.clock)
-        self.worker = DriveWorker(self.store, self.telegram, self.api, Notifier(), self.clock)
+        self.worker = DriveWorker(
+            self.store, self.telegram, self.api, Notifier(), self.clock, custodian_id=7003
+        )
         self.sender = Sender(self.store, self.telegram, Notifier(), self.clock)
 
     async def send(self, raw):
@@ -566,3 +568,197 @@ async def test_undo_window_refusal_from_t6_produces_no_message(rig):
     await rig.resolve()
     assert len(rig.api.undos) == 1
     assert rig.telegram.edits == [] and len(rig.telegram.sent) == 1
+
+
+def text_post(text, update_id=40, user=7001, message_id=None):
+    from tests.fakes import group_command
+
+    raw = group_command(update_id, user, text, -900001, 4801)
+    if message_id is not None:
+        raw["message"]["message_id"] = message_id
+    return raw
+
+
+def edited(raw, text):
+    raw["edited_message"] = raw.pop("message")
+    raw["edited_message"].update(text=text, edit_date=1789700100)
+    raw["update_id"] += 1000
+    return raw
+
+
+@pytest.mark.parametrize("text", ["hello", "INSIDE job", "outbound", "", "please OUT"])
+async def test_chatter_is_dropped_and_counted_without_t6_call_or_reply(rig, text):
+    await rig.send(text_post(text))
+    await rig.resolve()
+    assert rig.api.calls == [] and rig.telegram.sent == []
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 1
+    rig.store.set_offset(0)
+    await rig.send(text_post(text))
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("text", ["OUT Angel D-123", "in", "In: shelf", "out-Angel", "IN\nx"])
+async def test_in_out_text_without_photo_reaches_t6_as_text_only(rig, text):
+    await rig.send(text_post(text))
+    assert len(rig.api.calls) == 1
+    sent = rig.api.calls[0]
+    assert sent.photo is None and sent.text == text
+    assert (sent.chat_id, sent.topic_id, sent.sender_telegram_id) == (-900001, 4801, 7001)
+    assert rig.telegram.downloads == []
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
+
+
+async def test_member_reply_to_sixto_is_not_subject_to_the_check(rig):
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
+    await rig.resolve()
+    question = rig.telegram.sent[0]
+    await rig.send(reply_to(text_post("EX-01", 41), question["message_id"]))
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
+    assert len(rig.api.calls) == 2
+    await rig.send(text_post("thanks", 42))  # not a reply: chatter
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 1
+
+
+async def test_no_photo_exception_gets_one_mention_reply_without_undo(rig):
+    await rig.send(text_post("OUT Angel D-123"))
+    rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
+    await rig.resolve()
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    reply = rig.telegram.sent[0]
+    assert reply["text"] == (
+        '<a href="tg://user?id=7003">Ate Angel</a> Placed in the Drives app for your review.'
+    )
+    assert reply["parse_mode"] == "HTML"
+    assert reply["reply_to_message_id"] == 40
+    assert not reply.get("keyboard")
+
+
+async def test_no_photo_reply_without_custodian_has_no_mention(rig):
+    rig.worker._custodian_id = None
+    await rig.send(text_post("IN"))
+    rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
+    await rig.resolve()
+    assert [m["text"] for m in rig.telegram.sent] == ["Placed in the Drives app for review."]
+
+
+async def test_edit_of_exception_post_goes_to_t6_and_resolution_edits_the_question(rig):
+    from t6.verbs import Done
+
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="missing_direction", may_ask=True)
+    await rig.resolve()
+    question = rig.telegram.sent[0]
+    edit = edited(photo(), "OUT Example Person")
+    rig.api.outcome["state"] = "resolved"
+    rig.api.drive_capture = lambda inputs: (
+        rig.api.calls.append(inputs) or Done(result={**rig.api.outcome, "state": "pending"})
+    )
+    rig.api.outcome.update(state="pending")
+    await rig.send(edit)
+    sent = rig.api.calls[-1]
+    assert (sent.capture, sent.text, sent.edit, sent.photo) == (
+        "cap-example",
+        "OUT Example Person",
+        True,
+        None,
+    )
+    rig.api.outcome.update(
+        state="resolved", lines=[{"label": "EX-01", "direction": "OUT", "person": "Example Person"}]
+    )
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    last = rig.telegram.edits[-1]
+    assert last["message_id"] == question["message_id"]
+    assert last["text"] == "Practice\nRecorded: EX-01, OUT, Example Person"
+    assert last["keyboard"][0][0]["text"] == "UNDO"
+
+
+async def test_edit_that_stays_exception_sends_no_new_message(rig):
+    await rig.send(photo())
+    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
+    await rig.resolve()
+    await rig.send(edited(photo(), "OUT"))
+    await rig.resolve()
+    assert len(rig.api.calls) == 2 and rig.api.calls[-1].edit is True
+    assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
+
+
+async def test_edit_of_pending_post_reaches_t6_and_the_post_replies_once(rig):
+    await rig.send(photo())
+    await rig.send(edited(photo(), "OUT Someone"))
+    assert rig.api.calls[-1].edit is True
+    rig.api.outcome.update(
+        state="resolved", lines=[{"label": "EX-01", "direction": "OUT", "person": "Someone"}]
+    )
+    await rig.resolve()
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
+
+
+@pytest.mark.parametrize("state", ["resolved", "ignored"])
+async def test_edit_of_closed_capture_is_ignored(rig, state):
+    await rig.send(photo())
+    rig.api.outcome.update(state=state, lines=[])
+    await rig.resolve()
+    await rig.send(edited(photo(), "OUT Someone Else"))
+    assert len(rig.api.calls) == 1
+
+
+async def test_edit_of_unknown_or_chatter_post_is_ignored(rig):
+    await rig.send(text_post("hello", 50))
+    await rig.send(edited(text_post("OUT Angel", 50), "OUT Angel"))
+    assert rig.api.calls == []
+
+
+async def test_daily_drop_count_is_posted_once_to_the_debug_topic_and_resets(tmp_path):
+    from sixto_gateway.dropcount import DropReporter
+    from sixto_gateway.notifier import Notifier
+
+    rig = Rig(tmp_path)
+    try:
+        rig.config = rig.config.model_copy(
+            update={
+                "recording_channel": rig.config.recording_channel.model_copy(
+                    update={"debug_chat_id": -900009, "debug_topic_id": 12}
+                )
+            }
+        )
+        reporter = DropReporter(rig.store, rig.config, Notifier(), rig.clock)
+        reporter.send_due()  # starts the day
+        await rig.send(text_post("hello", 60))
+        await rig.send(text_post("hi", 61))
+        rig.clock.advance(86399)
+        reporter.send_due()
+        await rig.resolve()
+        assert rig.telegram.sent == []
+        rig.clock.advance(2)
+        reporter.send_due()
+        reporter.send_due()
+        await rig.resolve()
+        assert [(m["chat_id"], m["topic_id"], m["text"]) for m in rig.telegram.sent] == [
+            (-900009, 12, "TRANSMITTAL local check: 2 messages dropped in the last 24 h")
+        ]
+        rig.clock.advance(86400)
+        reporter.send_due()
+        await rig.resolve()
+        assert rig.telegram.sent[-1]["text"].startswith("TRANSMITTAL local check: 0 messages")
+    finally:
+        rig.store.close()
+
+
+async def test_drop_count_survives_restart_and_unset_debug_topic_posts_nothing(rig):
+    from sixto_gateway.dropcount import DropReporter
+    from sixto_gateway.notifier import Notifier
+    from sixto_gateway.store import Store
+
+    await rig.send(text_post("hello", 70))
+    rig.store.close()
+    rig.store = Store(rig.database, rig.clock)
+    assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 1
+    reporter = DropReporter(rig.store, rig.config, Notifier(), rig.clock)
+    reporter.send_due()
+    rig.clock.advance(200000)
+    reporter.send_due()
+    assert rig.store._db.execute("SELECT count(*) FROM outbound").fetchone()[0] == 0

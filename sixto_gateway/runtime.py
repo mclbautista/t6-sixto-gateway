@@ -11,6 +11,7 @@ from t6.client import Client
 
 from sixto_gateway.config import Config
 from sixto_gateway.drives import DriveWorker
+from sixto_gateway.dropcount import DropReporter
 from sixto_gateway.liveness import Liveness, watch_deadman
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import OnboardingWorker
@@ -73,8 +74,13 @@ def start_workers(
                     Client(config.t6_api_url, config.secrets.t6_api_secret),
                     queue_wake,
                     clock,
+                    custodian_id=next(iter(config.groups.get("custodians", [])), None),
                 ).run(stop)
             )
+            if config.recording_channel.debug_chat_id is not None:
+                tasks["drive_drops"] = asyncio.create_task(
+                    DropReporter(store, config, queue_wake, clock).run(stop)
+                )
         worker = OnboardingWorker(
             store, contacts, config, onboarding_wake, queue_wake, client=client
         )

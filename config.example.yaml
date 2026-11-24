@@ -12,6 +12,9 @@ telegram:
 recording_channel:
   chat_id: null                                # FILL IN: <RECORDING_CHAT_ID>
   topic_id: null                               # FILL IN: <RECORDING_TOPIC_ID>
+  # Optional: once every 24 h the local-check drop count is posted here. Leave null to skip it.
+  debug_chat_id: null
+  debug_topic_id: null
 onboarding:
   approver: 100000001                           # Telegram user id that gets the /start cards
   summary_time: "09:00"                         # HH:MM Asia/Manila: the daily summary DM to the approver

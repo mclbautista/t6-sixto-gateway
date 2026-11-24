@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -28,6 +29,8 @@ QUESTIONS = {
     "unreadable_label": strings.DRIVE_ASK_LABEL,
     "no_drive_match": strings.DRIVE_ASK_NO_MATCH,
 }
+# The same first-word rule as t6: IN or OUT in any case, then space, colon, dash or the end.
+_DIRECTION = re.compile(r"(in|out)(?=[\s:\-]|$)", re.IGNORECASE)
 
 
 def _may_act(config: Config, original: dict[str, Any], user: int | None) -> bool:
@@ -52,7 +55,10 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
         channel.topic_id,
     ):
         return None
-    if not update.edited and update.from_id is not None and update.reply_to_message_id:
+    if update.edited:
+        return _decide_edit(update, store)
+    replied_by_member = False
+    if update.from_id is not None and update.reply_to_message_id:
         original = store.drive_reply(update.chat_id, update.topic_id, update.reply_to_message_id)
         if original is None:
             original = store.drive_reply_to_photo(
@@ -81,10 +87,24 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
                     "poster_id": original["poster_id"],
                 },
             )
+        replied_by_member = original is not None and _may_act(config, original, update.from_id)
+    if replied_by_member or update.command is not None or update.from_id is None:
+        return None  # not subject to the local check
     message = update.raw.get("message", {})
     photos = message.get("photo", [])
-    if not photos or update.edited or update.from_id is None:
-        return None
+    if not photos and not _DIRECTION.match(update.text.strip()):
+        return Decision(None, drive_dropped=True)  # chatter: no t6 call, no reply, counted
+    if not photos:
+        return Decision(
+            None,
+            drive_request={
+                "kind": "text",
+                "text": update.text,
+                "sender_telegram_id": update.from_id,
+                "poster_id": update.from_id,
+                "posted_at": message["date"],
+            },
+        )
     largest = max(photos, key=lambda p: p["width"] * p["height"])
     return Decision(
         None,
@@ -94,6 +114,21 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
             "sender_telegram_id": update.from_id,
             "poster_id": update.from_id,
             "posted_at": message["date"],
+        },
+    )
+
+
+def _decide_edit(update: IncomingUpdate, store: Store) -> Decision | None:
+    """A caption edit of a post whose capture is pending or in exception goes to t6."""
+    post = store.drive_post(update.chat_id, update.topic_id, update.message_id)
+    if post is None or not store.drive_capture_unresolved(post):
+        return None
+    return Decision(
+        None,
+        drive_request={
+            "kind": f"edit:{update.update_id}",
+            "text": update.text,
+            "poster_id": post["poster_id"],
         },
     )
 
@@ -126,9 +161,11 @@ class DriveWorker:
         api: Any,
         queue_wake: Notifier,
         clock: Callable[[], float] = time.time,
+        custodian_id: int | None = None,
     ):
         self._store, self._client, self._api = store, client, api
         self._queue_wake, self._clock = queue_wake, clock
+        self._custodian_id = custodian_id  # mentioned when a text-only post is left for review
 
     async def process_next(self) -> bool:
         self._store.remove_expired_undo_buttons(self._clock())
@@ -159,12 +196,32 @@ class DriveWorker:
                     self._store.finish_drive_request(request, "undone", {"text": text})
                     self._queue_wake.notify()
                 return
-            if request["kind"] == "label":
+            if request["kind"].startswith("edit"):
+                inputs = self._edit_input(request)
+                if inputs is None:
+                    post = self._post(request)
+                    if post is not None and post["state"] == "done":
+                        self._store.finish_drive_request(request, "ignored", None)
+                    return  # else the post is not at t6 yet: try again
+            elif request["kind"] == "label":
                 inputs = DriveCaptureInput(capture=body["capture"], text=body["text"])
+            elif request["kind"] == "text":
+                inputs = self._text_input(request)
             else:
                 inputs = await self._photo_input(request)
             result = await self._call(request, self._api.drive_capture, inputs)
-            if isinstance(result, Done):
+            if isinstance(result, Done) and request["kind"].startswith("edit"):
+                post = self._post(request)
+                if post is not None and post["state"] != "done":
+                    # the post's own wait still delivers its reply
+                    self._store.finish_drive_request(request, "edited", None)
+                else:
+                    self._store.wait_for_drive(
+                        request["update_id"],
+                        result.result["capture"],
+                        self._clock() + RETRY_SECONDS,
+                    )
+            elif isinstance(result, Done):
                 self._store.wait_for_drive(
                     request["update_id"], result.result["capture"], self._clock() + RETRY_SECONDS
                 )
@@ -192,10 +249,13 @@ class DriveWorker:
                         if outcome.undo_until
                         else None
                     )
+                    post = self._post(request) if request["kind"].startswith("edit") else None
+                    edit_of = post["reply_ref"] if post is not None else None
                     self._store.finish_drive_request(
                         request,
                         outcome.state,
                         {
+                            **({"edit_of": edit_of} if edit_of is not None else {}),
                             "text": "\n".join(lines),
                             "keyboard": [
                                 [
@@ -207,6 +267,19 @@ class DriveWorker:
                             ],
                         },
                         undo_until,
+                    )
+                    self._queue_wake.notify()
+                elif outcome.state == "exception" and request["kind"].startswith("edit"):
+                    self._store.finish_drive_request(request, outcome.state, None)
+                elif outcome.state == "exception" and outcome.reason == "no_photo":
+                    mention = self._custodian_id
+                    text = (
+                        strings.DRIVE_NO_PHOTO.format(custodian=mention)
+                        if mention is not None
+                        else strings.DRIVE_NO_PHOTO_NO_CUSTODIAN
+                    )
+                    self._store.finish_drive_request(
+                        request, outcome.state, {"text": text, "format": "html"}
                     )
                     self._queue_wake.notify()
                 elif outcome.state == "exception" and not outcome.may_ask:
@@ -230,6 +303,30 @@ class DriveWorker:
             self._store.finish_drive_request(request, "refused", None)
             self._store.audit("drive_capture_refused", detail=f"update={request['update_id']}")
         return result
+
+    def _post(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        return self._store.drive_post(
+            request["chat_id"], request["topic_id"], request["message_id"]
+        )
+
+    def _edit_input(self, request: dict[str, Any]) -> DriveCaptureInput | None:
+        post = self._post(request)
+        if post is None or post["capture_id"] is None:
+            return None
+        return DriveCaptureInput(
+            capture=post["capture_id"], text=request["body"]["text"], edit=True
+        )
+
+    def _text_input(self, request: dict[str, Any]) -> DriveCaptureInput:
+        body = request["body"]
+        return DriveCaptureInput(
+            chat_id=request["chat_id"],
+            topic_id=request["topic_id"],
+            message_id=request["message_id"],
+            sender_telegram_id=body["sender_telegram_id"],
+            posted_at=datetime.fromtimestamp(body["posted_at"], UTC),
+            text=body["text"],
+        )
 
     async def _photo_input(self, request: dict[str, Any]) -> DriveCaptureInput:
         body = request["body"]
