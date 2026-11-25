@@ -493,8 +493,15 @@ commands:
   `<As-of date> · <line>`, a removed line ending in `(removed <date>)`, split across messages
   between lines. An API refusal is sent as is. In a group it is silent (audited `command_refused`
   with `not_dm`). The request (sender, chat and the code) is saved with the update and deleted
-  when its reply is queued; the reply is an ordinary send-queue row. Any other `/project` still
-  goes to its module.
+  when its reply is queued; the reply is an ordinary send-queue row.
+- **`/project <code> drives`** follows the same DM-only request flow, resolving the code and
+  asking `drive project-movements` as the sender. It shows the ten most recent effective
+  movements in the API's newest-first order: Manila date, IN/OUT, Drive label, recipient or
+  receiver, and the coordinators saved at the time of the move (names from `person get`).
+  Movements awaiting review have a `⚠ to review` mark. Missing details show `—`; an empty
+  history says so. Additional movements are counted as `N more in the Drives app` in plain
+  text; no app URL is configured. Replies are requested on demand only, with no movement
+  notifications. Other `/project` commands still go to their module.
 - **`/project concerns`** (DM only; in a group it answers one line pointing to the DM) lists the
   open Concerns from `concern list --open`, one message each: `<Project> · <text>`, owner and
   open days, with **Close**. Concerns in `pending` show "Closing after PSR (by <name>)" with

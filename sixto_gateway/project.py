@@ -24,6 +24,7 @@ from t6.verbs import (
     ConcernReopenInput,
     ConcernResolveInput,
     Done,
+    DriveProjectMovementsInput,
     PersonGetInput,
     Preview,
     ProjectGetInput,
@@ -42,6 +43,7 @@ from sixto_gateway.telegram.normalize import IncomingUpdate
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 MESSAGE_LIMIT = 4096  # Telegram's limit, in UTF-16 code units
+DRIVE_MOVEMENT_LIMIT = 10
 TAP_PREFIX = "pc"  # callback data of a /project concerns button: pc:<action>:<Concern id>
 TOAST_LIMIT = 200  # Telegram refuses a longer answer to a button tap
 EXACT_CODE = {"exact_id", "normalized"}  # ``project resolve`` methods that are not a guess
@@ -54,14 +56,15 @@ Reply = dict[str, Any]  # an outbound message body without its chat: text, forma
 def parse_subcommand(args: str) -> tuple[str, str] | None:
     """``(name, argument)`` for a subcommand the gateway answers, else None.
 
-    ``<code> notes``: the Project's PM Notes history. A code may itself contain spaces.
+    ``<code> notes`` / ``<code> drives``: PM Notes history / Drive movements.
+    A code may itself contain spaces.
     ``concerns``: the open Concerns, each with its buttons.
     """
     words = args.split()
     if len(words) == 1 and words[0].casefold() == "concerns":
         return "concerns", ""
-    if len(words) >= 2 and words[-1].casefold() == "notes":
-        return "notes", " ".join(words[:-1])
+    if len(words) >= 2 and words[-1].casefold() in {"notes", "drives"}:
+        return words[-1].casefold(), " ".join(words[:-1])
     return None
 
 
@@ -210,6 +213,7 @@ class ProjectCommands:
         self._store = store
         self._handlers: dict[str, Callable[[Any, str], Awaitable[list[Reply]]]] = {
             "notes": self._notes,
+            "drives": self._drives,
             "concerns": self._concerns,
             "snooze": self._snooze,
             "unsnooze": self._unsnooze,
@@ -245,6 +249,44 @@ class ProjectCommands:
         )
         shown = project.get("project_code") or code
         return [_plain(text) for text in render_notes(shown, history["lines"])]
+
+    async def _drives(self, api: Any, code: str) -> list[Reply]:
+        project = await self._project(api, code)
+        found = await _ask(
+            api.drive_project_movements, DriveProjectMovementsInput(project=project["t6_id"])
+        )
+        shown = project.get("project_code") or code
+        if not found["movements"]:
+            return [_plain(strings.PROJECT_DRIVES_NONE.format(code=shown))]
+        lines = [strings.PROJECT_DRIVES_TITLE.format(code=shown)]
+        names: dict[str, str] = {}
+        # Core supplies effective Movements newest first, with Manila dates and saved coordinators.
+        for movement in found["movements"][:DRIVE_MOVEMENT_LIMIT]:
+            coordinators = []
+            for person_id in movement["coordinators"]:
+                if person_id not in names:
+                    person = await _read(api, "person", PersonGetInput(person_id=person_id))
+                    names[person_id] = person["person"]["name"] if person else person_id
+                coordinators.append(names[person_id])
+            lines.append(
+                strings.PROJECT_DRIVES_LINE.format(
+                    date=movement["on"] or "—",
+                    direction=movement["direction"],
+                    label=movement["label"] or "—",
+                    role=(
+                        strings.PROJECT_DRIVES_RECIPIENT
+                        if movement["direction"] == "OUT"
+                        else strings.PROJECT_DRIVES_RECEIVER
+                    ),
+                    person=movement["person"] or "—",
+                    coordinators=", ".join(coordinators) or "—",
+                )
+                + (strings.PROJECT_DRIVES_REVIEW if movement["to_review"] else "")
+            )
+        remaining = len(found["movements"]) - DRIVE_MOVEMENT_LIMIT
+        if remaining > 0:
+            lines.append(strings.PROJECT_DRIVES_MORE.format(count=remaining))
+        return [_plain(text) for text in split_message(lines)]
 
     async def _snooze(self, api: Any, until: str) -> list[Reply]:
         # ``crm snooze`` (t6-core #716): the API checks the date and words every refusal.

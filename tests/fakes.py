@@ -560,11 +560,11 @@ OWNER_ID = "t6n_" + "b" * 32
 
 
 class FakeProjectAPI:
-    """The t6 API reads behind ``/project <code> notes``: ``project resolve`` and
-    ``project notes-history``, answered per caller like the real API.
+    """The t6 API behind gateway-side Project subcommands, answered per caller.
 
     ``codes`` maps a typed code to the ``project resolve`` reply; ``history`` maps a T6 Project
     ID to its lines; ``allowed`` is who may read the history (``None``: anyone);
+    ``movements`` maps a T6 Project ID to its effective Drive movements, newest first;
     ``unavailable`` makes every call answer ``Unavailable``.
     """
 
@@ -587,6 +587,8 @@ class FakeProjectAPI:
             }
         }
         self.history: dict[str, list[dict]] = {PROJECT_ID: []}
+        self.movements: dict[str, list[dict]] = {PROJECT_ID: []}
+        self.movement_result = None  # override the Drive read with a refusal or outage
         self.allowed: set[int] | None = None
         self.unavailable = False
         self.calls: list[tuple[int, str, dict]] = []  # (as user, noun verb, body)
@@ -682,6 +684,9 @@ class _FakeProjectAPIAs:
     def __init__(self, api: FakeProjectAPI, telegram_user_id: int):
         self._api, self._user = api, telegram_user_id
 
+    def drive_project_movements(self, inputs):
+        return self.call("drive", "project-movements", inputs)
+
     def project_resolve(self, inputs):
         self._api.calls.append((self._user, "project resolve", inputs.model_dump()))
         if self._api.unavailable:
@@ -703,6 +708,10 @@ class _FakeProjectAPIAs:
             return Unavailable("offline")
         if noun == "concern":
             return self._api.concern_call(self._user, verb, body)
+        if (noun, verb) == ("drive", "project-movements"):
+            if self._api.movement_result is not None:
+                return self._api.movement_result
+            return Done(result={"movements": self._api.movements[body["project"]]})
         if (noun, verb) == ("project", "get"):
             return Done(result={"project": {"project_code": "ABD", "name": "Example Show"}})
         if (noun, verb) == ("person", "get"):
