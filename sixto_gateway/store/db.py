@@ -335,15 +335,13 @@ class Store:
                 r = decision.project_request
                 self._db.execute(
                     "INSERT OR IGNORE INTO project_requests (update_id, from_id, chat_id, name,"
-                    " argument, callback_id, message_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    " argument, created_at) VALUES (?,?,?,?,?,?)",
                     (
                         update.update_id,
                         r.from_id,
                         r.chat_id,
                         r.name,
                         r.argument,
-                        r.callback_id,
-                        r.message_id,
                         received_at,
                     ),
                 )
@@ -904,33 +902,6 @@ class Store:
                 )
             self._db.execute("DELETE FROM project_requests WHERE update_id = ?", (update_id,))
 
-    def save_concern_preview(
-        self, chat_id: int, message_id: int, from_id: int, concern: str, token: str, key: str
-    ) -> None:
-        """The Close preview a message waits on (the latest one for that message)."""
-        with self._transaction():
-            self._db.execute(
-                "INSERT OR REPLACE INTO concern_previews"
-                " (chat_id, message_id, from_id, concern, token, idempotency_key, created_at)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (chat_id, message_id, from_id, concern, token, key, self._clock()),
-            )
-
-    def concern_preview(self, chat_id: int, message_id: int) -> dict[str, Any] | None:
-        row = self._db.execute(
-            "SELECT * FROM concern_previews WHERE chat_id = ? AND message_id = ?",
-            (chat_id, message_id),
-        ).fetchone()
-        return None if row is None else dict(row)
-
-    def drop_concern_preview(self, chat_id: int, message_id: int, from_id: int) -> None:
-        """Forget that person's preview; another person's is left alone."""
-        with self._transaction():
-            self._db.execute(
-                "DELETE FROM concern_previews WHERE chat_id = ? AND message_id = ? AND from_id = ?",
-                (chat_id, message_id, from_id),
-            )
-
     # --- taps pushed to a module (ticket #50) --------------------------------------------------
 
     def due_pushes(self, now: float, limit: int = 50) -> list[dict[str, Any]]:
@@ -1119,10 +1090,6 @@ class Store:
                 (cutoff,),
             ).rowcount
             audit = self._db.execute("DELETE FROM audit WHERE at < ?", (audit_cutoff,)).rowcount
-            # a Close never confirmed or cancelled leaves an API token behind: keep it a day
-            self._db.execute(
-                "DELETE FROM concern_previews WHERE created_at < ?", (now - SECONDS_PER_DAY,)
-            )
         return {"updates": updates, "deliveries": deliveries, "outbound": outbound, "audit": audit}
 
     # --- health ---------------------------------------------------------------------------

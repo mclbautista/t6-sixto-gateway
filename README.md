@@ -486,7 +486,7 @@ commands:
 - Every routed (`command_routed`) and refused (`command_refused`) command is in the audit log
   (command name and sender id, never the arguments).
 - **`/project <code> notes`** is answered by the gateway itself, not by t6core, and skips the
-  allow-list: the t6 API decides who may read it (Closers and that Project's coordinators). In a
+  allow-list: the t6 API decides who may read it (`master_brief` Persons and that Project's coordinators). In a
   DM the gateway asks the API as the sender (`X-Telegram-User-Id`): `project resolve` for the
   code (an unknown or unclear code is answered "I don't know the Project code ..."), then
   `project notes-history` (t6-core #638). The reply lists the PM Notes lines newest first as
@@ -502,17 +502,8 @@ commands:
   history says so. Additional movements are counted as `N more in the Drives app` in plain
   text; no app URL is configured. Replies are requested on demand only, with no movement
   notifications. Other `/project` commands still go to their module.
-- **`/project concerns`** (DM only; in a group it answers one line pointing to the DM) lists the
-  open Concerns from `concern list --open`, one message each: `<Project> · <text>`, owner and
-  open days, with **Close**. Concerns in `pending` show "Closing after PSR (by <name>)" with
-  **Undo**. A tap (`pc:<c|y|x|u>:<Concern id>`) is saved with its update like a request and
-  answered by the same worker, as the person who tapped: Close asks `concern resolve` for a
-  preview and edits the message to **Confirm** / **Cancel**; Confirm sends the preview's token
-  (kept in `concern_previews`, with its idempotency key, until used); Undo is `concern reopen`
-  (preview and confirm in one tap). The API decides who may close; its refusal (`closer`,
-  `rule_made`, `state`, `permission`) is shown as a popup as is. No Concern text is stored.
 - **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
-  by the gateway like `/project concerns`, in a DM only (in a group: one line pointing to the DM),
+  by the gateway like `/project <code> notes`, in a DM only (in a group: one line pointing to the DM),
   asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the
   typed text as `until` (empty if none); `crm snooze` and `crm unsnooze` show the API's `message`,
   and a refusal (no date, over 30 days) is shown as is. `/leads` calls `lead list` and shows each
