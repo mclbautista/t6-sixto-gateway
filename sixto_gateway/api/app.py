@@ -67,6 +67,7 @@ class NotifyBody(BaseModel):
     format: Literal["html", "plain"] = "html"
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
     buttons: Buttons | None = None
+    photo: str | None = None  # base64 bytes; text is the photo's caption
 
     @model_validator(mode="after")
     def to_or_contact_with_fallback(self) -> Self:
@@ -244,7 +245,8 @@ def create_app(
             "message",
             str(chat),
             {"chat": chat, "topic": topic, "text": text, "format": body.format}
-            | ({"keyboard": keyboard} if keyboard is not None else {}),
+            | ({"keyboard": keyboard} if keyboard is not None else {})
+            | ({"photo": body.photo} if body.photo is not None else {}),
             body.idempotency_key,
         )
         queue_wake.notify()

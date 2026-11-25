@@ -56,6 +56,17 @@ class TelegramClient(Protocol):
         """Forward an existing message and return its new Telegram message id."""
         ...
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+        *,
+        photo: bytes,
+    ) -> int: ...
+
     async def edit_message(
         self,
         chat_id: int,
@@ -73,6 +84,15 @@ class TelegramClient(Protocol):
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         """Delete a bot reply. Failures raise ``SendError`` subclasses."""
         ...
+
+    async def edit_caption(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+    ) -> None: ...
 
     async def answer_callback_query(
         self, callback_id: str, text: str | None = None, alert: bool = False
@@ -196,6 +216,29 @@ class AiogramTelegramClient:
             )
         return int(message.message_id)
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+        *,
+        photo: bytes,
+    ) -> int:
+        from aiogram.types import BufferedInputFile
+
+        with _translated_errors():
+            message = await self._bot.send_photo(
+                chat_id=chat_id,
+                message_thread_id=None if topic_id == 1 else topic_id,
+                photo=BufferedInputFile(photo, filename="photo.jpg"),
+                caption=text,
+                parse_mode=parse_mode,
+                reply_markup=_keyboard_markup(keyboard),
+            )
+        return int(message.message_id)
+
     async def forward_message(
         self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
     ) -> int:
@@ -225,6 +268,23 @@ class AiogramTelegramClient:
                 text=text,
                 parse_mode=parse_mode,
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
+                reply_markup=_keyboard_markup(keyboard),
+            )
+
+    async def edit_caption(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: Keyboard | None = None,
+    ) -> None:
+        with _translated_errors():
+            await self._bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                parse_mode=parse_mode,
                 reply_markup=_keyboard_markup(keyboard),
             )
 

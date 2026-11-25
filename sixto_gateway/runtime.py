@@ -66,16 +66,19 @@ def start_workers(
             project_wake=project_wake,
         )
         tasks["poller"] = asyncio.create_task(poller.run(stop))
+        tasks["drives"] = asyncio.create_task(
+            DriveWorker(
+                store,
+                client,
+                Client(config.t6_api_url, config.secrets.t6_api_secret),
+                queue_wake,
+                clock,
+                as_user=lambda user: Client(
+                    config.t6_api_url, config.secrets.t6_api_secret, telegram_user_id=user
+                ),
+            ).run(stop)
+        )
         if config.recording_channel.chat_id is not None:
-            tasks["drives"] = asyncio.create_task(
-                DriveWorker(
-                    store,
-                    client,
-                    Client(config.t6_api_url, config.secrets.t6_api_secret),
-                    queue_wake,
-                    clock,
-                ).run(stop)
-            )
             if config.recording_channel.debug_chat_id is not None:
                 tasks["drive_drops"] = asyncio.create_task(
                     DropReporter(store, config, queue_wake, clock).run(stop)

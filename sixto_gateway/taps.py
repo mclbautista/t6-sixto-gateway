@@ -23,7 +23,9 @@ def decide_tap(config: Config, update: IncomingUpdate) -> Decision:
     parsed = parse_module_callback(update.callback_data)
     if parsed is None:
         return decide_onboarding_tap(update)
-    module, _ = parsed
+    module, payload = parsed
+    if payload.startswith("drive:") and update.from_id not in config.groups.get("custodians", []):
+        return Decision(None, answer_tap="Only the custodian may approve drive Items.")
     if module not in config.modules:
         # Answered so the spinner stops; stored but never delivered.
         return Decision(

@@ -17,6 +17,7 @@ Retry state (``attempts``, ``next_attempt_at``) is in SQLite, so it survives a r
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from collections.abc import Callable
@@ -74,6 +75,7 @@ class Sender:
         telegram_id: int | None
         ref, module, body = row["id"], row["module"], row["body"]
         edit_target: int | None = None
+        photo_edit = False
         if row["kind"] in ("edit", "delete"):
             original = self._store.outbound_row(body["edit_of"])
             if original is None or original["state"] != "sent":  # failed, or purged
@@ -82,6 +84,7 @@ class Sender:
                 self._store.audit("send_failed", module, f"ref={ref} {error}")
                 return True
             edit_target = original["telegram_message_id"]
+            photo_edit = "photo" in original["body"]
         # stored before the request: Telegram may accept it even if this process never hears
         self._store.record_send_attempt(body["chat"], now, LONGEST_WINDOW_SECONDS)
         self._pacer.record(body["chat"], now)
@@ -100,7 +103,8 @@ class Sender:
                 telegram_id = edit_target
             elif edit_target is not None:
                 try:
-                    await self._client.edit_message(
+                    edit = self._client.edit_caption if photo_edit else self._client.edit_message
+                    await edit(
                         body["chat"],
                         edit_target,
                         body["text"],
@@ -110,6 +114,15 @@ class Sender:
                 except MessageNotModifiedError:  # it already shows exactly this: done
                     pass
                 telegram_id = edit_target
+            elif "photo" in body:
+                telegram_id = await self._client.send_photo(
+                    body["chat"],
+                    body.get("topic"),
+                    body["text"],
+                    PARSE_MODES[body["format"]],
+                    body.get("keyboard"),
+                    photo=base64.b64decode(body["photo"]),
+                )
             else:
                 reply_options = (
                     {"reply_to_message_id": body["reply_to_message_id"]}

@@ -213,4 +213,17 @@ MIGRATIONS: list[str] = [
     );
     INSERT INTO drive_drops (id, dropped, reported_at) VALUES (1, 0, NULL);
     """,
+    # 17: a Type it reply belongs to the custodian, the Item DM and its prompt.
+    """
+    CREATE TABLE drive_prompts (
+        tap_seq INTEGER PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        topic_id INTEGER,
+        from_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        prompt_ref INTEGER NOT NULL,
+        inputs TEXT NOT NULL,
+        claimed INTEGER NOT NULL DEFAULT 0
+    );
+    """,
 ]

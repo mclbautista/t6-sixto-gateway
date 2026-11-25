@@ -36,6 +36,7 @@ class FakeDriveAPI:
     def __init__(self):
         self.calls = []
         self.reads = []
+        self.approvals = []
         self.outcome = {
             "capture": "cap-example",
             "state": "pending",
@@ -60,6 +61,17 @@ class FakeDriveAPI:
         self.reads.append(inputs)
         return Done(result=self.outcome)
 
+    def as_user(self, user):
+        from types import SimpleNamespace
+
+        from t6.verbs import Done
+
+        def approve(inputs):
+            self.approvals.append((user, inputs.model_dump()))
+            return Done(result={"state": "approved"})
+
+        return SimpleNamespace(drive_approve=approve)
+
 
 class Rig:
     def __init__(self, tmp_path):
@@ -83,7 +95,9 @@ class Rig:
         self.telegram = FakeTelegram([], self.clock)
         self.api = FakeDriveAPI()
         self.poller = Poller(self.store, self.telegram, self.config, Notifier(), self.clock)
-        self.worker = DriveWorker(self.store, self.telegram, self.api, Notifier(), self.clock)
+        self.worker = DriveWorker(
+            self.store, self.telegram, self.api, Notifier(), self.clock, as_user=self.api.as_user
+        )
         self.sender = Sender(self.store, self.telegram, Notifier(), self.clock)
 
     async def send(self, raw):
@@ -355,10 +369,11 @@ async def test_telegram_adapter_handles_capture_feedback_and_in_memory_download(
 
 
 def reply_to(raw, message_id):
-    raw["message"]["reply_to_message"] = {
+    message = raw.get("message") or raw["edited_message"]
+    message["reply_to_message"] = {
         "message_id": message_id,
         "date": 1789700000,
-        "chat": raw["message"]["chat"],
+        "chat": message["chat"],
     }
     return raw
 
@@ -775,3 +790,366 @@ def test_migration_backfills_poster_of_in_flight_photo_requests(tmp_path):
     assert [tuple(r) for r in rows] == [(1, 7001), (2, None)]
     assert store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
     store.close()
+
+
+async def notify_item(rig, **extra):
+    import httpx
+
+    from sixto_gateway.api.app import create_app
+    from sixto_gateway.notifier import Notifier
+    from tests.test_config import SECRET
+
+    body = {
+        "to": 7003,
+        "text": 'Item: EX-01\n<a href="https://t.me/c/900001/10">Post</a>',
+        "photo": "aXRlbSBwaG90bw==",
+        "idempotency_key": "drive-item:capture_" + "a" * 32 + ":0",
+        "buttons": [
+            [{"text": label, "payload": "drive:" + "a" * 32 + ":0:" + choice}]
+            for label, choice in [
+                ("EX-01 — Example Project", "g1"),
+                ("EX-02 — Example Project", "g2"),
+                ("EX-03 — Example Project", "g3"),
+                ("New drive", "new"),
+                ("Not a drive", "skip"),
+                ("Type it", "type"),
+                ("None", "none"),
+            ]
+        ],
+        **extra,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(rig.config, rig.store, Notifier())),
+        base_url="http://gateway",
+    ) as client:
+        response = await client.post(
+            "/notify", json=body, headers={"Authorization": f"Bearer {SECRET}"}
+        )
+    assert response.status_code == 202, response.text
+    return response.json()["message_ref"]
+
+
+async def test_item_dm_sends_photo_caption_post_link_and_all_buttons_once(rig):
+    ref = await notify_item(rig)
+    assert await notify_item(rig) == ref
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    sent = rig.telegram.sent[0]
+    assert sent["kind"] == "photo"
+    assert sent["photo"] == b"item photo"
+    assert sent["chat_id"] == 7003 and sent["topic_id"] is None
+    assert sent["text"] == 'Item: EX-01\n<a href="https://t.me/c/900001/10">Post</a>'
+    assert sent["parse_mode"] == "HTML"
+    assert [row[0]["text"] for row in sent["keyboard"]] == [
+        "EX-01 — Example Project",
+        "EX-02 — Example Project",
+        "EX-03 — Example Project",
+        "New drive",
+        "Not a drive",
+        "Type it",
+        "None",
+    ]
+
+
+@pytest.mark.parametrize("with_photo", [True, False])
+@pytest.mark.parametrize("before_send", [True, False])
+async def test_inbox_approval_edits_item_outcome_and_removes_buttons(rig, with_photo, before_send):
+    ref = await notify_item(rig, photo="aXRlbSBwaG90bw==" if with_photo else None)
+    if not before_send:
+        await rig.resolve()
+    await edit_item(rig, ref)
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    assert rig.telegram.edits == [
+        {
+            "chat_id": 7003,
+            "message_id": rig.telegram.sent[0]["message_id"],
+            "text": "Approved: EX-02",
+            "parse_mode": "HTML",
+            "keyboard": None,
+            **({"kind": "caption"} if with_photo else {}),
+        }
+    ]
+
+
+@pytest.fixture
+async def approval_rig(rig):
+    import httpx
+
+    from sixto_gateway.notifier import Notifier
+    from sixto_gateway.push import PushWorker
+
+    rig.config.modules["watchdog"] = rig.config.modules["watchdog"].model_copy(
+        update={"delivery": "push", "push_url": "https://core.invalid/tap"}
+    )
+    rig.tap_posts = []
+
+    def endpoint(request):
+        import json
+
+        body = json.loads(request.content)
+        rig.tap_posts.append((dict(request.headers), body))
+        if body["data"].endswith(":type"):
+            return httpx.Response(
+                200,
+                json={
+                    "outcome": "needs_person",
+                    "reason": "Type a Drive label or serial",
+                    "verb": "drive approve",
+                    "inputs": {"capture": "capture_" + "a" * 32, "item": 0, "choice": "drive"},
+                },
+            )
+        return httpx.Response(200, json={"outcome": "done", "result": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(endpoint)) as client:
+        rig.pusher = PushWorker(rig.store, rig.config, Notifier(), rig.clock, client=client)
+        yield rig
+
+
+async def test_only_custodian_can_tap_item_buttons_in_practice_chat(approval_rig):
+    from tests.fakes import button_tap
+
+    rig = approval_rig
+    await notify_item(rig, to=-900009, topic=12)
+    await rig.resolve()
+    sent = rig.telegram.sent[0]
+    # Even the original poster, onboarding approver and another member cannot settle Items.
+    for update_id, user in [(100, 7001), (101, 100000001), (102, 7002)]:
+        await rig.send(
+            button_tap(
+                update_id,
+                user,
+                sent["keyboard"][0][0]["callback_data"],
+                -900009,
+                sent["message_id"],
+                "supergroup",
+            )
+        )
+        await rig.pusher.push_due()
+    assert rig.tap_posts == []
+    assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
+    assert len(rig.telegram.answers) == 3
+    assert all(a["text"] and a["alert"] for a in rig.telegram.answers)
+
+
+@pytest.mark.parametrize(
+    ("row", "choice"),
+    [
+        (0, "g1"),
+        (1, "g2"),
+        (2, "g3"),
+        (3, "new"),
+        (4, "skip"),
+        (5, "type"),
+        (6, "none"),
+    ],
+)
+async def test_item_button_choices_reach_core_tap_once_as_custodian(approval_rig, row, choice):
+    from tests.fakes import button_tap
+
+    rig = approval_rig
+    await notify_item(rig)
+    await rig.resolve()
+    sent = rig.telegram.sent[0]
+    tap = button_tap(100, 7003, sent["keyboard"][row][0]["callback_data"], 7003, sent["message_id"])
+    await rig.send(tap)
+    await rig.pusher.push_due()
+    rig.store.set_offset(0)
+    await rig.send(tap)
+    await rig.pusher.push_due()
+    assert len(rig.tap_posts) == 1
+    headers, body = rig.tap_posts[0]
+    assert headers["x-telegram-user-id"] == "7003"
+    assert headers["idempotency-key"] == "tap-100"
+    assert (body["data"], body["chat"], body["message_id"], body["from"]["id"]) == (
+        "drive:" + "a" * 32 + ":0:" + choice,
+        7003,
+        sent["message_id"],
+        7003,
+    )
+    if choice == "type":
+        await rig.resolve()
+        assert len(rig.telegram.sent) == 2
+        prompt = rig.telegram.sent[-1]
+        assert "label or serial" in prompt["text"]
+        assert prompt["chat_id"] == 7003
+        assert prompt["reply_to_message_id"] == sent["message_id"]
+
+
+async def ask_to_type(rig, *, chat=7003, topic=None):
+    from tests.fakes import button_tap
+
+    await notify_item(rig, to=chat, topic=topic)
+    await rig.resolve()
+    item = rig.telegram.sent[0]
+    tap = button_tap(
+        100,
+        7003,
+        item["keyboard"][5][0]["callback_data"],
+        chat,
+        item["message_id"],
+        "private" if chat > 0 else "supergroup",
+    )
+    if topic is not None:
+        tap["callback_query"]["message"]["message_thread_id"] = topic
+    await rig.send(tap)
+    await rig.pusher.push_due()
+    await rig.resolve()
+    return item, rig.telegram.sent[-1]
+
+
+@pytest.mark.parametrize("reply_target", ["item", "prompt"])
+@pytest.mark.parametrize(("chat", "topic"), [(7003, None), (-900009, 12)])
+async def test_type_it_approves_only_first_text_reply_as_custodian(
+    approval_rig,
+    reply_target,
+    chat,
+    topic,
+):
+    from tests.fakes import dm_message, group_command
+
+    rig = approval_rig
+    item, prompt = await ask_to_type(rig, chat=chat, topic=topic)
+    target = item if reply_target == "item" else prompt
+    for update_id, label in [(101, "  EX-02  "), (102, "EX-03")]:
+        raw = (
+            dm_message(update_id, 7003, label)
+            if chat > 0
+            else group_command(update_id, 7003, label, chat, topic)
+        )
+        rig.telegram.push(reply_to(raw, target["message_id"]))
+    # Both replies arrive before the worker runs: claiming the first must be atomic.
+    await rig.poller.poll_once()
+    await rig.worker.process_next()
+    rig.clock.advance(5)
+    await rig.worker.process_next()
+    await rig.resolve()
+    assert rig.api.approvals == [
+        (
+            7003,
+            {
+                "capture": "capture_" + "a" * 32,
+                "item": 0,
+                "choice": "drive",
+                "typed": "EX-02",
+                "drive": None,
+                "label": None,
+                "serial": None,
+            },
+        )
+    ]
+    # The gateway leaves the outcome edit to core, which also handles Inbox approvals.
+    assert rig.telegram.edits == []
+
+
+async def edit_item(rig, ref, text="Approved: EX-02"):
+    import httpx
+
+    from sixto_gateway.api.app import create_app
+    from sixto_gateway.notifier import Notifier
+    from tests.test_config import SECRET
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(rig.config, rig.store, Notifier())),
+        base_url="http://gateway",
+    ) as client:
+        response = await client.post(
+            "/edit",
+            json={"message_ref": ref, "text": text, "buttons": []},
+            headers={"Authorization": f"Bearer {SECRET}"},
+        )
+    assert response.status_code == 202
+
+
+async def test_inbox_approval_cancels_pending_type_it_reply(approval_rig):
+    from tests.fakes import dm_message
+
+    rig = approval_rig
+    item, prompt = await ask_to_type(rig)
+    ref = await notify_item(rig)  # same idempotency key: core's original message_ref
+    await edit_item(rig, ref)
+    await rig.resolve()
+    await rig.send(reply_to(dm_message(101, 7003, "EX-03"), prompt["message_id"]))
+    await rig.send(reply_to(dm_message(102, 7003, "EX-03"), item["message_id"]))
+    assert rig.api.approvals == []
+    assert rig.telegram.edits[-1]["text"] == "Approved: EX-02"
+    assert rig.telegram.edits[-1]["keyboard"] is None
+
+
+async def test_repeated_type_it_taps_still_accept_only_one_reply_to_item(approval_rig):
+    from tests.fakes import button_tap, dm_message
+
+    rig = approval_rig
+    item, _ = await ask_to_type(rig)
+    await rig.send(
+        button_tap(
+            101,
+            7003,
+            item["keyboard"][5][0]["callback_data"],
+            7003,
+            item["message_id"],
+        )
+    )
+    await rig.pusher.push_due()
+    await rig.resolve()
+    await rig.send(reply_to(dm_message(102, 7003, "EX-02"), item["message_id"]))
+    await rig.send(reply_to(dm_message(103, 7003, "EX-03"), item["message_id"]))
+    assert len(rig.api.approvals) == 1
+    assert rig.api.approvals[0][1]["typed"] == "EX-02"
+
+
+async def test_type_it_ignores_other_people_chats_topics_and_non_text_replies(approval_rig):
+    from tests.fakes import group_command
+
+    rig = approval_rig
+    item, _ = await ask_to_type(rig, chat=-900009, topic=12)
+    ignored = [
+        group_command(101, 7002, "EX-03", -900009, 12),
+        group_command(102, 7003, "EX-03", -900008, 12),
+        group_command(103, 7003, "EX-03", -900009, 13),
+        photo(104, chat=-900009, topic=12),  # a caption is not a typed answer
+        edited(group_command(105, 7003, "EX-03", -900009, 12), "EX-02"),
+        group_command(106, 7003, "   ", -900009, 12),
+        group_command(107, 7003, "/project", -900009, 12),
+    ]
+    for raw in ignored:
+        if "edited_message" in raw:
+            raw["update_id"] = 105
+        await rig.send(reply_to(raw, item["message_id"]))
+    await rig.send(group_command(200, 7003, "EX-03", -900009, 12))  # not a reply
+    assert rig.api.approvals == []
+    await rig.send(reply_to(group_command(201, 7003, "EX-02", -900009, 12), item["message_id"]))
+    assert len(rig.api.approvals) == 1
+    assert rig.api.approvals[0][1]["typed"] == "EX-02"
+
+
+async def test_type_it_prompt_and_claimed_reply_survive_gateway_restarts(approval_rig):
+    from sixto_gateway.drives import DriveWorker
+    from sixto_gateway.notifier import Notifier
+    from sixto_gateway.poller import Poller
+    from sixto_gateway.store import Store
+    from tests.fakes import dm_message
+
+    rig = approval_rig
+    item, prompt = await ask_to_type(rig)
+
+    def restart():
+        rig.store.close()
+        rig.store = Store(rig.database, rig.clock)
+        rig.poller = Poller(rig.store, rig.telegram, rig.config, Notifier(), rig.clock)
+        rig.worker = DriveWorker(
+            rig.store, rig.telegram, rig.api, Notifier(), rig.clock, as_user=rig.api.as_user
+        )
+
+    restart()
+    reply = reply_to(dm_message(101, 7003, "EX-02"), prompt["message_id"])
+    rig.telegram.push(reply)
+    await rig.poller.poll_once()  # reply persisted, API not called yet
+    restart()
+    await rig.worker.process_next()
+    restart()
+    rig.store.set_offset(101)  # replay the claimed reply after another restart
+    await rig.poller.poll_once()
+    await rig.send(reply_to(dm_message(102, 7003, "EX-03"), item["message_id"]))
+    assert len(rig.api.approvals) == 1
+    assert rig.api.approvals[0][1]["typed"] == "EX-02"

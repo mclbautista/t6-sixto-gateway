@@ -373,6 +373,7 @@ async def test_with_polling_on_all_workers_start(tmp_path, clock):
     assert set(tasks) == {
         "retention",
         "poller",
+        "drives",
         "sender",
         "deadman",
         "onboarding",

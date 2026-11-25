@@ -350,6 +350,13 @@ class Store:
             if inserted and decision.drive_dropped:
                 self._db.execute("UPDATE drive_drops SET dropped = dropped + 1")
             if inserted and decision.drive_request is not None:
+                if "prompt_seq" in decision.drive_request:
+                    self._db.execute(
+                        "UPDATE drive_prompts SET claimed = 1 WHERE (chat_id, message_id, from_id)"
+                        " = (SELECT chat_id, message_id, from_id FROM drive_prompts"
+                        " WHERE tap_seq = ?)",
+                        (decision.drive_request["prompt_seq"],),
+                    )
                 self._db.execute(
                     "INSERT OR IGNORE INTO drive_requests"
                     " (update_id, chat_id, topic_id, message_id, kind, body, next_attempt_at,"
@@ -358,7 +365,7 @@ class Store:
                     (
                         update.update_id,
                         update.chat_id,
-                        update.topic_id,
+                        update.topic_id if update.topic_id is not None else 0,
                         update.message_id,
                         decision.drive_request.get("kind", "photo"),
                         json.dumps(decision.drive_request),
@@ -501,6 +508,12 @@ class Store:
             ).fetchone()
             if row:
                 return int(row[0])
+        if kind == "edit" and not body.get("keyboard"):
+            self._db.execute(
+                "UPDATE drive_prompts SET claimed = 1 WHERE chat_id = ?"
+                " AND message_id = (SELECT telegram_message_id FROM outbound WHERE id = ?)",
+                (body["chat"], body["edit_of"]),
+            )
         cursor = self._db.execute(
             "INSERT INTO outbound (module, kind, target, body, idempotency_key,"
             " next_attempt_at, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -950,6 +963,53 @@ class Store:
                 "UPDATE tap_pushes SET state = 'done', attempts = attempts + 1, last_error = NULL"
                 " WHERE seq = ?",
                 (seq,),
+            )
+
+    def drive_prompt(self, update: IncomingUpdate) -> dict[str, Any] | None:
+        row = self._db.execute(
+            "SELECT p.* FROM drive_prompts p JOIN outbound o ON o.id = p.prompt_ref"
+            " WHERE p.chat_id = ? AND p.topic_id IS ? AND p.from_id = ? AND p.claimed = 0"
+            " AND (p.message_id = ? OR (o.state = 'sent' AND o.telegram_message_id = ?))"
+            " ORDER BY p.tap_seq DESC LIMIT 1",
+            (
+                update.chat_id,
+                update.topic_id,
+                update.from_id,
+                update.reply_to_message_id,
+                update.reply_to_message_id,
+            ),
+        ).fetchone()
+        return {**dict(row), "inputs": json.loads(row["inputs"])} if row else None
+
+    def prompt_drive_label(self, seq: int, item: dict[str, Any], inputs: dict[str, Any]) -> None:
+        """Queue one reply prompt per accepted Type it tap, including across push retries."""
+        with self._transaction():
+            ref = self._insert_outbound(
+                GATEWAY_MODULE,
+                "message",
+                str(item["chat"]),
+                {
+                    "chat": item["chat"],
+                    "topic": item.get("topic"),
+                    "text": "Reply to this message or the Item with the Drive label or serial.",
+                    "format": "plain",
+                    "reply_to_message_id": item["message_id"],
+                },
+                f"drive-type:{seq}",
+            )
+            self._db.execute(
+                "INSERT OR IGNORE INTO drive_prompts"
+                " (tap_seq, chat_id, topic_id, from_id, message_id, prompt_ref, inputs)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    seq,
+                    item["chat"],
+                    item.get("topic"),
+                    item["from"]["id"],
+                    item["message_id"],
+                    ref,
+                    json.dumps(inputs),
+                ),
             )
 
     def schedule_push_retry(self, seq: int, next_attempt_at: float, error: str) -> None:

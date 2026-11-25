@@ -77,6 +77,10 @@ class PushWorker:
             )
             if not response.is_success:
                 raise PushRejected(f"{module} answered {response.status_code}")
+            if item.get("data", "").startswith("drive:") and item["data"].endswith(":type"):
+                outcome = response.json()
+                if outcome.get("outcome") == "needs_person":
+                    self._store.prompt_drive_label(seq, item, outcome["inputs"])
         except Exception as exc:  # noqa: BLE001 - every failure is retried, never raised
             error = self._scrub(f"{type(exc).__name__}: {exc}")[:300]
             step = min(row["attempts"], len(RETRY_SCHEDULE_SECONDS) - 1)
