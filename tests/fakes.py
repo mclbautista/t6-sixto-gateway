@@ -176,6 +176,20 @@ class FakeTelegram:
         )
         return self._next_message_id
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        topic_id: int | None,
+        text: str,
+        parse_mode: str | None,
+        keyboard: list[list[dict[str, str]]] | None = None,
+        *,
+        photo: bytes,
+    ) -> int:
+        message_id = await self.send_message(chat_id, topic_id, text, parse_mode, keyboard)
+        self.sent[-1].update(kind="photo", photo=photo)
+        return message_id
+
     async def forward_message(
         self, chat_id: int, topic_id: int | None, from_chat: int, message_id: int
     ) -> int:
@@ -214,6 +228,17 @@ class FakeTelegram:
                 "keyboard": keyboard,
             }
         )
+
+    async def edit_caption(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        parse_mode: str | None,
+        keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> None:
+        await self.edit_message(chat_id, message_id, text, parse_mode, keyboard)
+        self.edits[-1]["kind"] = "caption"
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         self._maybe_fail()

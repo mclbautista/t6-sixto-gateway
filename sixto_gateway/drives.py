@@ -12,7 +12,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from t6.client import APIError
-from t6.verbs import Done, DriveCaptureInput, DriveCaptureOutput, DriveCaptureReadInput, Refused
+from t6.verbs import (
+    Done,
+    DriveApproveInput,
+    DriveCaptureInput,
+    DriveCaptureOutput,
+    DriveCaptureReadInput,
+    Refused,
+)
 
 from sixto_gateway import strings
 from sixto_gateway.config import Config
@@ -56,6 +63,24 @@ def _window_ended(store: Store, original: dict[str, Any]) -> bool:
 
 
 def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decision | None:
+    if (
+        not update.edited
+        and update.from_id in config.groups.get("custodians", [])
+        and update.command is None
+        and update.raw.get("message", {}).get("text", "").strip()
+        and update.reply_to_message_id is not None
+    ):
+        prompt = store.drive_prompt(update)
+        if prompt is not None:
+            return Decision(
+                None,
+                drive_request={
+                    "kind": "approve",
+                    "prompt_seq": prompt["tap_seq"],
+                    "sender_telegram_id": update.from_id,
+                    "inputs": {**prompt["inputs"], "typed": update.text.strip()},
+                },
+            )
     channel = config.recording_channel
     if channel.chat_id is None or (update.chat_id, update.topic_id) != (
         channel.chat_id,
@@ -133,9 +158,12 @@ class DriveWorker:
         api: Any,
         queue_wake: Notifier,
         clock: Callable[[], float] = time.time,
+        *,
+        as_user: Callable[[int], Any] | None = None,
     ):
         self._store, self._client, self._api = store, client, api
         self._queue_wake, self._clock = queue_wake, clock
+        self._as_user = as_user
 
     async def process_next(self) -> bool:
         request = self._store.next_drive_request(self._clock())
@@ -151,6 +179,16 @@ class DriveWorker:
     async def _process(self, request: dict[str, Any]) -> None:
         if request["state"] == "new":
             body = request["body"]
+            if request["kind"] == "approve":
+                assert self._as_user is not None
+                result = await self._call(
+                    request,
+                    self._as_user(body["sender_telegram_id"]).drive_approve,
+                    DriveApproveInput.model_validate(body["inputs"]),
+                )
+                if isinstance(result, Done):
+                    self._store.finish_drive_request(request, "approved", None)
+                return
             if request["kind"] == "undo":
                 result = await self._call(
                     request,
