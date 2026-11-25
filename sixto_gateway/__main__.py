@@ -70,7 +70,7 @@ async def serve(
             Client(url, secret),
             lambda operator: Client(url, secret, telegram_user_id=operator),
         )
-    projects = ProjectCommands(lambda user: Client(url, secret, telegram_user_id=user), store)
+    projects = ProjectCommands(lambda user: Client(url, secret, telegram_user_id=user))
     if config.telegram.polling:
         await _register_menus_bounded(store, client, config)
     workers = start_workers(

@@ -65,25 +65,6 @@ LEAD_LINE = "Line Producer"
 LEAD_COOR = "Prod Coor/Supe"
 LEAD_STUDIO = "Studio"
 
-# --- for /project concerns (plain text) -----------------------------------------------------------
-
-CONCERNS_DM_ONLY = "/project concerns works in a direct message with me. Please message me there."
-CONCERNS_TITLE = "Open Concerns: {count}"
-CONCERNS_NONE = "No open Concerns."
-CONCERN_LINE = "{project} · {text}"
-CONCERN_DETAIL = "{owner}open {days} days"
-CONCERN_OWNER = "Owner {name} · "
-CONCERN_CLOSING = "Closing after PSR (by {name})"
-CONCERN_CLOSING_UNNAMED = "Closing after PSR"
-CONCERN_CONFIRM_QUESTION = "Close this Concern after the next PSR?"
-CONCERN_CLOSE_APPLIED = "That close was already applied, so it can no longer be undone."
-CONCERN_GONE = "That Concern is not open any more."
-TAP_EXPIRED = "That button has expired. Send /project concerns again."
-BUTTON_CLOSE = "Close"
-BUTTON_CONFIRM = "Confirm"
-BUTTON_CANCEL = "Cancel"
-BUTTON_UNDO = "Undo"
-
 # --- for the approver's card ----------------------------------------------------------------
 
 CARD_TITLE = "New /start"

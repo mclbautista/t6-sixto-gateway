@@ -50,14 +50,12 @@ class NewTap:
 
 @dataclass(frozen=True)
 class ProjectRequest:
-    """A ``/project`` subcommand the gateway answers: saved for the project worker."""
+    """A ``/project``, ``/crm`` or ``/leads`` command answered by the project worker."""
 
     from_id: int
     chat_id: int
     name: str  # the subcommand, for example "notes"
-    argument: str  # its input, for example the Project code (for a tap: its callback payload)
-    callback_id: str | None = None  # a button tap: the callback to answer
-    message_id: int | None = None  # a button tap: the message to edit
+    argument: str  # its input, for example the Project code
 
 
 @dataclass(frozen=True)

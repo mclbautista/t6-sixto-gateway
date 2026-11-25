@@ -75,10 +75,9 @@ class Rig:
         )
         self.worker = ProjectWorker(
             self.store,
-            ProjectCommands(self.api.as_user, self.store),
+            ProjectCommands(self.api.as_user),
             self.project_wake,
             Notifier(),
-            self.telegram,
         )
 
     async def send(self, raw):
@@ -206,3 +205,32 @@ def test_split_counts_telegram_units_and_cuts_only_a_line_too_long_to_send():
     assert split_message(["ab", "cd"], limit=4) == ["ab", "cd"]
     assert split_message(["😀😀", "x"], limit=5) == ["😀😀", "x"]  # an emoji is 2 units
     assert split_message(["x", "abcdefg", "y"], limit=4) == ["x", "ab", "cd", "ef", "g\ny"]
+
+
+async def test_a_malformed_api_reply_is_answered_once_and_does_not_block_the_queue(rig):
+    rig.api.history[PROJECT_ID] = [{"as_of": "2026-11-23", "text": "no removed key"}]
+    await rig.send(dm_message(1, COORDINATOR, "/project ABD notes"))
+    assert rig.replies(COORDINATOR) == [strings.T6_NOT_ANSWERING]
+    assert rig.store.next_project_request() is None
+    rig.api.history[PROJECT_ID] = LINES
+    await rig.send(dm_message(2, COORDINATOR, "/project ABD notes"))  # a later one is answered
+    assert rig.replies(COORDINATOR)[-1].startswith("PM Notes history for ABD\n")
+
+
+async def test_project_concerns_is_retired_and_pc_taps_do_not_answer(rig):
+    from tests.fakes import button_tap
+
+    await rig.send(dm_message(1, COORDINATOR, "/project concerns"))
+    assert rig.replies(COORDINATOR) == ["That command isn't available to you."]
+    assert rig.api.calls == [] and rig.pushes() == []
+
+    await rig.send(dm_message(2, OPERATOR, "/project concerns"))
+    assert len(rig.pushes()) == 1
+    assert rig.api.calls == []
+
+    await rig.send(group_command(3, COORDINATOR, "/project concerns", -1001234567890, 77))
+    assert rig.store.due_outbound(rig.clock() + 1)[-1]["body"]["chat"] != -1001234567890
+
+    await rig.send(button_tap(4, COORDINATOR, "pc:c:t6c_" + "0" * 32, COORDINATOR, 100))
+    assert rig.telegram.answers == []
+    assert rig.api.calls == []
