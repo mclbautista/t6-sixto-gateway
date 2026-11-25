@@ -135,6 +135,7 @@ class FakeTelegram:
         self.attempts: list[float] = []  # clock reading of every send/react call, failed or not
         self.fail_always: Exception | None = None  # raised by every send/react until cleared
         self.calls: list[dict] = []
+        self.deleted: list[dict] = []
         self.edits: list[dict] = []  # edit_message calls that Telegram accepted
         self.edit_fail_with: Exception | None = None  # raised by the next edit, then cleared
         self.answers: list[dict] = []  # answer_callback_query calls
@@ -213,6 +214,10 @@ class FakeTelegram:
                 "keyboard": keyboard,
             }
         )
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self._maybe_fail()
+        self.deleted.append({"chat_id": chat_id, "message_id": message_id})
 
     async def answer_callback_query(
         self, callback_id: str, text: str | None = None, alert: bool = False

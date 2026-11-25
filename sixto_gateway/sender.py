@@ -74,7 +74,7 @@ class Sender:
         telegram_id: int | None
         ref, module, body = row["id"], row["module"], row["body"]
         edit_target: int | None = None
-        if row["kind"] == "edit":
+        if row["kind"] in ("edit", "delete"):
             original = self._store.outbound_row(body["edit_of"])
             if original is None or original["state"] != "sent":  # failed, or purged
                 error = f"message_ref {body['edit_of']} was not sent, so it cannot be edited"
@@ -94,6 +94,10 @@ class Sender:
                 telegram_id = await self._client.forward_message(
                     body["chat"], body.get("topic"), body["from_chat"], body["message_id"]
                 )
+            elif row["kind"] == "delete":
+                assert edit_target is not None
+                await self._client.delete_message(body["chat"], edit_target)
+                telegram_id = edit_target
             elif edit_target is not None:
                 try:
                     await self._client.edit_message(
@@ -134,7 +138,7 @@ class Sender:
             waits.append(self._paused_until - now)
         else:
             for row in self._store.due_outbound(now):
-                if row["kind"] == "edit" and self._waits_for_original(row):
+                if row["kind"] in ("edit", "delete") and self._waits_for_original(row):
                     continue  # the original's own row decides when the queue looks again
                 wait = self._pacer.wait(row["body"]["chat"], now)
                 if wait <= 0:

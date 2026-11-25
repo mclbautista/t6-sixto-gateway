@@ -26,8 +26,7 @@ log = logging.getLogger(__name__)
 RETRY_SECONDS = 5.0
 QUESTIONS = {
     "missing_direction": strings.DRIVE_ASK_DIRECTION,
-    "unreadable_label": strings.DRIVE_ASK_LABEL,
-    "no_drive_match": strings.DRIVE_ASK_NO_MATCH,
+    "missing_recipient": strings.DRIVE_ASK_RECIPIENT,
 }
 # The same first-word rule as t6: IN or OUT in any case, then space, colon, dash or the end.
 _DIRECTION = re.compile(r"(in|out)(?=[\s:\-]|$)", re.IGNORECASE)
@@ -45,7 +44,11 @@ def message_has_photo(update: IncomingUpdate) -> bool:
 
 
 def _undo_request(original: dict[str, Any]) -> dict[str, Any]:
-    return {"kind": "undo", "capture": original["capture_id"], "edit_of": original["reply_ref"]}
+    return {
+        "kind": "undo",
+        "capture": original["capture_id"],
+        "post_message_id": original["message_id"],
+    }
 
 
 def _window_ended(store: Store, original: dict[str, Any]) -> bool:
@@ -61,13 +64,10 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
         return None
     if update.edited:
         return _decide_edit(update, store)
-    replied_by_member = False
     if update.from_id is not None and update.reply_to_message_id:
         original = store.drive_reply(update.chat_id, update.topic_id, update.reply_to_message_id)
         if original is None:
-            original = store.drive_reply_to_photo(
-                update.chat_id, update.topic_id, update.reply_to_message_id
-            )
+            original = store.drive_post(update.chat_id, update.topic_id, update.reply_to_message_id)
         if (
             original is not None
             and update.text.strip().lower() == "undo"
@@ -75,33 +75,10 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
         ):
             if _may_act(config, original, update.from_id) and not _window_ended(store, original):
                 return Decision(None, drive_request=_undo_request(original))
-            return None
-        asked = (
-            original is not None
-            and original["kind"] != "text"  # a text-only post's note is not a question
-            and original["outcome"] in ("exception", "answered")
-        )
-        if (
-            original is not None
-            and asked
-            and original["outcome"] == "exception"
-            and update.text
-            and _may_act(config, original, update.from_id)
-            and not store.drive_answer_taken(original["capture_id"])
-        ):
-            return Decision(
-                None,
-                drive_request={
-                    "kind": "label",
-                    "capture": original["capture_id"],
-                    "text": update.text,
-                    "poster_id": original["poster_id"],
-                },
-            )
-        replied_by_member = original is not None and _may_act(config, original, update.from_id)
-        if asked and not replied_by_member and not message_has_photo(update):
-            return Decision(None)  # banter under the question: ignored, not even a new post
-    if replied_by_member or update.command is not None or update.from_id is None:
+            return Decision(None)
+        if original is not None and not message_has_photo(update):
+            return Decision(None)  # replies are banter; corrections come from caption edits
+    if update.command is not None or update.from_id is None:
         return None  # not subject to the local check
     message = update.raw.get("message", {})
     photos = message.get("photo", [])
@@ -132,7 +109,7 @@ def decide_drive(config: Config, update: IncomingUpdate, store: Store) -> Decisi
 
 
 def _decide_edit(update: IncomingUpdate, store: Store) -> Decision | None:
-    """A caption edit of a post whose capture is pending or in exception goes to t6."""
+    """A caption edit of a pending capture or a caption problem goes to t6."""
     post = store.drive_post(update.chat_id, update.topic_id, update.message_id)
     if post is None:
         return Decision(None)  # an edit of chatter never reaches a module either
@@ -148,26 +125,6 @@ def _decide_edit(update: IncomingUpdate, store: Store) -> Decision | None:
     )
 
 
-def decide_drive_tap(config: Config, update: IncomingUpdate, store: Store) -> Decision | None:
-    if not update.callback_data.startswith("dc:"):
-        return None
-    channel = config.recording_channel
-    original = store.drive_reply(update.chat_id, update.topic_id, update.message_id)
-    if (
-        channel.chat_id is None
-        or (update.chat_id, update.topic_id) != (channel.chat_id, channel.topic_id)
-        or original is None
-        or original["outcome"] != "resolved"
-        or update.callback_data != f"dc:u:{original['update_id']}"
-    ):
-        return Decision(None, answer_tap=strings.TAP_UNKNOWN_MODULE)
-    if not _may_act(config, original, update.from_id):
-        return Decision(None, answer_tap=strings.TAP_UNDO_NOT_ALLOWED)
-    if _window_ended(store, original):
-        return Decision(None, answer_tap=strings.TAP_UNDO_ENDED)
-    return Decision(None, answer_tap="", drive_request=_undo_request(original))
-
-
 class DriveWorker:
     def __init__(
         self,
@@ -176,14 +133,11 @@ class DriveWorker:
         api: Any,
         queue_wake: Notifier,
         clock: Callable[[], float] = time.time,
-        custodian_id: int | None = None,
     ):
         self._store, self._client, self._api = store, client, api
         self._queue_wake, self._clock = queue_wake, clock
-        self._custodian_id = custodian_id  # mentioned when a text-only post is left for review
 
     async def process_next(self) -> bool:
-        self._store.remove_expired_undo_buttons(self._clock())
         request = self._store.next_drive_request(self._clock())
         if request is None:
             return False
@@ -204,11 +158,7 @@ class DriveWorker:
                     DriveCaptureReadInput(capture=body["capture"]),
                 )
                 if isinstance(result, Done):
-                    outcome = DriveCaptureOutput.model_validate(result.result)
-                    text = (
-                        strings.DRIVE_PRACTICE + "\n" if outcome.practice else ""
-                    ) + strings.DRIVE_UNDONE
-                    self._store.finish_drive_request(request, "undone", {"text": text})
+                    self._store.finish_drive_request(request, "undone", {"emoji": "🙈"})
                     self._queue_wake.notify()
                 return
             if request["kind"].startswith("edit"):
@@ -218,8 +168,6 @@ class DriveWorker:
                     if post is not None and post["state"] == "done":
                         self._store.finish_drive_request(request, "ignored", None)
                     return  # else the post is not at t6 yet: try again
-            elif request["kind"] == "label":
-                inputs = DriveCaptureInput(capture=body["capture"], text=body["text"])
             elif request["kind"] == "text":
                 inputs = self._text_input(request)
             else:
@@ -248,64 +196,36 @@ class DriveWorker:
             )
             if isinstance(result, Done):
                 outcome = DriveCaptureOutput.model_validate(result.result)
-                if outcome.state == "resolved":
-                    lines = [
-                        strings.DRIVE_RECORDED.format(
-                            label=line.label or "",
-                            direction=line.direction,
-                            person=line.person or "",
-                        )
-                        for line in outcome.lines
-                    ]
+                post = self._post(request) if request["kind"].startswith("edit") else None
+                reply_ref = post["reply_ref"] if post is not None else None
+                if outcome.state == "resolved" and outcome.grade == "problem":
+                    assert outcome.problem is not None
+                    text = QUESTIONS[outcome.problem]
                     if outcome.practice:
-                        lines.insert(0, strings.DRIVE_PRACTICE)
+                        text = strings.DRIVE_PRACTICE + "\n" + text
+                    self._store.finish_drive_request(
+                        request,
+                        "problem",
+                        {"text": text, **({"edit_of": reply_ref} if reply_ref else {})},
+                    )
+                    self._queue_wake.notify()
+                elif outcome.state == "resolved":
                     undo_until = (
                         datetime.fromisoformat(outcome.undo_until).timestamp()
                         if outcome.undo_until
                         else None
                     )
-                    post = self._post(request) if request["kind"].startswith("edit") else None
-                    edit_of = post["reply_ref"] if post is not None else None
                     self._store.finish_drive_request(
                         request,
                         outcome.state,
                         {
-                            **({"edit_of": edit_of} if edit_of is not None else {}),
-                            "text": "\n".join(lines),
-                            "keyboard": [
-                                [
-                                    {
-                                        "text": strings.DRIVE_UNDO,
-                                        "callback_data": f"dc:u:{request['update_id']}",
-                                    }
-                                ]
-                            ],
+                            "emoji": "👍" if outcome.grade == "complete" else "🤔",
+                            **({"delete_of": reply_ref} if reply_ref else {}),
                         },
                         undo_until,
                     )
                     self._queue_wake.notify()
-                elif outcome.state == "exception" and request["kind"].startswith("edit"):
-                    self._store.finish_drive_request(request, outcome.state, None)
-                elif outcome.state == "exception" and outcome.reason == "no_photo":
-                    mention = self._custodian_id
-                    text = (
-                        strings.DRIVE_NO_PHOTO.format(custodian=mention)
-                        if mention is not None
-                        else strings.DRIVE_NO_PHOTO_NO_CUSTODIAN
-                    )
-                    self._store.finish_drive_request(
-                        request, outcome.state, {"text": text, "format": "html"}
-                    )
-                    self._queue_wake.notify()
-                elif outcome.state == "exception" and not outcome.may_ask:
-                    self._store.finish_drive_request(request, outcome.state, None)
-                elif outcome.state == "exception":
-                    text = QUESTIONS.get(outcome.reason or "", strings.DRIVE_ASK_LABEL)
-                    if outcome.practice:
-                        text = strings.DRIVE_PRACTICE + "\n" + text
-                    self._store.finish_drive_request(request, outcome.state, {"text": text})
-                    self._queue_wake.notify()
-                elif outcome.state in {"ignored", "undone"}:
+                elif outcome.state in {"exception", "ignored", "undone"}:
                     self._store.finish_drive_request(request, outcome.state, None)
                 else:
                     self._store.wait_for_drive(

@@ -68,7 +68,7 @@ class Poller:
                 event_modules=tuple(self._store.chat_subscription_modules(update.chat_id)),
             )
         if update.callback_id is not None:
-            return decide_tap(self._config, update, self._store)
+            return decide_tap(self._config, update)
         if (drive := decide_drive(self._config, update, self._store)) is not None:
             return drive
         if update.command == "start":
