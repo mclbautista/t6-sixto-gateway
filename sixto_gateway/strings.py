@@ -40,6 +40,18 @@ PROJECT_NOTES_NONE = "No PM Notes history for {code} yet."
 PROJECT_UNKNOWN_CODE = "I don't know the Project code {code}."
 T6_NOT_ANSWERING = "T6 is not answering right now. Please try again in a few minutes."
 
+# --- for /project <code> drives (plain text) --------------------------------------------------
+
+PROJECT_DRIVES_TITLE = "Drive movements for {code}"
+PROJECT_DRIVES_LINE = (
+    "{date} · {direction} · {label} · {role} {person} · Coordinator then {coordinators}"
+)
+PROJECT_DRIVES_RECIPIENT = "Recipient"
+PROJECT_DRIVES_RECEIVER = "Receiver"
+PROJECT_DRIVES_REVIEW = " · ⚠ to review"
+PROJECT_DRIVES_MORE = "{count} more in the Drives app"
+PROJECT_DRIVES_NONE = "No Drive movements for {code} yet."
+
 # --- for /crm snooze, /crm unsnooze and /leads (plain text; the API words its own answers) -----
 
 CRM_DM_ONLY = "/{command} works in a direct message with me. Please message me there."
