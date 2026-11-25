@@ -74,7 +74,6 @@ def start_workers(
                     Client(config.t6_api_url, config.secrets.t6_api_secret),
                     queue_wake,
                     clock,
-                    custodian_id=next(iter(config.groups.get("custodians", [])), None),
                 ).run(stop)
             )
             if config.recording_channel.debug_chat_id is not None:

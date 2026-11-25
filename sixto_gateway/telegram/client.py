@@ -70,6 +70,10 @@ class TelegramClient(Protocol):
         """
         ...
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Delete a bot reply. Failures raise ``SendError`` subclasses."""
+        ...
+
     async def answer_callback_query(
         self, callback_id: str, text: str | None = None, alert: bool = False
     ) -> None:
@@ -80,7 +84,7 @@ class TelegramClient(Protocol):
         ...
 
     async def set_reaction(self, chat_id: int, message_id: int, emoji: str) -> None:
-        """Set one emoji reaction. Failures raise ``SendError`` subclasses, like sends."""
+        """Set one emoji reaction, or clear it with an empty string; raises ``SendError``."""
         ...
 
     async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:
@@ -224,6 +228,10 @@ class AiogramTelegramClient:
                 reply_markup=_keyboard_markup(keyboard),
             )
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        with _translated_errors():
+            await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
+
     async def answer_callback_query(
         self, callback_id: str, text: str | None = None, alert: bool = False
     ) -> None:
@@ -237,7 +245,9 @@ class AiogramTelegramClient:
 
         with _translated_errors():
             await self._bot.set_message_reaction(
-                chat_id=chat_id, message_id=message_id, reaction=[ReactionTypeEmoji(emoji=emoji)]
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[ReactionTypeEmoji(emoji=emoji)] if emoji else [],
             )
 
     async def set_my_commands(self, chat_id: int | None, commands: list[tuple[str, str]]) -> None:

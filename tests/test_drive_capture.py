@@ -43,6 +43,9 @@ class FakeDriveAPI:
             "differences": [],
             "photo_reference": None,
             "practice": True,
+            "grade": None,
+            "problem": None,
+            "items": [],
         }
 
     def drive_capture(self, inputs):
@@ -80,9 +83,7 @@ class Rig:
         self.telegram = FakeTelegram([], self.clock)
         self.api = FakeDriveAPI()
         self.poller = Poller(self.store, self.telegram, self.config, Notifier(), self.clock)
-        self.worker = DriveWorker(
-            self.store, self.telegram, self.api, Notifier(), self.clock, custodian_id=7003
-        )
+        self.worker = DriveWorker(self.store, self.telegram, self.api, Notifier(), self.clock)
         self.sender = Sender(self.store, self.telegram, Notifier(), self.clock)
 
     async def send(self, raw):
@@ -156,33 +157,29 @@ async def test_replayed_update_and_repeated_post_do_not_capture_twice(rig):
     assert rig.telegram.downloads == ["large"]
 
 
-async def test_pending_capture_then_resolved_reply_has_lines_practice_and_one_undo(rig):
-    await rig.send(photo())
+@pytest.mark.parametrize(("grade", "emoji"), [("complete", "👍"), ("thin", "🤔")])
+@pytest.mark.parametrize("practice", [True, False])
+@pytest.mark.parametrize("post", [photo, lambda: text_post("IN EX-01")])
+async def test_capture_grade_reacts_once_after_write_without_text(
+    rig, grade, emoji, practice, post
+):
+    await rig.send(post())
+    # Even if a pending result carries a grade, the write is not yet confirmed.
+    rig.api.outcome.update(grade=grade, practice=practice)
     await rig.resolve()
     assert rig.telegram.sent == []
-    rig.api.outcome.update(
-        state="resolved",
-        lines=[
-            {"label": "EX-01", "direction": "OUT", "person": "Example Person"},
-            {"label": "EX-02", "direction": "IN", "person": "SHELF"},
-        ],
-    )
+    rig.api.outcome.update(state="resolved")
     await rig.resolve()
-    assert len(rig.telegram.sent) == 1
-    reply = rig.telegram.sent[0]
-    assert reply["text"] == (
-        "Practice\nRecorded: EX-01, OUT, Example Person\nRecorded: EX-02, IN, SHELF"
-    )
-    assert (reply["chat_id"], reply["topic_id"], reply["reply_to_message_id"]) == (
-        -900001,
-        4801,
-        10,
-    )
-    assert len(reply["keyboard"]) == 1 and len(reply["keyboard"][0]) == 1
-    assert reply["keyboard"][0][0]["text"] == "UNDO"
-    assert len(reply["keyboard"][0][0]["callback_data"].encode()) <= 64
     await rig.resolve()
-    assert len(rig.telegram.sent) == 1 and len(rig.api.calls) == 1
+    assert rig.telegram.sent == [
+        {
+            "kind": "react",
+            "chat_id": -900001,
+            "message_id": post()["message"]["message_id"],
+            "emoji": emoji,
+        }
+    ]
+    assert rig.telegram.edits == []
 
 
 async def test_ignored_capture_stays_silent_and_stops_polling(rig):
@@ -195,88 +192,35 @@ async def test_ignored_capture_stays_silent_and_stops_polling(rig):
     assert len(rig.api.reads) == reads
 
 
-async def test_live_capture_reply_has_no_practice_prefix(rig):
+@pytest.mark.parametrize("reason", ["unreadable_label", "no_drive_match", "no_photo"])
+async def test_old_label_and_review_exceptions_stay_silent(rig, reason):
     await rig.send(photo())
-    rig.api.outcome.update(
-        state="resolved",
-        practice=False,
-        lines=[
-            {"label": "EX-01", "direction": "IN", "person": None},
-        ],
-    )
+    rig.api.outcome.update(state="exception", reason=reason, may_ask=True)
     await rig.resolve()
-    assert rig.telegram.sent[0]["text"] == "Recorded: EX-01, IN, "
-
-
-async def test_ask_for_label_and_follow_up_resolve_the_same_capture(rig):
-    from tests.fakes import group_command
-
-    await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
     await rig.resolve()
-    assert rig.telegram.sent[0]["text"] == "Practice\nPlease reply with the drive label or serial."
-    ask_id = rig.telegram.sent[0]["message_id"]
-    assert rig.telegram.sent[0]["keyboard"] is None
-    followup = group_command(20, 7001, " EX-01 ", -900001, 4801)
-    followup["message"]["reply_to_message"] = {
-        "message_id": ask_id,
-        "date": 1789700000,
-        "chat": followup["message"]["chat"],
-        "from": {"id": 1, "is_bot": True, "first_name": "Example Bot"},
-        "text": "Please reply with the drive label or serial.",
-    }
-    await rig.send(followup)
-    assert len(rig.api.calls) == 2
-    sent = rig.api.calls[-1]
-    assert (sent.capture, sent.text, sent.photo) == ("cap-example", " EX-01 ", None)
-    rig.api.outcome.update(
-        state="resolved",
-        lines=[
-            {"label": "EX-01", "direction": "OUT", "person": "Example Person"},
-        ],
-    )
+    assert rig.telegram.sent == []
+
+
+@pytest.mark.parametrize("user", [7001, 7003])
+@pytest.mark.parametrize(("grade", "emoji"), [("complete", "👍"), ("thin", "🤔")])
+async def test_undo_reply_removes_post_reaction_and_reacts_on_undo_once(rig, user, grade, emoji):
+    undoable(rig)
+    await resolved_capture(rig, grade=grade)
+    undo = reply_to(text_post(" Undo ", 40, user=user), 10)
+    await rig.send(undo)
     await rig.resolve()
-    assert "Recorded: EX-01, OUT, Example Person" in rig.telegram.sent[-1]["text"]
-    assert rig.telegram.downloads == ["large"]
-
-
-async def test_undo_tap_calls_api_once_and_edits_the_recorded_reply(rig):
-    from tests.fakes import button_tap
-
-    rig.api.undos = []
-
-    def undo(inputs):
-        from t6.verbs import Done
-
-        rig.api.undos.append(inputs)
-        return Done(result={**rig.api.outcome, "state": "undone"})
-
-    rig.api.drive_capture_undo = undo
-    await rig.send(photo())
-    rig.api.outcome.update(
-        state="resolved",
-        lines=[
-            {"label": "EX-01", "direction": "OUT", "person": "Example Person"},
-        ],
-    )
-    await rig.resolve()
-    reply = rig.telegram.sent[0]
-    data = reply["keyboard"][0][0]["callback_data"]
-    tap = button_tap(30, 7001, data, -900001, reply["message_id"], "supergroup")
-    tap["callback_query"]["message"]["message_thread_id"] = 4801
-    await rig.send(tap)
-    await rig.resolve()
-    assert [item.capture for item in rig.api.undos] == ["cap-example"]
-    assert rig.telegram.edits[-1]["text"] == "Practice\nUndone."
-    assert rig.telegram.edits[-1]["message_id"] == reply["message_id"]
-    assert rig.telegram.edits[-1]["keyboard"] is None
-    assert rig.telegram.answers[-1]["callback_id"] == "cb30"
+    assert [u.capture for u in rig.api.undos] == ["cap-example"]
+    assert rig.telegram.sent == [
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": emoji},
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": ""},
+        {"kind": "react", "chat_id": -900001, "message_id": 40, "emoji": "🙈"},
+    ]
+    assert rig.telegram.edits == []
     rig.store.set_offset(0)
-    await rig.send(tap)
-    tap["update_id"] = 31
-    tap["callback_query"]["id"] = "cb31"
-    await rig.send(tap)
-    assert len(rig.api.undos) == 1
+    await rig.send(undo)
+    await rig.send(reply_to(text_post("undo", 41, user=user), 10))
+    await rig.resolve()
+    assert len(rig.api.undos) == 1 and len(rig.telegram.sent) == 3
 
 
 async def test_worker_restarts_with_pending_capture_without_resubmitting(rig):
@@ -335,7 +279,7 @@ async def test_followups_from_another_topic_or_to_another_message_are_not_captur
     from tests.fakes import group_command
 
     await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
+    rig.api.outcome.update(state="resolved", grade="problem", problem="missing_direction")
     await rig.resolve()
     ask_id = rig.telegram.sent[0]["message_id"]
     for update_id, topic, reply_id in [(20, 4802, ask_id), (21, 4801, 8888)]:
@@ -373,7 +317,7 @@ async def test_disabled_channel_and_photo_edits_do_not_capture(rig):
     assert rig.api.calls == []
 
 
-async def test_telegram_adapter_sets_reply_and_topic_and_downloads_in_memory():
+async def test_telegram_adapter_handles_capture_feedback_and_in_memory_download():
     from types import SimpleNamespace
 
     from sixto_gateway.telegram.client import AiogramTelegramClient
@@ -382,6 +326,12 @@ async def test_telegram_adapter_sets_reply_and_topic_and_downloads_in_memory():
         async def send_message(self, **kwargs):
             self.sent = kwargs
             return SimpleNamespace(message_id=9001)
+
+        async def delete_message(self, **kwargs):
+            self.deleted = kwargs
+
+        async def set_message_reaction(self, **kwargs):
+            self.reacted = kwargs
 
         async def download(self, file_id, destination):
             assert file_id == "large"
@@ -396,6 +346,12 @@ async def test_telegram_adapter_sets_reply_and_topic_and_downloads_in_memory():
     assert bot.sent["chat_id"] == -900001
     assert bot.sent["message_thread_id"] == 4801
     assert bot.sent["reply_parameters"].message_id == 10
+    await client.delete_message(-900001, 9001)
+    assert bot.deleted == {"chat_id": -900001, "message_id": 9001}
+    await client.set_reaction(-900001, 10, "👍")
+    assert bot.reacted["reaction"][0].emoji == "👍"
+    await client.set_reaction(-900001, 10, "")
+    assert bot.reacted == {"chat_id": -900001, "message_id": 10, "reaction": []}
 
 
 def reply_to(raw, message_id):
@@ -405,15 +361,6 @@ def reply_to(raw, message_id):
         "chat": raw["message"]["chat"],
     }
     return raw
-
-
-def tap_of(rig, update_id, user, reply):
-    from tests.fakes import button_tap
-
-    data = reply["keyboard"][0][0]["callback_data"]
-    tap = button_tap(update_id, user, data, -900001, reply["message_id"], "supergroup")
-    tap["callback_query"]["message"]["message_thread_id"] = 4801
-    return tap
 
 
 def undoable(rig):
@@ -431,36 +378,41 @@ def undoable(rig):
     rig.api.drive_capture_undo = undo
 
 
-async def resolved_reply(rig, **extra):
+async def resolved_capture(rig, **extra):
+    from datetime import UTC, datetime
+
     await rig.send(photo())
+    until = datetime.fromtimestamp(rig.clock() + 3600, UTC).isoformat()
     rig.api.outcome.update(
-        state="resolved",
-        lines=[{"label": "EX-01", "direction": "OUT", "person": "Example Person"}],
-        **extra,
+        **{"state": "resolved", "grade": "complete", "undo_until": until, **extra},
     )
     await rig.resolve()
     return rig.telegram.sent[0]
 
 
 @pytest.mark.parametrize(
-    ("reason", "text"),
+    ("problem", "text"),
     [
-        (
-            "missing_direction",
-            "Practice\nPlease reply with IN or OUT and the person, like OUT <person>.",
-        ),
-        ("unreadable_label", "Practice\nPlease reply with the drive label or serial."),
-        (
-            "no_drive_match",
-            "Practice\nI could not find that label or serial. Please reply with the correct one.",
-        ),
+        ("missing_direction", "Please edit the caption to add IN or OUT."),
+        ("missing_recipient", "Please edit the caption to add R: <recipient>."),
     ],
 )
-async def test_question_text_follows_the_exception_reason(rig, reason, text):
+@pytest.mark.parametrize("practice", [True, False])
+async def test_problem_gets_one_scoped_reply(rig, problem, text, practice):
     await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason=reason, may_ask=True)
+    rig.api.outcome.update(state="resolved", grade="problem", problem=problem, practice=practice)
     await rig.resolve()
-    assert [m["text"] for m in rig.telegram.sent] == [text]
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    reply = rig.telegram.sent[0]
+    assert reply["kind"] == "message"
+    assert reply["text"] == ("Practice\n" if practice else "") + text
+    assert (reply["chat_id"], reply["topic_id"], reply["reply_to_message_id"]) == (
+        -900001,
+        4801,
+        10,
+    )
+    assert reply["keyboard"] is None
 
 
 async def test_exception_that_may_not_ask_gets_no_question(rig):
@@ -470,59 +422,23 @@ async def test_exception_that_may_not_ask_gets_no_question(rig):
     assert rig.telegram.sent == []
 
 
-async def test_only_poster_or_custodian_answers_count_and_an_answer_goes_once(rig):
-    from tests.fakes import group_command
-
-    await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
+@pytest.mark.parametrize("user", [7001, 7002, 7003])
+@pytest.mark.parametrize("target", ["post", "question"])
+async def test_banter_and_label_replies_are_not_capture_answers(rig, user, target):
+    question = await question_rig(rig)
+    target_id = 10 if target == "post" else question
+    for n, text in enumerate(["IN a meeting", "OUT of curiosity", "EX-01", "sorry typo"]):
+        await rig.send(reply_to(text_post(text, 40 + n, user=user), target_id))
     await rig.resolve()
-    ask_id = rig.telegram.sent[0]["message_id"]
-    await rig.send(reply_to(group_command(20, 7002, "EX-01", -900001, 4801), ask_id))
-    assert len(rig.api.calls) == 1 and rig.telegram.sent[1:] == []
-    # The custodian answers; t6 still cannot resolve it, so nothing more is said.
-    rig.api.outcome.update(reason="no_drive_match", may_ask=False)
-    await rig.send(reply_to(group_command(21, 7003, "EX-01", -900001, 4801), ask_id))
-    assert len(rig.api.calls) == 2
-    await rig.resolve()
+    assert len(rig.api.calls) == 1
     assert len(rig.telegram.sent) == 1
-    await rig.send(reply_to(group_command(22, 7001, "EX-02", -900001, 4801), ask_id))
-    assert len(rig.api.calls) == 2
-
-
-async def test_undo_tap_from_someone_else_gets_a_popup_and_nothing_else(rig):
-    undoable(rig)
-    reply = await resolved_reply(rig)
-    await rig.send(tap_of(rig, 30, 7002, reply))
-    await rig.resolve()
-    assert rig.api.undos == []
-    assert rig.telegram.answers[-1]["text"] == "Only the poster or the custodian can undo"
-    assert rig.telegram.edits == []
-    await rig.send(tap_of(rig, 31, 7003, reply))
-    await rig.resolve()
-    assert len(rig.api.undos) == 1
-
-
-@pytest.mark.parametrize("target", ["reply", "photo"])
-@pytest.mark.parametrize("user", [7001, 7003])
-async def test_text_undo_acts_as_the_button(rig, target, user):
-    from tests.fakes import group_command
-
-    undoable(rig)
-    reply = await resolved_reply(rig)
-    target_id = reply["message_id"] if target == "reply" else 10
-    await rig.send(reply_to(group_command(40, user, " Undo ", -900001, 4801), target_id))
-    await rig.resolve()
-    assert [u.capture for u in rig.api.undos] == ["cap-example"]
-    assert rig.telegram.edits[-1]["text"] == "Practice\nUndone."
-    assert rig.telegram.edits[-1]["message_id"] == reply["message_id"]
-    assert rig.telegram.edits[-1]["keyboard"] is None
 
 
 async def test_text_undo_from_others_or_other_wording_is_ignored(rig):
     from tests.fakes import group_command
 
     undoable(rig)
-    reply = await resolved_reply(rig)
+    reply = await resolved_capture(rig)
     mid = reply["message_id"]
     await rig.send(reply_to(group_command(40, 7002, "undo", -900001, 4801), mid))
     await rig.send(reply_to(group_command(41, 7001, "please undo", -900001, 4801), mid))
@@ -532,39 +448,29 @@ async def test_text_undo_from_others_or_other_wording_is_ignored(rig):
     assert len(rig.telegram.sent) == 1
 
 
-async def test_button_is_removed_when_the_undo_window_ends_and_late_undo_is_silent(rig):
+@pytest.mark.parametrize("late_by", [0, 1, 3600])
+@pytest.mark.parametrize("user", [7001, 7003])
+async def test_undo_at_or_after_window_is_ignored_without_removing_reaction(rig, late_by, user):
     from datetime import UTC, datetime
 
-    from tests.fakes import group_command
-
     undoable(rig)
-    until = datetime.fromtimestamp(rig.clock() + 3600, UTC).isoformat()
-    reply = await resolved_reply(rig, undo_until=until)
+    end = rig.clock() + 3600
+    await resolved_capture(rig, undo_until=datetime.fromtimestamp(end, UTC).isoformat())
+    rig.clock.advance(end - rig.clock() + late_by)
+    await rig.send(reply_to(text_post("undo", 40, user=user), 10))
+    await rig.resolve()
+    assert rig.api.undos == []
+    assert rig.telegram.sent == [
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": "👍"}
+    ]
     assert rig.telegram.edits == []
-    rig.clock.advance(3500)
-    await rig.resolve()
-    assert rig.telegram.edits == []
-    rig.clock.advance(200)
-    await rig.resolve()
-    assert len(rig.telegram.edits) == 1
-    edit = rig.telegram.edits[0]
-    assert edit["message_id"] == reply["message_id"]
-    assert edit["text"] == reply["text"] and edit["keyboard"] is None
-    rig.clock.advance(60)
-    await rig.resolve()
-    assert len(rig.telegram.edits) == 1
-    await rig.send(reply_to(group_command(40, 7001, "undo", -900001, 4801), reply["message_id"]))
-    await rig.send(tap_of(rig, 41, 7001, reply))
-    await rig.resolve()
-    assert rig.api.undos == [] and len(rig.telegram.sent) == 1
-    assert rig.telegram.answers[-1]["text"] == "Undo window has ended"
 
 
 async def test_undo_window_refusal_from_t6_produces_no_message(rig):
     undoable(rig)
     rig.api.undo_refusal = True
-    reply = await resolved_reply(rig)
-    await rig.send(tap_of(rig, 30, 7001, reply))
+    await resolved_capture(rig)
+    await rig.send(reply_to(text_post("undo", 40), 10))
     await rig.resolve()
     assert len(rig.api.undos) == 1
     assert rig.telegram.edits == [] and len(rig.telegram.sent) == 1
@@ -609,89 +515,104 @@ async def test_in_out_text_without_photo_reaches_t6_as_text_only(rig, text):
 
 
 async def test_member_reply_to_sixto_is_not_subject_to_the_check(rig):
-    await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
-    await rig.resolve()
-    question = rig.telegram.sent[0]
-    await rig.send(reply_to(text_post("EX-01", 41), question["message_id"]))
+    question = await question_rig(rig)
+    await rig.send(reply_to(text_post("EX-01", 41), question))
     assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
-    assert len(rig.api.calls) == 2
+    assert len(rig.api.calls) == 1
     await rig.send(text_post("thanks", 42))  # not a reply: chatter
     assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 1
 
 
-async def test_no_photo_exception_gets_one_mention_reply_without_undo(rig):
-    await rig.send(text_post("OUT Angel D-123"))
+async def test_text_only_no_photo_exception_stays_silent(rig):
+    await rig.send(text_post("OUT Example Person D-123"))
     rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
     await rig.resolve()
     await rig.resolve()
-    assert len(rig.telegram.sent) == 1
-    reply = rig.telegram.sent[0]
-    assert reply["text"] == (
-        '<a href="tg://user?id=7003">Ate Angel</a> Placed in the Drives app for your review.'
-    )
-    assert reply["parse_mode"] == "HTML"
-    assert reply["reply_to_message_id"] == 40
-    assert not reply.get("keyboard")
+    assert rig.telegram.sent == []
 
 
-async def test_no_photo_reply_without_custodian_has_no_mention(rig):
-    rig.worker._custodian_id = None
-    await rig.send(text_post("IN"))
-    rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
-    await rig.resolve()
-    assert [m["text"] for m in rig.telegram.sent] == ["Placed in the Drives app for review."]
-
-
-async def test_edit_of_exception_post_goes_to_t6_and_resolution_edits_the_question(rig):
-    from t6.verbs import Done
-
+@pytest.mark.parametrize("problem", ["missing_direction", "missing_recipient"])
+@pytest.mark.parametrize(("grade", "emoji"), [("complete", "👍"), ("thin", "🤔")])
+async def test_fixing_edit_clears_problem_reply_and_reacts(rig, problem, grade, emoji):
     await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="missing_direction", may_ask=True)
+    rig.api.outcome.update(state="resolved", grade="problem", problem=problem)
     await rig.resolve()
     question = rig.telegram.sent[0]
-    edit = edited(photo(), "OUT Example Person")
-    rig.api.outcome["state"] = "resolved"
-    rig.api.drive_capture = lambda inputs: (
-        rig.api.calls.append(inputs) or Done(result={**rig.api.outcome, "state": "pending"})
-    )
-    rig.api.outcome.update(state="pending")
-    await rig.send(edit)
+    rig.api.outcome.update(state="pending", grade=None, problem=None)
+    await rig.send(edited(photo(), "OUT EX-01\nR: Example Person"))
+    assert len(rig.api.calls) == 2
     sent = rig.api.calls[-1]
     assert (sent.capture, sent.text, sent.edit, sent.photo) == (
         "cap-example",
-        "OUT Example Person",
+        "OUT EX-01\nR: Example Person",
         True,
         None,
     )
-    rig.api.outcome.update(
-        state="resolved", lines=[{"label": "EX-01", "direction": "OUT", "person": "Example Person"}]
-    )
     await rig.resolve()
     assert len(rig.telegram.sent) == 1
-    last = rig.telegram.edits[-1]
-    assert last["message_id"] == question["message_id"]
-    assert last["text"] == "Practice\nRecorded: EX-01, OUT, Example Person"
-    assert last["keyboard"][0][0]["text"] == "UNDO"
+    rig.api.outcome.update(state="resolved", grade=grade)
+    await rig.resolve()
+    await rig.resolve()
+    assert rig.telegram.deleted == [{"chat_id": -900001, "message_id": question["message_id"]}]
+    assert rig.telegram.sent[1:] == [
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": emoji}
+    ]
+    assert rig.telegram.edits == []
 
 
-async def test_edit_that_stays_exception_sends_no_new_message(rig):
+async def test_successive_caption_fixes_update_one_prompt_then_allow_undo(rig):
+    from datetime import UTC, datetime
+
+    undoable(rig)
+    question_id = await question_rig(rig)
+    first_edit = photo(11)
+    first_edit["message"]["message_id"] = 10
+    await rig.send(edited(first_edit, "OUT EX-01"))
+    rig.api.outcome.update(problem="missing_recipient")
+    await rig.resolve()
+    assert len(rig.telegram.sent) == 1
+    assert rig.telegram.edits[-1] == {
+        "chat_id": -900001,
+        "message_id": question_id,
+        "text": "Practice\nPlease edit the caption to add R: <recipient>.",
+        "parse_mode": None,
+        "keyboard": None,
+    }
+    second_edit = photo(12)
+    second_edit["message"]["message_id"] = 10
+    await rig.send(edited(second_edit, "OUT EX-01\nR: Example Person"))
+    rig.api.outcome.update(
+        grade="complete",
+        problem=None,
+        undo_until=datetime.fromtimestamp(rig.clock() + 3600, UTC).isoformat(),
+    )
+    await rig.resolve()
+    assert rig.telegram.deleted == [{"chat_id": -900001, "message_id": question_id}]
+    await rig.send(reply_to(text_post("undo", 2000), 10))
+    await rig.resolve()
+    assert [u.capture for u in rig.api.undos] == ["cap-example"]
+    assert rig.telegram.sent[1:] == [
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": "👍"},
+        {"kind": "react", "chat_id": -900001, "message_id": 10, "emoji": ""},
+        {"kind": "react", "chat_id": -900001, "message_id": 2000, "emoji": "🙈"},
+    ]
+
+
+async def test_edit_that_stays_exception_is_silent(rig):
     await rig.send(photo())
     rig.api.outcome.update(state="exception", reason="unreadable_label", may_ask=True)
     await rig.resolve()
     await rig.send(edited(photo(), "OUT"))
     await rig.resolve()
     assert len(rig.api.calls) == 2 and rig.api.calls[-1].edit is True
-    assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
+    assert rig.telegram.sent == [] and rig.telegram.edits == []
 
 
-async def test_edit_of_pending_post_reaches_t6_and_the_post_replies_once(rig):
+async def test_edit_of_pending_post_reaches_t6_and_the_post_reacts_once(rig):
     await rig.send(photo())
     await rig.send(edited(photo(), "OUT Someone"))
     assert rig.api.calls[-1].edit is True
-    rig.api.outcome.update(
-        state="resolved", lines=[{"label": "EX-01", "direction": "OUT", "person": "Someone"}]
-    )
+    rig.api.outcome.update(state="resolved", grade="complete")
     await rig.resolve()
     await rig.resolve()
     assert len(rig.telegram.sent) == 1 and rig.telegram.edits == []
@@ -700,7 +621,7 @@ async def test_edit_of_pending_post_reaches_t6_and_the_post_replies_once(rig):
 @pytest.mark.parametrize("state", ["resolved", "ignored"])
 async def test_edit_of_closed_capture_is_ignored(rig, state):
     await rig.send(photo())
-    rig.api.outcome.update(state=state, lines=[])
+    rig.api.outcome.update(state=state, grade="complete")
     await rig.resolve()
     await rig.send(edited(photo(), "OUT Someone Else"))
     assert len(rig.api.calls) == 1
@@ -766,7 +687,7 @@ async def test_drop_count_survives_restart_and_unset_debug_topic_posts_nothing(r
 
 async def question_rig(rig):
     await rig.send(photo())
-    rig.api.outcome.update(state="exception", reason="missing_direction", may_ask=True)
+    rig.api.outcome.update(state="resolved", grade="problem", problem="missing_direction")
     await rig.resolve()
     return rig.telegram.sent[0]["message_id"]
 
@@ -780,7 +701,7 @@ async def test_banter_under_the_question_from_others_is_ignored_even_with_in_or_
     assert rig.store._db.execute("SELECT dropped FROM drive_drops").fetchone()[0] == 0
 
 
-async def test_two_quick_poster_replies_send_only_one_answer_to_t6(rig):
+async def test_two_quick_poster_replies_send_no_answer_to_t6(rig):
     ask_id = await question_rig(rig)
     for n in (61, 62):  # both arrive before the worker has handled the first
         rig.telegram.push(reply_to(text_post("wait what", n), ask_id))
@@ -788,16 +709,16 @@ async def test_two_quick_poster_replies_send_only_one_answer_to_t6(rig):
     await rig.worker.process_next()
     rig.clock.advance(5)
     await rig.worker.process_next()
-    assert len(rig.api.calls) == 2  # the post, then one answer
+    assert len(rig.api.calls) == 1  # only the original post
     assert len(rig.telegram.sent) == 1
 
 
-async def test_reply_to_the_text_only_note_is_not_an_answer(rig):
+async def test_reply_to_the_text_only_post_is_not_an_answer(rig):
     await rig.send(text_post("OUT Angel D-123"))
     rig.api.outcome.update(state="exception", reason="no_photo", may_ask=False)
     await rig.resolve()
-    await rig.send(reply_to(text_post("ok po", 63, user=7003), rig.telegram.sent[0]["message_id"]))
-    assert len(rig.api.calls) == 1 and len(rig.telegram.sent) == 1
+    await rig.send(reply_to(text_post("ok po", 63, user=7003), 40))
+    assert len(rig.api.calls) == 1 and rig.telegram.sent == []
 
 
 async def test_incident_sequence_gives_one_question_and_no_further_messages(rig):
