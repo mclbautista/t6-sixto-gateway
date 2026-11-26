@@ -178,10 +178,43 @@ Each module chooses a delivery mode in `config.yaml`:
   then every 10 min, and never gives up. The schedule is stored, so it survives a restart. A
   pushed tap is not also served by `/updates`. The gateway calls out; nothing calls into it.
   A push module's **commands** (see "Commands and the allow-list") are posted to the same URL
-  in the same way, as `command` items with the key `cmd-<update_id>`.
+  in the same way, as `command` items with the key `cmd-<update_id>`, and so are DM
+  **replies** to its own messages (see "Replies to a module's message") as `reply` items with
+  the key `reply-<update_id>`.
   Every push also carries `X-Telegram-User-Id: <from.id>` (the tapper's or sender's Telegram
   user ID, a decimal string). The t6 API requires a push to carry a bearer secret bound to the
   identity `gateway` in its `T6_API_SECRETS`, and that header equal to `from.id` in the body.
+
+### Replies to a module's message
+
+When someone sends a plain message in their DM with the bot that replies to a message a module
+sent there with `/notify`, the gateway pushes it to that module's `push_url` as a `reply` item,
+with the same secret, retries and `X-Telegram-User-Id` header as a tap, and
+`Idempotency-Key: reply-<update_id>`. `reply_to_message_ref` is the `/notify` `message_ref` of
+the message being replied to (an `/edit` of it keeps the same ref), so the module knows which of
+its messages the answer is for and can `POST /edit` that ref:
+
+<!-- pushed: dm-reply -->
+```json
+{
+  "idempotency_key": "reply-9002",
+  "kind": "reply",
+  "text": "6pm",
+  "from": {"id": 123456789},
+  "chat": 123456789,
+  "message_id": 78,
+  "reply_to_message_id": 9101,
+  "reply_to_message_ref": 42,
+  "update_id": 9002
+}
+```
+
+(It also carries `seq`, `topic`, `edited`, `edit_date`, `has_file`, `has_link` and `raw`, like
+every item.) Only the module that sent the message gets the reply, and only when it is a push
+module and the sender is allowed one of that module's commands (for `t6core`, the operators).
+A reply to another module's message, to a message no module sent, or from anyone else is stored
+and not delivered (a refused one is audited as `reply_refused`, without the text). An edit of a
+reply is not pushed again. Replies in groups are unchanged (routes and `/updates`).
 
 A tap naming a module that is not in `modules` is written to the audit table
 (`tap_unknown_module`), answered with "This button is no longer active." and not delivered.

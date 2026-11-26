@@ -265,7 +265,9 @@ class Store:
                     ([module] if module is not None else []) + list(decision.additional_modules)
                 )
                 for recipient in modules:
-                    new_seq = self._insert_delivery(update, decision.kind, recipient, received_at)
+                    new_seq = self._insert_delivery(
+                        update, decision.kind, recipient, received_at, _reply_extra(decision)
+                    )
                     if seq is None:
                         seq = new_seq
                     if not self._has_delivery(update.update_id, recipient):
@@ -290,7 +292,9 @@ class Store:
                 # The module the update was first stored for owns it, even if routes changed.
                 module = self._stored_module(update.update_id)
                 if module is not None and not self._has_delivery(update.update_id, module):
-                    seq = self._repair_delivery(update, decision.kind, module, received_at)
+                    seq = self._repair_delivery(
+                        update, decision.kind, module, received_at, _reply_extra(decision)
+                    )
             if seq is not None and decision.push:
                 self._db.execute(
                     "INSERT OR IGNORE INTO tap_pushes (seq, module, next_attempt_at, created_at)"
@@ -425,10 +429,15 @@ class Store:
         ).lastrowid
 
     def _repair_delivery(
-        self, update: IncomingUpdate, kind: str, module: str, received_at: float
+        self,
+        update: IncomingUpdate,
+        kind: str,
+        module: str,
+        received_at: float,
+        extra: dict[str, Any] | None = None,
     ) -> int | None:
         """A re-fetched update was stored for ``module`` without its delivery: add it now."""
-        events = update.events if kind == "event" else (None,)
+        events = update.events if kind == "event" else (extra,)
         seq = None
         for event in events:
             new_seq = self._insert_delivery(update, kind, module, received_at, event)
@@ -449,6 +458,16 @@ class Store:
             " ON CONFLICT(id) DO UPDATE SET last_update_id = MAX(last_update_id, ?)",
             (update_id, update_id),
         )
+
+    def notify_ref(self, chat_id: int, telegram_message_id: int) -> tuple[str, int] | None:
+        """``(module, message_ref)`` of the ``/notify`` message Telegram shows in this chat with
+        this id, else None. Edits keep the original ref."""
+        row = self._db.execute(
+            "SELECT module, id FROM outbound WHERE kind = 'message' AND target = ?"
+            " AND telegram_message_id = ? AND state = 'sent' ORDER BY id DESC LIMIT 1",
+            (str(chat_id), telegram_message_id),
+        ).fetchone()
+        return (row[0], int(row[1])) if row else None
 
     def original_route(self, chat_id: int, message_id: int) -> tuple[bool, str | None]:
         """(known, module) for the original (non-edited) message of an edit.
@@ -1346,6 +1365,13 @@ class Store:
                 " undo_until = ? WHERE update_id = ?",
                 (outcome, ref, undo_until, request["update_id"]),
             )
+
+
+def _reply_extra(decision: Decision) -> dict[str, Any] | None:
+    """What a ``reply`` item adds to the update payload: the ``/notify`` ref it answers."""
+    if decision.kind != "reply":
+        return None
+    return {"reply_to_message_ref": decision.reply_to_message_ref}
 
 
 def _item_payload(update: IncomingUpdate, kind: str = "update") -> dict[str, Any]:

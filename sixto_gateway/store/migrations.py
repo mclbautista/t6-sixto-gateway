@@ -226,4 +226,8 @@ MIGRATIONS: list[str] = [
         claimed INTEGER NOT NULL DEFAULT 0
     );
     """,
+    # 18: a DM reply is matched to the /notify message it answers (issue #149).
+    """
+    CREATE INDEX outbound_sent_message ON outbound (target, telegram_message_id);
+    """,
 ]

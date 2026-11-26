@@ -63,7 +63,7 @@ class Decision:
     """Where an update goes, and what is saved or queued in the same transaction."""
 
     module: str | None  # owning module, or None: stored, not delivered
-    kind: str = "update"  # "update" or "command"
+    kind: str = "update"  # "update", "command" or "reply"
     audit: tuple[str, str | None, str] | None = None  # (event, module, detail)
     reply: str | None = None  # text sent back in the update's own chat and topic (send queue)
     reply_format: str = "plain"  # "plain" or "html" (html text must already be escaped)
@@ -80,3 +80,4 @@ class Decision:
     project_request: ProjectRequest | None = None  # answered by the project worker
     drive_request: dict[str, Any] | None = None
     drive_dropped: bool = False  # the recording channel's local check dropped this message
+    reply_to_message_ref: int | None = None  # a "reply": the /notify ref it answers
