@@ -5,7 +5,8 @@ A module in ``delivery: push`` mode gets every tap on its buttons as an HTTP POS
 shape ``GET /updates`` serves) plus ``idempotency_key``, which is also sent as an
 ``Idempotency-Key`` header and is the same on every retry, so the receiver can drop a repeat.
 The tapper's (or sender's) ``from.id`` also goes in an ``X-Telegram-User-Id`` header.
-The module's commands (ticket #72) travel the same way, as ``command`` items.
+The module's commands (ticket #72) travel the same way, as ``command`` items, and DM replies to
+its own ``/notify`` messages (issue #149) as ``reply`` items.
 
 Any 2xx answer accepts the tap. Anything else (an error status, a timeout, no connection) is
 retried with a growing wait that stops growing at ten minutes; the tap is never given up on.
@@ -32,8 +33,11 @@ RETRY_SCHEDULE_SECONDS = (5.0, 30.0, 120.0, 600.0)  # the last step repeats
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 
+_KEY_PREFIX = {"command": "cmd", "reply": "reply"}
+
+
 def idempotency_key(item: dict) -> str:
-    return f"{'cmd' if item['kind'] == 'command' else 'tap'}-{item['update_id']}"
+    return f"{_KEY_PREFIX.get(item['kind'], 'tap')}-{item['update_id']}"
 
 
 class PushWorker:

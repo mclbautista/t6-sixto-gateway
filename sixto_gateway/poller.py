@@ -15,6 +15,7 @@ from sixto_gateway.liveness import Liveness
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.onboarding import decide_start
 from sixto_gateway.project import CRM_COMMANDS, decide_project
+from sixto_gateway.replies import decide_reply
 from sixto_gateway.store import Store
 from sixto_gateway.taps import decide_tap
 from sixto_gateway.telegram.client import TelegramClient
@@ -83,6 +84,8 @@ class Poller:
             update.chat_type == "private" or update.command in self._config.commands
         ):
             return decide_command(self._config, update)
+        if (reply := decide_reply(self._config, self._store, update)) is not None:
+            return reply
         modules = self.routes(update)
         return Decision(modules[0] if modules else None, additional_modules=tuple(modules[1:]))
 
