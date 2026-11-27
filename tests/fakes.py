@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -80,11 +81,24 @@ def dm_message(update_id: int, user_id: int, text: str, *, edited: bool = False)
 
 
 def group_command(
-    update_id: int, user_id: int, text: str, chat: int, topic: int | None, forum: bool = True
+    update_id: int,
+    user_id: int,
+    text: str,
+    chat: int,
+    topic: int | None,
+    forum: bool = True,
+    topic_name: str | None = None,
 ) -> dict:
-    """The same command typed in a group (and topic)."""
+    """The same command typed in a group (and topic; ``topic_name`` as Telegram sends it)."""
     raw = dm_message(update_id, user_id, text)
     message = raw["message"]
+    if topic_name is not None:
+        message["reply_to_message"] = {
+            "message_id": topic,
+            "date": 1789700000,
+            "chat": {"id": chat, "title": "Group", "type": "supergroup", "is_forum": forum},
+            "forum_topic_created": {"name": topic_name, "icon_color": 7322096},
+        }
     message["chat"] = {"id": chat, "title": "Group", "type": "supergroup", "is_forum": forum}
     if topic is not None:
         message["message_thread_id"] = topic
@@ -93,10 +107,16 @@ def group_command(
 
 
 def button_tap(
-    update_id: int, user_id: int, data: str, chat: int, message_id: int, chat_type: str = "private"
+    update_id: int,
+    user_id: int,
+    data: str,
+    chat: int,
+    message_id: int,
+    chat_type: str = "private",
+    topic: int | None = None,
 ) -> dict:
-    """A tap on an inline button of a message the bot sent to ``chat``."""
-    return {
+    """A tap on an inline button of a message the bot sent to ``chat`` (in ``topic``)."""
+    raw = {
         "update_id": update_id,
         "callback_query": {
             "id": f"cb{update_id}",
@@ -112,6 +132,9 @@ def button_tap(
             },
         },
     }
+    if topic is not None:
+        raw["callback_query"]["message"]["message_thread_id"] = topic
+    return raw
 
 
 class FakeClock:
@@ -594,6 +617,12 @@ class FakeProjectAPI:
         self.calls: list[tuple[int, str, dict]] = []  # (as user, noun verb, body)
         self.names: dict[str, str] = {OWNER_ID: "Pat"}
         self.leads: list[dict] = []  # /leads: the ``lead list`` reply
+        # ``project links`` as t6-core describes it (spec t6-core#685)
+        self.cards: dict[str, dict] = {}  # T6 Project ID -> links card
+        self.chat_links: dict[tuple[int, int | None], list[str]] = {}  # chat, topic -> Project IDs
+        self.link_operators: set[int] = set()  # may read any Project's links as themselves
+        self.link_coordinators: set[int] = set()  # may /link
+        self.service = _FakeProjectAPIAs(self, None)  # the gateway's own token, no Telegram user
 
     def crm_call(self, user: int, verb: str, body: dict):
         """``crm snooze`` / ``crm unsnooze`` as t6-core describes them."""
@@ -620,6 +649,42 @@ class FakeProjectAPI:
 
     def as_user(self, telegram_user_id: int) -> _FakeProjectAPIAs:
         return _FakeProjectAPIAs(self, telegram_user_id)
+
+    def links_call(self, user: int | None, body: dict):
+        """``project links``: an operator as themselves reads any Project by code; the gateway's
+        own token reads only for a chat, and a code only for a Project linked to that chat."""
+        code = body.get("project")
+        by_code = {c["code"].upper(): c for c in self.cards.values()}
+        if user is not None:
+            if user not in self.link_operators or code is None:
+                return Refused(rule="operator", reason="Only an operator may read this")
+            card = by_code.get(code.upper())
+            return (
+                Done(result=card) if card else Refused(rule="project", reason="Project not found")
+            )
+        chat, topic = body.get("chat"), body.get("topic")
+        if chat is None:
+            return Refused(rule="permission", reason="Not allowed")
+        linked = [
+            self.cards[pid]
+            for (c, t), pids in self.chat_links.items()
+            if c == chat and t in (None, topic)
+            for pid in pids
+        ]
+        if code is not None:
+            card = next((c for c in linked if c["code"].upper() == code.upper()), None)
+            if card is None:
+                return Refused(rule="chat_scope", reason="Project is not linked to this chat")
+            return Done(result={**card, "projects": [card]})
+        can_link = body.get("asker_telegram_id") in self.link_coordinators
+        named = re.match(r"\s*([A-Za-z0-9]+)\s+-\s+", body.get("topic_name") or "")
+        return Done(
+            result={
+                "projects": linked,
+                "can_link": can_link,
+                "suggested_code": named.group(1) if named and can_link else None,
+            }
+        )
 
 
 class _FakeProjectAPIAs:
@@ -656,6 +721,8 @@ class _FakeProjectAPIAs:
             return Done(result={"project": {"project_code": "ABD", "name": "Example Show"}})
         if (noun, verb) == ("person", "get"):
             return Done(result={"person": {"name": self._api.names.get(body["person_id"], "Pat")}})
+        if (noun, verb) == ("project", "links"):
+            return self._api.links_call(self._user, body)
         if noun == "crm":
             return self._api.crm_call(self._user, verb, body)
         if (noun, verb) == ("lead", "list"):

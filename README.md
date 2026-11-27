@@ -535,6 +535,20 @@ commands:
   history says so. Additional movements are counted as `N more in the Drives app` in plain
   text; no app URL is configured. Replies are requested on demand only, with no movement
   notifications. Other `/project` commands still go to their module.
+- **`/project links` and `/project <code> links`** (t6-core #685) are answered by the gateway
+  and work in a group or topic as well as a DM; the `project` allow-list (operators) does not
+  apply to them. Anyone in a chat may ask: the gateway asks `project links` with its own token
+  and the chat and topic (no `X-Telegram-User-Id`), so a freelancer with no Person record gets an
+  answer. The API needs the narrow `project_links` grant for the gateway service
+  (`T6_API_SERVICE_PERMISSIONS='{"gateway": ["project_links"]}'`); until t6-core has that read,
+  the command answers "T6 is not answering". The card is a reply to the command, in the topic:
+  name and code, each Telegram link with its state (active, inactive, waiting for approval,
+  denied with its reason, dead since a date), the Notion page and Frame.io links, then the CRM
+  Log links by kind (or "Links unavailable right now"). `/project <code> links` works for a
+  Project linked to the chat and shows the API's refusal for one that is not; an operator may
+  ask for any code, in a group or a DM (the gateway tries again as the person who typed). In a
+  DM only an operator may ask, and a code is required. The request is saved with its topic and
+  message id and deleted when its reply is queued.
 - **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
   by the gateway like `/project <code> notes`, in a DM only (in a group: one line pointing to the DM),
   asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the

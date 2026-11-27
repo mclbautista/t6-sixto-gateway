@@ -1,9 +1,10 @@
 """``/project`` subcommands the gateway answers itself through the t6 API (ticket #125).
 
 Every other ``/project`` goes to its module (t6core) as before. A subcommand here works in a DM
-only, and is asked of the t6 API as the person who typed it, so the API decides who may read
-what and its refusal is shown as is. The poller saves the request with the update
-(``decide_project``); ``ProjectWorker`` asks the API outside the poll loop and queues the reply.
+only (``links`` also in a group or topic), and is asked of the t6 API as the person who typed
+it, so the API decides who may read what and its refusal is shown as is. The poller saves the
+request with the update (``decide_project``); ``ProjectWorker`` asks the API outside the poll
+loop and queues the reply.
 
 To add a subcommand: recognise it in ``parse_subcommand`` and add its handler to
 ``ProjectCommands._handlers``.
@@ -12,6 +13,7 @@ To add a subcommand: recognise it in ``parse_subcommand`` and add its handler to
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -48,10 +50,13 @@ def parse_subcommand(args: str) -> tuple[str, str] | None:
     """``(name, argument)`` for a subcommand the gateway answers, else None.
 
     ``<code> notes`` / ``<code> drives``: PM Notes history / Drive movements.
+    ``links``: the links card of this chat's Project; ``<code> links``: of that Project.
     A code may itself contain spaces.
     """
     words = args.split()
-    if len(words) >= 2 and words[-1].casefold() in {"notes", "drives"}:
+    if len(words) == 1 and words[0].casefold() == "links":
+        return "links", ""
+    if len(words) >= 2 and words[-1].casefold() in {"notes", "drives", "links"}:
         return words[-1].casefold(), " ".join(words[:-1])
     return None
 
@@ -86,12 +91,21 @@ def decide_project(update: IncomingUpdate) -> Decision | None:
         # a one-line pointer to the DM
         pointer = strings.CRM_DM_ONLY.format(command=update.command)
         return Decision(None, audit=("command_refused", None, f"{detail} not_dm"), reply=pointer)
-    if update.chat_type != "private":  # DMs only; a group refusal is silent
+    if update.chat_type != "private" and name != "links":  # DMs only; a group refusal is silent
         return Decision(None, audit=("command_refused", None, f"{detail} not_dm"))
     return Decision(
         None,
         audit=("command_answered", None, detail),
-        project_request=ProjectRequest(update.from_id, update.chat_id, name, argument),
+        project_request=ProjectRequest(
+            update.from_id,
+            update.chat_id,
+            name,
+            argument,
+            update.topic_id,
+            update.chat_type or "private",
+            update.message_id,
+            update.topic_name,
+        ),
     )
 
 
@@ -148,6 +162,17 @@ LEAD_ROLES = (  # the client roles of a Lead, as the API lists them (names)
 )
 
 
+class ProjectLinksInput(BaseModel):
+    """``project links`` (t6-core #685). The pinned t6 takes only ``project``; a chat and topic,
+    the topic's name and the asker are the chat-scoped read, so this is sent as a plain model."""
+
+    project: str | None = None
+    chat: int | None = None
+    topic: int | None = None
+    topic_name: str | None = None
+    asker_telegram_id: int | None = None
+
+
 class _Answer(Exception):
     """Stop here and send this text instead (a refusal, an unknown code, the API down)."""
 
@@ -171,9 +196,12 @@ async def _ask(method: Callable[[Any], Any], inputs: Any) -> dict[str, Any]:
 class ProjectCommands:
     """Answers each subcommand by asking the t6 API as the person who typed it."""
 
-    def __init__(self, as_user: Callable[[int], Any]):
-        """``as_user(id)`` is a t6 API client that sends that Telegram user's id."""
+    def __init__(self, as_user: Callable[[int], Any], service: Any):
+        """``as_user(id)`` is a t6 API client that sends that Telegram user's id; ``service`` is
+        the gateway's own client, for the chat-scoped ``project links`` read that anyone in a
+        chat may ask (a freelancer has no Person record)."""
         self._as_user = as_user
+        self._service = service
         self._handlers: dict[str, Callable[[Any, str], Awaitable[list[Reply]]]] = {
             "notes": self._notes,
             "drives": self._drives,
@@ -182,8 +210,20 @@ class ProjectCommands:
             "leads": self._leads,
         }
 
-    async def answer(self, user: int, name: str, argument: str) -> list[Reply]:
+    async def answer(
+        self,
+        user: int,
+        name: str,
+        argument: str,
+        *,
+        chat_id: int = 0,
+        topic_id: int | None = None,
+        chat_type: str = "private",
+        topic_name: str | None = None,
+    ) -> list[Reply]:
         try:
+            if name == "links":
+                return await self._links(user, argument, chat_id, topic_id, chat_type, topic_name)
             return await self._handlers[name](self._as_user(user), argument)
         except _Answer as answer:
             return [_plain(answer.text)]
@@ -200,6 +240,41 @@ class ProjectCommands:
         ):
             raise _Answer(strings.PROJECT_UNKNOWN_CODE.format(code=code))
         return match
+
+    async def _links(
+        self,
+        user: int,
+        code: str,
+        chat_id: int,
+        topic_id: int | None,
+        chat_type: str,
+        topic_name: str | None,
+    ) -> list[Reply]:
+        """The links card. In a DM only an operator may ask, by code. In a group anyone may ask for
+        a Project linked to the chat; a code not linked to it is tried once as the person typing,
+        so an operator reads any Project anywhere, and the first refusal is shown otherwise."""
+        if chat_type == "private":
+            if not code:
+                raise _Answer(strings.PROJECT_LINKS_DM_CODE)
+            return [
+                _card_reply(
+                    _shown(await _links_call(self._as_user(user), ProjectLinksInput(project=code)))
+                )
+            ]
+        inputs = ProjectLinksInput(
+            project=code or None,
+            chat=chat_id,
+            topic=topic_id,
+            topic_name=topic_name,
+            asker_telegram_id=None if code else user,
+        )
+        result = await _links_call(self._service, inputs)
+        if isinstance(result, Refused) and code:
+            as_person = await _links_call(self._as_user(user), ProjectLinksInput(project=code))
+            if isinstance(as_person, Done):
+                return [_card_reply(as_person.result)]
+        cards = _cards(_shown(result))
+        return [_card_reply(cards[0])]
 
     async def _notes(self, api: Any, code: str) -> list[Reply]:
         project = await self._project(api, code)
@@ -283,6 +358,72 @@ class ProjectCommands:
         return [_plain(text) for text in split_message(rows)]
 
 
+async def _links_call(api: Any, inputs: ProjectLinksInput) -> Any:
+    """``project links`` as the API answers it; None when it could not be asked."""
+    try:
+        return await asyncio.to_thread(lambda: api.call("project", "links", inputs))
+    except APIError:
+        return None
+
+
+def _shown(result: Any) -> dict[str, Any]:
+    if isinstance(result, Done):
+        return result.result
+    if isinstance(result, Refused):
+        raise _Answer(result.reason)
+    raise _Answer(strings.T6_NOT_ANSWERING)
+
+
+def _cards(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Projects an answer holds: ``projects`` for a chat, else the one card it is itself."""
+    if found.get("projects"):
+        return list(found["projects"])
+    return [found] if found.get("project_id") else []
+
+
+def _link_line(link: dict[str, Any]) -> str:
+    label = link.get("topic_name") or (
+        strings.PROJECT_LINKS_WHOLE_CHAT if link.get("topic") is None else f"topic {link['topic']}"
+    )
+    state = strings.PROJECT_LINK_STATES.get(link["state"], link["state"]).format(
+        dead_since=link.get("dead_since")
+    )
+    if link["state"] == "denied" and link.get("reason"):
+        state += f" ({link['reason']})"
+    return f"• {html.escape(label)}: {html.escape(state)}"
+
+
+def render_card(card: dict[str, Any]) -> str:
+    """A Project's links card as HTML: name and code, its Telegram links with their states,
+    the Notion page and Frame.io links, then the Links by kind."""
+    name = " ".join(
+        part
+        for part in (card.get("name"), f"[{card['code']}]" if card.get("code") else None)
+        if part
+    )
+    lines = [f"<b>{html.escape(name or card['project_id'])}</b>"]
+    if card.get("chat_links"):
+        lines += [
+            strings.PROJECT_LINKS_TELEGRAM,
+            *(_link_line(link) for link in card["chat_links"]),
+        ]
+    for key, label in (
+        ("notion_url", strings.PROJECT_LINKS_NOTION),
+        ("frameio_url", strings.PROJECT_LINKS_FRAMEIO),
+    ):
+        if card.get(key):
+            lines.append(f'<a href="{html.escape(card[key], quote=True)}">{label}</a>')
+    for kind, urls in (card.get("links") or {}).items():
+        lines += [f"{html.escape(kind)}: {html.escape(url)}" for url in urls]
+    if card.get("links_unavailable"):
+        lines.append(strings.PROJECT_LINKS_UNAVAILABLE)
+    return "\n".join(lines)
+
+
+def _card_reply(card: dict[str, Any]) -> Reply:
+    return {"text": render_card(card), "format": "html"}
+
+
 async def _read(api: Any, noun: str, inputs: Any) -> dict[str, Any] | None:
     """A name for display: None when the API will not say (the line then leaves it out)."""
     try:
@@ -318,12 +459,25 @@ class ProjectWorker:
             return False
         try:
             replies = await self._commands.answer(
-                request["from_id"], request["name"], request["argument"]
+                request["from_id"],
+                request["name"],
+                request["argument"],
+                chat_id=request["chat_id"],
+                topic_id=request["topic_id"],
+                chat_type=request["chat_type"],
+                topic_name=request["topic_name"],
             )
         except Exception:  # an unexpected API reply: say so once, never retry it forever
             log.exception("project command failed")
             replies = [_plain(strings.T6_NOT_ANSWERING)]
-        self._store.answer_project_request(request["update_id"], request["chat_id"], replies)
+        in_group = request["chat_type"] != "private"
+        self._store.answer_project_request(
+            request["update_id"],
+            request["chat_id"],
+            replies,
+            topic_id=request["topic_id"],
+            reply_to_message_id=request["message_id"] if in_group else None,
+        )
         self._queue_wake.notify()
         return True
 

@@ -230,4 +230,12 @@ MIGRATIONS: list[str] = [
     """
     CREATE INDEX outbound_sent_message ON outbound (target, telegram_message_id);
     """,
+    # 19: a /project request made in a group knows its topic, chat type and topic name, so the
+    # reply goes back to the topic (issue #132). ``message_id`` and ``callback_id`` (migration
+    # 13) now also carry the command's message and a button tap.
+    """
+    ALTER TABLE project_requests ADD COLUMN topic_id INTEGER;
+    ALTER TABLE project_requests ADD COLUMN chat_type TEXT NOT NULL DEFAULT 'private';
+    ALTER TABLE project_requests ADD COLUMN topic_name TEXT;
+    """,
 ]
