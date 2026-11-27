@@ -339,13 +339,19 @@ class Store:
                 r = decision.project_request
                 self._db.execute(
                     "INSERT OR IGNORE INTO project_requests (update_id, from_id, chat_id, name,"
-                    " argument, created_at) VALUES (?,?,?,?,?,?)",
+                    " argument, topic_id, chat_type, message_id, topic_name, callback_id,"
+                    " created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         update.update_id,
                         r.from_id,
                         r.chat_id,
                         r.name,
                         r.argument,
+                        r.topic_id,
+                        r.chat_type,
+                        r.message_id,
+                        r.topic_name,
+                        r.callback_id,
                         received_at,
                     ),
                 )
@@ -907,16 +913,28 @@ class Store:
         return None if row is None else dict(row)
 
     def answer_project_request(
-        self, update_id: int, chat_id: int, replies: list[dict[str, Any]]
+        self,
+        update_id: int,
+        chat_id: int,
+        replies: list[dict[str, Any]],
+        *,
+        topic_id: int | None = None,
+        reply_to_message_id: int | None = None,
     ) -> None:
-        """Queue the replies in the request's DM and forget the request, in one transaction."""
+        """Queue the replies in the request's chat (and topic), the first as a reply to the
+        command when ``reply_to_message_id`` is given, and forget the request (one transaction)."""
         with self._transaction():
             for number, reply in enumerate(replies):
+                reply_to = (
+                    {"reply_to_message_id": reply_to_message_id}
+                    if number == 0 and reply_to_message_id
+                    else {}
+                )
                 self._insert_outbound(
                     GATEWAY_MODULE,
                     "message",
                     str(chat_id),
-                    {**reply, "chat": chat_id, "topic": None},
+                    {**reply, "chat": chat_id, "topic": topic_id, **reply_to},
                     f"project:{update_id}:{number}",
                 )
             self._db.execute("DELETE FROM project_requests WHERE update_id = ?", (update_id,))

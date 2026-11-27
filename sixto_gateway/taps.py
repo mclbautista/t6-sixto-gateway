@@ -1,8 +1,9 @@
 """Who owns a button tap (ticket #50).
 
 A tap whose callback data carries a module prefix (``mod:<module>:<payload>``, set by
-``/notify``) is delivered to that module once, as a ``tap`` item. Every other tap is
-onboarding's: the existing handler saves it for the onboarding worker, unchanged.
+``/notify``) is delivered to that module once, as a ``tap`` item. A ``pl:`` tap (a button of
+``/project links``) is the project worker's. Every other tap is onboarding's: the existing
+handler saves it for the onboarding worker, unchanged.
 """
 
 from __future__ import annotations
@@ -11,11 +12,14 @@ from sixto_gateway import strings
 from sixto_gateway.config import Config
 from sixto_gateway.decision import Decision, parse_module_callback
 from sixto_gateway.onboarding import decide_tap as decide_onboarding_tap
+from sixto_gateway.project import decide_project_tap
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
 
 def decide_tap(config: Config, update: IncomingUpdate) -> Decision:
     """Route a tap to its module, or leave it to onboarding."""
+    if (project := decide_project_tap(update)) is not None:
+        return project
     parsed = parse_module_callback(update.callback_data)
     if parsed is None:
         return decide_onboarding_tap(update)

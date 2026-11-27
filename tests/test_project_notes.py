@@ -75,9 +75,10 @@ class Rig:
         )
         self.worker = ProjectWorker(
             self.store,
-            ProjectCommands(self.api.as_user),
+            ProjectCommands(self.api.as_user, self.api.service),
             self.project_wake,
             Notifier(),
+            self.telegram,
         )
 
     async def send(self, raw):

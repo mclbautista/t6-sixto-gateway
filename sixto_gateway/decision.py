@@ -55,7 +55,12 @@ class ProjectRequest:
     from_id: int
     chat_id: int
     name: str  # the subcommand, for example "notes"
-    argument: str  # its input, for example the Project code
+    argument: str  # its input, for example the Project code (for a tap: its callback payload)
+    topic_id: int | None = None
+    chat_type: str = "private"
+    message_id: int | None = None  # the command's message (reply target), or a tap's message
+    topic_name: str | None = None  # as Telegram sent it with the command, when it did
+    callback_id: str | None = None  # a button tap: the callback to answer
 
 
 @dataclass(frozen=True)

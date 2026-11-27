@@ -535,6 +535,35 @@ commands:
   history says so. Additional movements are counted as `N more in the Drives app` in plain
   text; no app URL is configured. Replies are requested on demand only, with no movement
   notifications. Other `/project` commands still go to their module.
+- **`/project links` and `/project <code> links`** (t6-core #685) are answered by the gateway
+  and work in a group or topic as well as a DM; the `project` allow-list (operators) does not
+  apply to them. Anyone in a chat may ask: the gateway asks `project links` with its own token
+  and the chat and topic (no `X-Telegram-User-Id`), so a freelancer with no Person record gets an
+  answer. The API needs the narrow `project_links` grant for the gateway service
+  (`T6_API_SERVICE_PERMISSIONS='{"gateway": ["project_links"]}'`); until t6-core has that read,
+  the command answers "T6 is not answering". The card is a reply to the command, in the topic:
+  name and code, each Telegram link with its state (active, inactive, waiting for approval,
+  denied with its reason, dead since a date), the Notion page and Frame.io links, then the CRM
+  Log links by kind (or "Links unavailable right now"). `/project <code> links` works for a
+  Project linked to the chat and shows the API's refusal for one that is not; an operator may
+  ask for any code, in a group or a DM (the gateway tries again as the person who typed). In a
+  DM only an operator may ask, and a code is required. The request is saved with its topic and
+  message id and deleted when its reply is queued.
+- **Several Projects in one chat.** When `/project links` (no code) finds more than one Project
+  linked to the chat or topic, the reply is one message "Which Project?" with one button per
+  Project (`<code> · <name>`, callback data `pl:<T6 Project ID>`), the Project whose code is in
+  the topic's name first (the name Telegram sent with the command, else the topic name on the
+  API's links), the rest in link order. Anyone in the chat may tap, in a group or topic; a tap is
+  answered and edits the buttons message into that Project's card (no buttons, HTML), asked with
+  the gateway's own token. A tap for a Project no longer linked to the chat shows the toast "That
+  Project is no longer linked to this chat." and leaves the message alone; an API outage shows an
+  alert and leaves the buttons. A tap is never retried.
+- **`/project links` in an unlinked topic** answers "This topic is not linked to a Project." in
+  plain text. The gateway also sends the topic's name (as Telegram sent it with the command) and
+  the asker's Telegram id; when the API answers `can_link` (the asker is a coordinator or
+  approver) and a `suggested_code` (the name starts with `CODE - `, the form `/link` reads), a
+  second line says "Send /link to link it to CODE." Others never get that line, so the gateway
+  decides nothing about roles itself.
 - **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
   by the gateway like `/project <code> notes`, in a DM only (in a group: one line pointing to the DM),
   asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the

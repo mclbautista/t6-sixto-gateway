@@ -54,6 +54,23 @@ PROJECT_DRIVES_NONE = "No Drive movements for {code} yet."
 
 # --- for /crm snooze, /crm unsnooze and /leads (plain text; the API words its own answers) -----
 
+PROJECT_LINKS_DM_CODE = "In a direct message, say which Project: /project CODE links."
+PROJECT_LINKS_TELEGRAM = "Telegram:"
+PROJECT_LINKS_WHOLE_CHAT = "whole chat"
+PROJECT_LINKS_NOTION = "Notion page"
+PROJECT_LINKS_FRAMEIO = "Frame.io project"
+PROJECT_LINKS_UNAVAILABLE = "Links unavailable right now"
+PROJECT_LINK_STATES = {
+    "active": "active",
+    "inactive": "inactive",
+    "waiting": "waiting for approval",
+    "denied": "denied",
+    "dead": "dead since {dead_since}",
+}
+PROJECT_LINKS_UNLINKED = "This topic is not linked to a Project."
+PROJECT_LINKS_HINT = "Send /link to link it to {code}."
+PROJECT_LINKS_PICK = "Which Project?"
+PROJECT_LINKS_UNLINKED_TAP = "That Project is no longer linked to this chat."
 CRM_DM_ONLY = "/{command} works in a direct message with me. Please message me there."
 LEADS_TITLE = "Open Leads: {count}"
 LEADS_NONE = "No open Leads."
