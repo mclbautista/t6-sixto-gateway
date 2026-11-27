@@ -672,7 +672,10 @@ class FakeProjectAPI:
             for pid in pids
         ]
         if code is not None:
-            card = next((c for c in linked if c["code"].upper() == code.upper()), None)
+            card = next(
+                (c for c in linked if code.upper() in (c["code"].upper(), c["project_id"].upper())),
+                None,
+            )
             if card is None:
                 return Refused(rule="chat_scope", reason="Project is not linked to this chat")
             return Done(result={**card, "projects": [card]})

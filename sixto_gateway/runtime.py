@@ -88,7 +88,7 @@ def start_workers(
         )
         tasks["onboarding"] = asyncio.create_task(worker.run(stop))
         tasks["projects"] = asyncio.create_task(
-            ProjectWorker(store, projects, project_wake, queue_wake).run(stop)
+            ProjectWorker(store, projects, project_wake, queue_wake, client).run(stop)
         )
         tasks["summary"] = asyncio.create_task(
             SummaryWorker(store, config, queue_wake, clock).run(stop)

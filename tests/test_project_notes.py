@@ -78,6 +78,7 @@ class Rig:
             ProjectCommands(self.api.as_user, self.api.service),
             self.project_wake,
             Notifier(),
+            self.telegram,
         )
 
     async def send(self, raw):

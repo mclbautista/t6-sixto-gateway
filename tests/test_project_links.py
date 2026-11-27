@@ -15,6 +15,7 @@ from tests.fakes import (
     FakeClock,
     FakeProjectAPI,
     FakeTelegram,
+    button_tap,
     dm_message,
     group_command,
 )
@@ -91,6 +92,7 @@ class Rig:
             ProjectCommands(self.api.as_user, self.api.service),
             self.wake,
             Notifier(),
+            self.telegram,
         )
 
     async def send(self, raw):
@@ -105,6 +107,10 @@ class Rig:
             for row in self.store.due_outbound(self.clock() + 1)
             if row["body"]["chat"] == chat
         ]
+
+    def add_second_project(self):
+        self.api.cards[OTHER_ID] = card(OTHER_ID, "XYZ", "Other Show")
+        self.api.chat_links[(CHAT, TOPIC)] = [PROJECT_ID, OTHER_ID]
 
 
 @pytest.fixture
@@ -239,3 +245,92 @@ async def test_an_edited_links_command_is_not_answered_again(rig):
     raw = {"update_id": 9, "edited_message": {**raw["message"], "edit_date": 1789700100}}
     await rig.send(raw)
     assert rig.bodies() == []
+
+
+# --- #133: buttons first in a chat with several Projects -----------------------------------
+
+
+async def test_two_projects_give_one_buttons_message_with_the_topics_own_project_first(rig):
+    rig.add_second_project()
+    await rig.send(
+        group_command(9, FREELANCER, "/project links", CHAT, TOPIC, topic_name="XYZ - Edit")
+    )
+    [body] = rig.bodies()
+    assert body["text"] == strings.PROJECT_LINKS_PICK
+    assert body["topic"] == TOPIC and body["reply_to_message_id"] == 9
+    assert body["keyboard"] == [
+        [{"text": "XYZ · Other Show", "callback_data": f"pl:{OTHER_ID}"}],
+        [{"text": "ABD · Example Show", "callback_data": f"pl:{PROJECT_ID}"}],
+    ]
+
+
+async def test_buttons_keep_link_order_when_the_topic_name_names_neither(rig):
+    rig.add_second_project()
+    await rig.send(
+        group_command(9, FREELANCER, "/project links", CHAT, TOPIC, topic_name="General")
+    )
+    [body] = rig.bodies()
+    assert [row[0]["callback_data"] for row in body["keyboard"]] == [
+        f"pl:{PROJECT_ID}",
+        f"pl:{OTHER_ID}",
+    ]
+
+
+async def test_the_topic_name_comes_from_the_cards_when_the_command_carries_none(rig):
+    rig.add_second_project()
+    for project_id in (PROJECT_ID, OTHER_ID):  # the topic has one name, whichever card tells it
+        rig.api.cards[project_id]["chat_links"] = [link("active", TOPIC, "XYZ - Edit")]
+    await rig.send(group_command(9, FREELANCER, "/project links", CHAT, TOPIC))
+    [body] = rig.bodies()
+    assert body["keyboard"][0][0]["callback_data"] == f"pl:{OTHER_ID}"
+
+
+async def test_anyone_may_tap_and_the_message_becomes_that_projects_card(rig):
+    rig.add_second_project()
+    await rig.send(group_command(9, FREELANCER, "/project links", CHAT, TOPIC))
+    rig.api.calls.clear()
+    await rig.send(button_tap(10, 777, f"pl:{OTHER_ID}", CHAT, 55, "supergroup", TOPIC))
+    assert rig.telegram.edits == [
+        {
+            "chat_id": CHAT,
+            "message_id": 55,
+            "text": (
+                "<b>Other Show [XYZ]</b>\n"
+                '<a href="https://www.notion.so/xyz">Notion page</a>\n'
+                '<a href="https://next.frame.io/project/xyz">Frame.io project</a>'
+            ),
+            "parse_mode": "HTML",
+            "keyboard": None,
+        }
+    ]
+    assert rig.telegram.answers[-1]["text"] is None and not rig.telegram.answers[-1]["alert"]
+    assert rig.api.calls == [
+        (
+            None,
+            "project links",
+            {
+                "project": OTHER_ID,
+                "chat": CHAT,
+                "topic": TOPIC,
+                "topic_name": None,
+                "asker_telegram_id": None,
+            },
+        )
+    ]
+
+
+async def test_a_tap_for_a_project_no_longer_linked_is_a_short_toast_and_no_edit(rig):
+    rig.add_second_project()
+    rig.api.chat_links[(CHAT, TOPIC)] = [PROJECT_ID]
+    await rig.send(button_tap(10, 777, f"pl:{OTHER_ID}", CHAT, 55, "supergroup", TOPIC))
+    assert rig.telegram.edits == []
+    assert rig.telegram.answers[-1]["text"] == strings.PROJECT_LINKS_UNLINKED_TAP
+    assert not rig.telegram.answers[-1]["alert"]
+
+
+async def test_a_tap_while_t6_is_down_is_an_alert_and_leaves_the_buttons(rig):
+    rig.api.unavailable = True
+    await rig.send(button_tap(10, 777, f"pl:{PROJECT_ID}", CHAT, 55, "supergroup", TOPIC))
+    assert rig.telegram.edits == []
+    assert rig.telegram.answers[-1]["text"] == strings.T6_NOT_ANSWERING
+    assert rig.telegram.answers[-1]["alert"]

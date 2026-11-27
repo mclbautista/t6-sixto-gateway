@@ -67,6 +67,8 @@ PROJECT_LINK_STATES = {
     "denied": "denied",
     "dead": "dead since {dead_since}",
 }
+PROJECT_LINKS_PICK = "Which Project?"
+PROJECT_LINKS_UNLINKED_TAP = "That Project is no longer linked to this chat."
 CRM_DM_ONLY = "/{command} works in a direct message with me. Please message me there."
 LEADS_TITLE = "Open Leads: {count}"
 LEADS_NONE = "No open Leads."

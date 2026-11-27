@@ -4,7 +4,7 @@ Every other ``/project`` goes to its module (t6core) as before. A subcommand her
 only (``links`` also in a group or topic), and is asked of the t6 API as the person who typed
 it, so the API decides who may read what and its refusal is shown as is. The poller saves the
 request with the update (``decide_project``); ``ProjectWorker`` asks the API outside the poll
-loop and queues the reply.
+loop and queues the reply (a tap on a ``links`` button is answered and its message edited there).
 
 To add a subcommand: recognise it in ``parse_subcommand`` and add its handler to
 ``ProjectCommands._handlers``.
@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
@@ -33,12 +35,15 @@ from sixto_gateway import strings
 from sixto_gateway.decision import Decision, ProjectRequest
 from sixto_gateway.notifier import Notifier
 from sixto_gateway.store import Store
+from sixto_gateway.telegram.client import TelegramClient
 from sixto_gateway.telegram.normalize import IncomingUpdate
 
 log = logging.getLogger(__name__)
 IDLE_WAKE_SECONDS = 5.0  # safety net if a wake-up is ever missed
 MESSAGE_LIMIT = 4096  # Telegram's limit, in UTF-16 code units
 DRIVE_MOVEMENT_LIMIT = 10
+LINKS_TAP_PREFIX = "pl"  # callback data of a /project links button: pl:<T6 Project ID>
+TOAST_LIMIT = 200  # Telegram refuses a longer answer to a button tap
 EXACT_CODE = {"exact_id", "normalized"}  # ``project resolve`` methods that are not a guess
 
 CRM_COMMANDS = ("project", "crm", "leads")  # the commands this module answers
@@ -105,6 +110,31 @@ def decide_project(update: IncomingUpdate) -> Decision | None:
             update.chat_type or "private",
             update.message_id,
             update.topic_name,
+        ),
+    )
+
+
+def decide_project_tap(update: IncomingUpdate) -> Decision | None:
+    """The decision for a tap on a ``/project links`` button; None: not one of ours.
+
+    Anyone in the chat may tap, so this is not limited to DMs or to operators."""
+    if not update.callback_data.startswith(f"{LINKS_TAP_PREFIX}:"):
+        return None
+    if update.callback_id is None or update.from_id is None:
+        return Decision(None)
+    return Decision(
+        None,
+        audit=("command_answered", None, f"command=project links tap from={update.from_id}"),
+        project_request=ProjectRequest(
+            update.from_id,
+            update.chat_id,
+            "links_tap",
+            update.callback_data[len(LINKS_TAP_PREFIX) + 1 :],
+            update.topic_id,
+            update.chat_type or "private",
+            update.message_id,
+            None,
+            update.callback_id,
         ),
     )
 
@@ -274,7 +304,21 @@ class ProjectCommands:
             if isinstance(as_person, Done):
                 return [_card_reply(as_person.result)]
         cards = _cards(_shown(result))
+        if len(cards) > 1:
+            return [_pick_reply(cards, chat_id, topic_id, topic_name)]
         return [_card_reply(cards[0])]
+
+    async def links_tap(self, chat_id: int, topic_id: int | None, project_id: str) -> Tap:
+        """A tap on a Project's button: its card, if the chat is still linked to it. Anyone in the
+        chat may tap, so this asks with the gateway's own token."""
+        result = await _links_call(
+            self._service, ProjectLinksInput(project=project_id, chat=chat_id, topic=topic_id)
+        )
+        if isinstance(result, Refused):
+            return Tap(strings.PROJECT_LINKS_UNLINKED_TAP)
+        if not isinstance(result, Done):
+            return Tap(strings.T6_NOT_ANSWERING, alert=True)
+        return Tap(text=render_card(result.result), html=True)
 
     async def _notes(self, api: Any, code: str) -> list[Reply]:
         project = await self._project(api, code)
@@ -420,6 +464,60 @@ def render_card(card: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class Tap:
+    """What a tap shows: a toast (a popup if ``alert``) and the message's new text, if any."""
+
+    toast: str | None = None
+    text: str | None = None  # None: the message stays as it is
+    html: bool = False
+    alert: bool = False
+
+
+def _topic_first(
+    cards: list[dict[str, Any]], chat_id: int, topic_id: int | None, topic_name: str | None
+) -> list[dict[str, Any]]:
+    """Projects in link order, those whose code is in the topic's name first. The name is the
+    one the command carried, else one a card's link to this topic has."""
+    if topic_name is None:
+        topic_name = next(
+            (
+                link["topic_name"]
+                for card in cards
+                for link in card.get("chat_links", [])
+                if link.get("chat") == chat_id
+                and link.get("topic") == topic_id
+                and link.get("topic_name")
+            ),
+            "",
+        )
+
+    def named(card: dict[str, Any]) -> bool:
+        code = card.get("code")
+        if not code:
+            return False
+        return bool(
+            re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", topic_name, re.I)
+        )
+
+    return sorted(cards, key=lambda card: not named(card))
+
+
+def _pick_reply(
+    cards: list[dict[str, Any]], chat_id: int, topic_id: int | None, topic_name: str | None
+) -> Reply:
+    keyboard = [
+        [
+            {
+                "text": f"{card['code']} · {card['name']}" if card.get("code") else card["name"],
+                "callback_data": f"{LINKS_TAP_PREFIX}:{card['project_id']}",
+            }
+        ]
+        for card in _topic_first(cards, chat_id, topic_id, topic_name)
+    ]
+    return {**_plain(strings.PROJECT_LINKS_PICK), "keyboard": keyboard}
+
+
 def _card_reply(card: dict[str, Any]) -> Reply:
     return {"text": render_card(card), "format": "html"}
 
@@ -446,8 +544,10 @@ class ProjectWorker:
         commands: ProjectCommands,
         wake: Notifier,
         queue_wake: Notifier,
+        client: TelegramClient,
     ):
         self._store = store
+        self._client = client
         self._commands = commands
         self._wake = wake
         self._queue_wake = queue_wake
@@ -457,6 +557,9 @@ class ProjectWorker:
         request = self._store.next_project_request()
         if request is None:
             return False
+        if request["name"] == "links_tap":
+            await self._tap(request)
+            return True
         try:
             replies = await self._commands.answer(
                 request["from_id"],
@@ -480,6 +583,33 @@ class ProjectWorker:
         )
         self._queue_wake.notify()
         return True
+
+    async def _tap(self, request: dict[str, Any]) -> None:
+        """Answer a button tap and edit its message. Never retried: the person taps again."""
+        try:
+            tap = await self._commands.links_tap(
+                request["chat_id"], request["topic_id"], request["argument"]
+            )
+        except Exception:
+            log.exception("project tap failed")
+            tap = Tap(strings.T6_NOT_ANSWERING, alert=True)
+        try:
+            toast = tap.toast[:TOAST_LIMIT] if tap.toast else tap.toast
+            await self._client.answer_callback_query(request["callback_id"], toast, tap.alert)
+        except Exception as exc:  # noqa: BLE001 - an old query id may have expired
+            log.warning("answering callback %s failed: %s", request["callback_id"], exc)
+        if tap.text is not None:
+            try:
+                await self._client.edit_message(
+                    request["chat_id"],
+                    request["message_id"],
+                    tap.text,
+                    "HTML" if tap.html else None,
+                    None,
+                )
+            except Exception as exc:  # noqa: BLE001 - "message is not modified" counts too
+                log.warning("editing message %s failed: %s", request["message_id"], exc)
+        self._store.answer_project_request(request["update_id"], request["chat_id"], [])
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

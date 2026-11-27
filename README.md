@@ -549,6 +549,15 @@ commands:
   ask for any code, in a group or a DM (the gateway tries again as the person who typed). In a
   DM only an operator may ask, and a code is required. The request is saved with its topic and
   message id and deleted when its reply is queued.
+- **Several Projects in one chat.** When `/project links` (no code) finds more than one Project
+  linked to the chat or topic, the reply is one message "Which Project?" with one button per
+  Project (`<code> · <name>`, callback data `pl:<T6 Project ID>`), the Project whose code is in
+  the topic's name first (the name Telegram sent with the command, else the topic name on the
+  API's links), the rest in link order. Anyone in the chat may tap, in a group or topic; a tap is
+  answered and edits the buttons message into that Project's card (no buttons, HTML), asked with
+  the gateway's own token. A tap for a Project no longer linked to the chat shows the toast "That
+  Project is no longer linked to this chat." and leaves the message alone; an API outage shows an
+  alert and leaves the buttons. A tap is never retried.
 - **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
   by the gateway like `/project <code> notes`, in a DM only (in a group: one line pointing to the DM),
   asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the
