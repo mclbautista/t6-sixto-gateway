@@ -33,7 +33,7 @@ def card(project_id, code, name, chat_links=(), **more):
         "name": name,
         "code": code,
         "notion_url": f"https://www.notion.so/{code.lower()}",
-        "frameio_url": f"https://next.frame.io/project/{code.lower()}",
+        "frameio_url": f"https://frames.example.invalid/project/{code.lower()}",
         "chat_links": list(chat_links),
         "links": {},
         "links_unavailable": False,
@@ -132,7 +132,7 @@ async def test_anyone_in_a_linked_topic_gets_the_card_as_a_reply(rig):
         "• ABD - Edit: active\n"
         "• ABD - Grade: waiting for approval\n"
         '<a href="https://www.notion.so/abd">Notion page</a>\n'
-        '<a href="https://next.frame.io/project/abd">Frame.io project</a>'
+        '<a href="https://frames.example.invalid/project/abd">Frame.io project</a>'
     )
     # asked with the gateway's own token (no Person record needed), never pushed to t6core
     assert rig.api.calls == [
@@ -189,7 +189,7 @@ async def test_links_unavailable_is_said_and_a_card_with_no_links_is_still_a_car
     [body] = rig.bodies()
     assert body["text"].splitlines()[1:] == [
         '<a href="https://www.notion.so/abd">Notion page</a>',
-        '<a href="https://next.frame.io/project/abd">Frame.io project</a>',
+        '<a href="https://frames.example.invalid/project/abd">Frame.io project</a>',
         "Links unavailable right now",
     ]
 
@@ -297,7 +297,7 @@ async def test_anyone_may_tap_and_the_message_becomes_that_projects_card(rig):
             "text": (
                 "<b>Other Show [XYZ]</b>\n"
                 '<a href="https://www.notion.so/xyz">Notion page</a>\n'
-                '<a href="https://next.frame.io/project/xyz">Frame.io project</a>'
+                '<a href="https://frames.example.invalid/project/xyz">Frame.io project</a>'
             ),
             "parse_mode": "HTML",
             "keyboard": None,
