@@ -558,6 +558,12 @@ commands:
   the gateway's own token. A tap for a Project no longer linked to the chat shows the toast "That
   Project is no longer linked to this chat." and leaves the message alone; an API outage shows an
   alert and leaves the buttons. A tap is never retried.
+- **`/project links` in an unlinked topic** answers "This topic is not linked to a Project." in
+  plain text. The gateway also sends the topic's name (as Telegram sent it with the command) and
+  the asker's Telegram id; when the API answers `can_link` (the asker is a coordinator or
+  approver) and a `suggested_code` (the name starts with `CODE - `, the form `/link` reads), a
+  second line says "Send /link to link it to CODE." Others never get that line, so the gateway
+  decides nothing about roles itself.
 - **`/crm snooze <date>`, `/crm unsnooze` and `/leads`** (CRM keep-warm, t6-core #705) are answered
   by the gateway like `/project <code> notes`, in a DM only (in a group: one line pointing to the DM),
   asked of the t6 API as the sender and skipping the command allow-list. `crm snooze` takes the

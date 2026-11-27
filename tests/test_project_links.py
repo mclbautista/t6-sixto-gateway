@@ -334,3 +334,38 @@ async def test_a_tap_while_t6_is_down_is_an_alert_and_leaves_the_buttons(rig):
     assert rig.telegram.edits == []
     assert rig.telegram.answers[-1]["text"] == strings.T6_NOT_ANSWERING
     assert rig.telegram.answers[-1]["alert"]
+
+
+# --- #134: an unlinked topic ----------------------------------------------------------------
+
+
+async def test_an_unlinked_topic_says_so_to_anyone(rig):
+    await rig.send(group_command(9, FREELANCER, "/project links", CHAT, 99, topic_name="General"))
+    [body] = rig.bodies()
+    assert body["text"] == "This topic is not linked to a Project."
+    assert body["format"] == "plain" and body["topic"] == 99 and body["reply_to_message_id"] == 9
+
+
+async def test_a_coordinator_in_a_topic_named_with_a_code_gets_the_link_hint(rig):
+    await rig.send(
+        group_command(9, COORDINATOR, "/project links", CHAT, 99, topic_name="ABC123 - Edit")
+    )
+    [body] = rig.bodies()
+    assert body["text"] == (
+        "This topic is not linked to a Project.\nSend /link to link it to ABC123."
+    )
+    # the topic's name and the asker go to the API, which says who may link
+    assert rig.api.calls[0][2]["topic_name"] == "ABC123 - Edit"
+    assert rig.api.calls[0][2]["asker_telegram_id"] == COORDINATOR
+
+
+async def test_others_never_see_the_link_hint(rig):
+    await rig.send(
+        group_command(9, FREELANCER, "/project links", CHAT, 99, topic_name="ABC123 - Edit")
+    )
+    assert [b["text"] for b in rig.bodies()] == ["This topic is not linked to a Project."]
+
+
+async def test_a_coordinator_in_a_topic_without_a_code_in_its_name_gets_no_hint(rig):
+    await rig.send(group_command(9, COORDINATOR, "/project links", CHAT, 99, topic_name="Edit"))
+    assert [b["text"] for b in rig.bodies()] == ["This topic is not linked to a Project."]

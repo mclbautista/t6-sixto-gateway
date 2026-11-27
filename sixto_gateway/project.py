@@ -303,7 +303,13 @@ class ProjectCommands:
             as_person = await _links_call(self._as_user(user), ProjectLinksInput(project=code))
             if isinstance(as_person, Done):
                 return [_card_reply(as_person.result)]
-        cards = _cards(_shown(result))
+        found = _shown(result)
+        cards = _cards(found)
+        if not cards:  # an unlinked topic; the API says who may be told to /link, and to what
+            text = strings.PROJECT_LINKS_UNLINKED
+            if found.get("can_link") and found.get("suggested_code"):
+                text += "\n" + strings.PROJECT_LINKS_HINT.format(code=found["suggested_code"])
+            return [_plain(text)]
         if len(cards) > 1:
             return [_pick_reply(cards, chat_id, topic_id, topic_name)]
         return [_card_reply(cards[0])]
